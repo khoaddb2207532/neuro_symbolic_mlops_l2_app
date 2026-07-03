@@ -85,9 +85,11 @@ def plot_training_history(
     axes[0].legend()
     axes[0].grid(True, linestyle="--", alpha=0.6)
 
+    if "train_acc" in history:
+        axes[1].plot(epochs, history["train_acc"], "b-", label="Train Acc", linewidth=2)
     if "val_acc" in history:
         axes[1].plot(epochs, history["val_acc"], "g-", label="Val Acc", linewidth=2)
-    axes[1].set_title(f"Validation Accuracy {title_suffix}".strip())
+    axes[1].set_title(f"Accuracy {title_suffix}".strip())
     axes[1].set_xlabel("Epochs")
     axes[1].legend()
     axes[1].grid(True, linestyle="--", alpha=0.6)
