@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
     "weight_decay": 1e-4,
     "use_scheduler": True,
     "scheduler_factor": 0.1,
-    "scheduler_patience": 5,
+    "scheduler_patience": 3,
     "scheduler_threshold": 1e-4,
     "scheduler_cooldown": 0,
     "scheduler_min_lr": 1e-6,
