@@ -26,7 +26,9 @@ from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-
+# Đăng ký "càng cao càng tốt" (max) hay "càng thấp càng tốt" (min) cho từng
+# metric có thể theo dõi — thêm metric mới (vd "val_f1") chỉ cần thêm 1 dòng
+# ở đây, không phải sửa logic so sánh trong EarlyStopping hay vòng lặp train.
 MONITOR_MODES = {
     "val_acc": "max",
     "val_loss": "min",
@@ -36,7 +38,7 @@ DEFAULT_CONFIG = {
     "weight_decay": 1e-4,
     "use_scheduler": True,
     "scheduler_factor": 0.1,
-    "scheduler_patience": 3,
+    "scheduler_patience": 5,
     "scheduler_threshold": 1e-4,
     "scheduler_cooldown": 0,
     "scheduler_min_lr": 1e-6,
@@ -66,12 +68,19 @@ def save_checkpoint(path: str, model: nn.Module, optimizer, epoch: int, best_acc
 
 def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=None, freeze_bn=True):
     """penalty_module: nếu không None (VectorizedRulePenalty), được cộng vào
-    loss chính. Không còn nhánh loop-based riêng — chỉ một công thức."""
+    loss chính. Không còn nhánh loop-based riêng — chỉ một công thức.
+
+    Trả về (train_loss, train_ce, train_penalty, train_acc) — train_acc được
+    tính trên chính batch train (không phải eval mode) để theo dõi cùng lúc
+    với val_acc trên DVCLive, giúp phát hiện overfit/underfit qua khoảng cách
+    train_acc vs val_acc.
+    """
     model.train()
     if freeze_bn and hasattr(model, "freeze_bn"):
         model.freeze_bn()
 
     total_loss = total_ce = total_penalty = 0.0
+    total_correct = 0
     total_samples = 0
 
     for images, labels in loader:
@@ -92,9 +101,15 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
         total_loss += loss.item() * bs
         total_ce += ce_loss.item() * bs
         total_penalty += penalty.item() * bs
+        total_correct += (torch.argmax(logits, dim=1) == labels).sum().item()
         total_samples += bs
 
-    return total_loss / total_samples, total_ce / total_samples, total_penalty / total_samples
+    return (
+        total_loss / total_samples,
+        total_ce / total_samples,
+        total_penalty / total_samples,
+        total_correct / total_samples,
+    )
 
 
 def validate(model, loader, criterion, device) -> Tuple[float, float]:
@@ -163,7 +178,10 @@ def train_model(
             smoothing=smoothing, num_classes=num_classes,
         )
 
-    history = {"train_loss": [], "train_ce": [], "train_penalty": [], "val_acc": [], "val_loss": []}
+    history = {
+        "train_loss": [], "train_ce": [], "train_penalty": [], "train_acc": [],
+        "val_loss": [], "val_acc": [],
+    }
     best_acc = 0.0
     best_weights = copy.deepcopy(model.state_dict())
     start_time = time.time()
@@ -187,7 +205,7 @@ def train_model(
                 model.set_freeze_stage(stage)
                 optimizer, scheduler = rebuild_optimizer()
 
-            train_loss, train_ce, train_penalty = train_one_epoch(
+            train_loss, train_ce, train_penalty, train_acc = train_one_epoch(
                 model, train_loader, criterion, optimizer, device,
                 penalty_module, freeze_bn=cfg.get("freeze_bn", True),
             )
@@ -197,6 +215,7 @@ def train_model(
             history["train_loss"].append(train_loss)
             history["train_ce"].append(train_ce)
             history["train_penalty"].append(train_penalty)
+            history["train_acc"].append(train_acc)
             history["val_acc"].append(val_acc)
             history["val_loss"].append(val_loss)
 
@@ -204,14 +223,17 @@ def train_model(
                 scheduler.step(val_loss)
 
             logger.info(
-                "Epoch %d/%d | Loss %.4f | CE %.4f | Penalty %.4f | Val Acc %.4f | Val Loss %.4f | LR %.2e",
-                epoch + 1, num_epochs, train_loss, train_ce, train_penalty, val_acc, val_loss, current_lr,
+                "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LR %.2e",
+                epoch + 1, num_epochs, train_loss, train_acc, train_ce, train_penalty, val_loss, val_acc, current_lr,
             )
+            # DVCLive theo dõi đầy đủ 4 metric chính: train_loss, train_acc,
+            # val_loss, val_acc — cộng thêm breakdown loss (ce/penalty) và lr.
             live.log_metric("train/loss", train_loss)
+            live.log_metric("train/acc", train_acc)
             live.log_metric("train/ce", train_ce)
             live.log_metric("train/penalty", train_penalty)
-            live.log_metric("val/acc", val_acc)
             live.log_metric("val/loss", val_loss)
+            live.log_metric("val/acc", val_acc)
             live.log_metric("lr", current_lr)
 
             # Giá trị dùng để quyết định "tốt nhất" phụ thuộc monitor_metric
