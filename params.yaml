@@ -1,0 +1,59 @@
+# ============================================================
+# Cấu hình trung tâm cho toàn bộ pipeline (MLOps L2: 1 nguồn config duy nhất).
+# DVC theo dõi file này; đổi bất kỳ giá trị nào sẽ tự trigger lại đúng stage
+# bị ảnh hưởng (xem dvc.yaml).
+# ============================================================
+
+seed: 42
+data_dir: "D:/32526_LV/vietnamese_cultural_dataset"
+output_dir: "outputs"
+num_classes: 12
+batch_size: 64
+num_workers: 4
+num_epochs: 20
+patience: 5
+weight_decay: 1e-4
+monitor_metric: "val_loss"
+
+# --------------------------------------------------------------
+# CHIẾN LƯỢC TRANSFER LEARNING ĐÃ CHỌN:
+#   "Freeze Backbone + Freeze BatchNorm" -> "Differential LR" ->
+#   "Progressive Unfreezing" (xem README.md để biết lý do lựa chọn).
+# --------------------------------------------------------------
+transfer_learning:
+  lr_head: 1e-4          # classifier học nhanh
+  lr_backbone: 1e-5       # backbone (khi mở) học chậm hơn 10x
+  freeze_bn: true          # BatchNorm luôn đóng băng cho tới stage "full"
+  # Stage 1 (baseline, cell gốc "01_baseline"): warm-up head, sau đó mở dần.
+  freeze_schedule:
+    0: "head_only"    # epoch 0-4: chỉ train classifier
+    5: "last_block"   # epoch 5-14: mở 3 block cuối của backbone
+    15: "full"         # epoch 15+: mở toàn bộ (nếu dataset đủ lớn)
+  # Stage 2 (rule-regularized fine-tuning, "05_rules_model"): tiếp tục từ
+  # baseline đã hội tụ nên có thể mở sớm hơn, không cần warm-up dài.
+  freeze_schedule_stage2:
+    0: "last_block"
+    10: "full"
+
+rules:
+  min_support: 0.01
+  min_confidence: 1.0
+  n_folds: 5
+
+rule_penalty:
+  weight: 0.1
+  smoothing: 0.1
+
+gflownet:
+  max_rules: 120
+  hidden_dim: 256
+  num_iterations: 500
+  batch_size: 256
+  lr: 1e-4
+  logZ_lr: 0.1
+  validation_interval: 50
+  loss_type: "tb"          # "tb" | "db" | "fm"
+  logZ_warmup_steps: 50
+  val_samples: 50
+  proxy_samples: 3000
+  proxy_epochs: 30
