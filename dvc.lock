@@ -5,7 +5,7 @@ stages:
     deps:
     - path: pipelines/stage1_train_baseline.py
       hash: md5
-      md5: 65af5ac818accbc10674b3306db40860
+      md5: 30c411d578f353fd90d1f3b1f6a4ebb4
       size: 2980
     - path: src/data/dataset.py
       hash: md5
@@ -13,18 +13,18 @@ stages:
       size: 3620
     - path: src/models/cnn.py
       hash: md5
-      md5: e24c1a3537984178484acf19f736a1ca
-      size: 6620
+      md5: 87eb4d0c4aa054571e7f111eb48bef50
+      size: 6583
     - path: src/training/trainer.py
       hash: md5
-      md5: 8b9f7bcf5c5bd1fce8789e23d1424bbf
-      size: 10069
+      md5: fd1033974a8dc830dfce56b8df2bf0f5
+      size: 11167
     params:
       params.yaml:
         batch_size: 64
         data_dir: D:/32526_LV/vietnamese_cultural_dataset
         num_classes: 12
-        num_epochs: 1
+        num_epochs: 20
         patience: 5
         seed: 42
         transfer_learning:
@@ -41,13 +41,115 @@ stages:
     outs:
     - path: outputs/01_baseline/baseline_best.pth
       hash: md5
-      md5: a12b981358d91f00131801b7676a3df6
+      md5: 1054049b7063bbe2e708bedb7db6bccc
       size: 27049907
     - path: outputs/01_baseline/dvclive_baseline/metrics.json
       hash: md5
-      md5: 064dd0f0effc6517cfac1c30f97ceddd
-      size: 335
+      md5: 1b541d845fa39ff01de22bed1f6b5caf
+      size: 371
     - path: outputs/01_baseline/final_model_weights.pth
       hash: md5
-      md5: a01b47bbb20426753696ccfc2f24a1a3
+      md5: 29d3c0ca84b844431f47cce0d65d07dc
       size: 17083959
+  extract_features:
+    cmd: python -m pipelines.stage2_extract_features --config params.yaml
+    deps:
+    - path: outputs/01_baseline/baseline_best.pth
+      hash: md5
+      md5: 1054049b7063bbe2e708bedb7db6bccc
+      size: 27049907
+    - path: pipelines/stage2_extract_features.py
+      hash: md5
+      md5: d6643c6e8e3af2e6ae2fe6979582e680
+      size: 1422
+    - path: src/data/features.py
+      hash: md5
+      md5: 9e716aa890b2d92deb3203c6b302ef41
+      size: 2893
+    outs:
+    - path: outputs/02_features
+      hash: md5
+      md5: c8371c16c69ae680bff5afeeb8954f13.dir
+      size: 54530504
+      nfiles: 6
+  extract_rules:
+    cmd: python -m pipelines.stage3_extract_rules --config params.yaml
+    deps:
+    - path: outputs/02_features
+      hash: md5
+      md5: c8371c16c69ae680bff5afeeb8954f13.dir
+      size: 54530504
+      nfiles: 6
+    - path: pipelines/stage3_extract_rules.py
+      hash: md5
+      md5: 220a5d87157774e5a8e2a1f8f94e4762
+      size: 2417
+    - path: src/data/features.py
+      hash: md5
+      md5: 9e716aa890b2d92deb3203c6b302ef41
+      size: 2893
+    - path: src/rules/extractor.py
+      hash: md5
+      md5: 5851ae1128d1de2f6489b58c08e4df86
+      size: 1318
+    - path: src/rules/validator.py
+      hash: md5
+      md5: e47782d4e9cd0536f697df1636526cda
+      size: 3873
+    params:
+      params.yaml:
+        rules:
+          min_support: 0.01
+          min_confidence: 1.0
+    outs:
+    - path: outputs/03_rules/raw_rules.pkl
+      hash: md5
+      md5: 439d77dc658d6d7dcb651ab878a2ea36
+      size: 12563860
+    - path: outputs/03_rules/rf_model.joblib
+      hash: md5
+      md5: f6761d75198f309d1fb240b97e9491f1
+      size: 25451433
+    - path: outputs/03_rules/valid_rules.pkl
+      hash: md5
+      md5: c6854c1d9e1823d3706c1d254f8f37a3
+      size: 20248
+  select_rules_gflownet:
+    cmd: python -m pipelines.stage4_select_rules_gflownet --config params.yaml
+    deps:
+    - path: outputs/03_rules/valid_rules.pkl
+      hash: md5
+      md5: c6854c1d9e1823d3706c1d254f8f37a3
+      size: 20248
+    - path: pipelines/stage4_select_rules_gflownet.py
+      hash: md5
+      md5: 30d6e62376b65518c5233108a1b8571a
+      size: 2716
+    - path: src/gflownet/env.py
+      hash: md5
+      md5: 142bdc1f90e011c4525abaaffced090d
+      size: 3342
+    - path: src/gflownet/pipeline.py
+      hash: md5
+      md5: d56b18ab5965688ff4bebf39a43c551e
+      size: 14805
+    params:
+      params.yaml:
+        gflownet:
+          max_rules: 120
+          hidden_dim: 256
+          num_iterations: 500
+          batch_size: 256
+          lr: 0.0001
+          logZ_lr: 0.1
+          validation_interval: 50
+          loss_type: tb
+          logZ_warmup_steps: 50
+          val_samples: 50
+          proxy_samples: 3000
+          proxy_epochs: 30
+    outs:
+    - path: outputs/04_filtered_rules/selected_rules_improved.pkl
+      hash: md5
+      md5: d49753f3d3221f55b1641d1ae4cecaad
+      size: 15295
