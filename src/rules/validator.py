@@ -15,7 +15,7 @@ from tqdm import tqdm
 from src.rules.rule_types import Rule, RuleSet
 
 
-class GPUFastRuleValidator:
+class RuleValidator:
     def __init__(
         self,
         min_supp: float = 0.01,
