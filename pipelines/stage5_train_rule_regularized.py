@@ -64,6 +64,8 @@ def main(params_path: str) -> None:
         "freeze_schedule": freeze_schedule,
         "monitor_metric": params.get("monitor_metric", "val_acc"),
         "use_scheduler": True,
+        "scheduler_factor": 0.1,
+        "scheduler_patience": 3,
         "dvclive_path": os.path.join(save_dir, "dvclive_rule_regularized"),
         "save_dir": save_dir,
     }
