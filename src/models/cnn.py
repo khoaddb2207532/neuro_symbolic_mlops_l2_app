@@ -20,12 +20,13 @@ GHI CHÚ: CHỈ MỘT class CNN duy nhất (`CNNBaseline`) được dùng xuyên
 bộ pipeline (baseline training, rule-regularized fine-tuning, app serving).
 Trước đây có alias `CNNWithFeatures` trùng lặp không cần thiết — đã gộp lại.
 """
-import os
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 from torchvision import models
+
+from src.utils.checkpoint import load_model_weights
 
 FreezeStage = str  # "head_only" | "last_block" | "full"
 
@@ -125,9 +126,8 @@ class FeatureExtractor(nn.Module):
     ):
         super().__init__()
         self.backbone = _build_mobilenet_v3(num_classes)
-        if trained_model_path and os.path.exists(trained_model_path):
-            state_dict = torch.load(trained_model_path, map_location=device)
-            self.load_state_dict(state_dict)
+        if trained_model_path:
+            load_model_weights(self, trained_model_path, device, required=False)
         for p in self.parameters():
             p.requires_grad = False
         self.eval()
