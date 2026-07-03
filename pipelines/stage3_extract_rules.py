@@ -9,7 +9,7 @@ import torch
 
 from src.data.features import train_and_save_rf
 from src.rules.io import save_rules_excel
-from src.rules.validator import GPUFastRuleValidator
+from src.rules.validator import RuleValidator
 from src.utils.config import load_params
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
@@ -39,7 +39,7 @@ def main(params_path: str) -> None:
     val_features = torch.load(f"{features_dir}/val_features.pt").to(device)
     val_labels = torch.load(f"{features_dir}/val_labels.pt").to(device)
 
-    validator = GPUFastRuleValidator(
+    validator = RuleValidator(
         min_supp=params["rules"]["min_support"],
         min_conf=params["rules"]["min_confidence"],
     )
