@@ -19,16 +19,17 @@ from src.models.proxy_reward import ProxyRewardNet
 from src.rules.io import save_rules_excel  # dùng chung, xem src/rules/io.py
 from src.rules.penalty import BinaryTransformer
 from src.rules.rule_types import Rule, RuleSet
-from src.rules.validator import GPUFastRuleValidator
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
 
 class BaseGFlowNetPipeline(abc.ABC):
-    def __init__(self, min_support: float = 0.01, min_confidence: float = 1.0, device: str = "cuda"):
-        self.min_support = min_support
-        self.min_confidence = min_confidence
+    """`min_support`/`min_confidence` đã bị bỏ khỏi constructor — pipeline
+    này không còn tự validate luật nữa (xem run(), nhận thẳng luật đã được
+    lọc từ stage3 qua GPUFastRuleValidator.validate())."""
+
+    def __init__(self, device: str = "cuda"):
         self.device = torch.device(device)
 
     @abc.abstractmethod
@@ -133,7 +134,7 @@ class BaseGFlowNetPipeline(abc.ABC):
 
     def run(
         self,
-        raw_rule_set: RuleSet,
+        valid_rule_set: RuleSet,
         train_features: torch.Tensor,
         train_labels: torch.Tensor,
         val_features: torch.Tensor,
@@ -153,13 +154,16 @@ class BaseGFlowNetPipeline(abc.ABC):
         val_samples: int = 10,
         early_stop_delta: float = 0.001,
     ) -> List[Rule]:
+        """`valid_rule_set` phải là luật ĐÃ được lọc bằng val set ở stage3
+        (`GPUFastRuleValidator.validate()`) — không re-validate lại ở đây nữa.
+        Trước đây bước này gọi lại `validator.validate()` với đúng
+        `val_features`/`val_labels` mà stage3 đã dùng, cho ra kết quả giống
+        hệt — tính toán thừa nên đã bỏ (xem README.md, mục "Lọc luật")."""
         self.device = torch.device(device)
 
-        validator = GPUFastRuleValidator(self.min_support, self.min_confidence)
-        valid_rule_set = validator.validate(raw_rule_set, val_features, val_labels)
-        valid_rules = valid_rule_set.rules
+        valid_rules = list(valid_rule_set.rules)
         if not valid_rules:
-            logger.warning("Không có luật nào hợp lệ sau khi validate.")
+            logger.warning("valid_rule_set rỗng — không có luật nào để GFlowNet chọn.")
             return []
 
         n_valid = len(valid_rules)
@@ -272,14 +276,12 @@ class ImprovedRuleExtractionPipelineV2(BaseGFlowNetPipeline):
 
     def __init__(
         self,
-        min_support: float = 0.01,
-        min_confidence: float = 1.0,
         device: str = "cuda",
         proxy_cache_path: str = None,
         proxy_samples: int = 3000,
         proxy_epochs: int = 30,
     ):
-        super().__init__(min_support, min_confidence, device)
+        super().__init__(device)
         self.proxy_cache_path = proxy_cache_path
         self.proxy_samples = proxy_samples
         self.proxy_epochs = proxy_epochs
