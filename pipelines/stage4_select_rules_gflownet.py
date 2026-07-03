@@ -24,7 +24,7 @@ def main(params_path: str) -> None:
     output_dir = os.path.join(params["output_dir"], "04_filtered_rules")
     os.makedirs(output_dir, exist_ok=True)
 
-    with open(os.path.join(rules_dir, "valid_rules_crossval.pkl"), "rb") as f:
+    with open(os.path.join(rules_dir, "valid_rules.pkl"), "rb") as f:
         valid_rules = pickle.load(f)
 
     train_features = torch.load(f"{features_dir}/train_features.pt").to(device)
@@ -34,15 +34,13 @@ def main(params_path: str) -> None:
 
     gfn_cfg = params["gflownet"]
     pipeline = ImprovedRuleExtractionPipelineV2(
-        min_support=params["rules"]["min_support"],
-        min_confidence=params["rules"]["min_confidence"],
         device=device,
         proxy_cache_path=os.path.join(output_dir, "proxy_reward_cache.pth"),
         proxy_samples=gfn_cfg["proxy_samples"],
         proxy_epochs=gfn_cfg["proxy_epochs"],
     )
     selected_rules = pipeline.run(
-        raw_rule_set=valid_rules,
+        valid_rule_set=valid_rules,
         train_features=train_features,
         train_labels=train_labels,
         val_features=val_features,
