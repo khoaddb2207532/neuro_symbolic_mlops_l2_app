@@ -1,9 +1,10 @@
 """DVC Stage 5 — Fine-tune lại CNN với rule penalty (vectorized) từ luật đã chọn.
 
 Ở stage này model tiếp tục theo cùng chiến lược transfer learning (progressive
-unfreezing + differential LR) nhưng khởi động lại từ baseline đã hội tụ, với
-freeze_schedule "tiến xa hơn" (được set trong params.yaml) vì mục tiêu bây giờ
-là tinh chỉnh sâu hơn có ràng buộc luật, không chỉ warm-up classifier.
+unfreezing + differential LR) nhưng khởi động lại từ baseline đã hội tụ
+(baseline_best.pth từ stage 1), KHÔNG khởi tạo lại từ ImageNet — vì mục tiêu
+bây giờ là tinh chỉnh sâu hơn có ràng buộc luật dựa trên những gì baseline đã
+học được, với freeze_schedule "tiến xa hơn" (được set trong params.yaml).
 """
 import argparse
 import os
@@ -16,6 +17,7 @@ from src.evaluation.evaluate import evaluate_model_performance, plot_training_hi
 from src.models.cnn import CNNBaseline
 from src.rules.rule_types import RuleSet
 from src.training.trainer import train_model
+from src.utils.checkpoint import load_model_weights
 from src.utils.config import load_params
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
@@ -44,6 +46,14 @@ def main(params_path: str) -> None:
     os.makedirs(save_dir, exist_ok=True)
 
     model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
+
+    # Nạp trọng số baseline đã hội tụ (stage 1) thay vì tiếp tục từ ImageNet.
+    # required=True: đây là điều kiện tiên quyết bắt buộc của stage 5 — nếu
+    # chưa chạy stage 1, dừng ngay với lỗi rõ ràng thay vì âm thầm train từ
+    # ImageNet (dễ gây nhầm lẫn: kết quả "rule-regularized" sẽ không thật sự
+    # kế thừa từ baseline như tên gọi/thiết kế của pipeline).
+    baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    load_model_weights(model, baseline_ckpt, device, required=True)
 
     freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule_stage2"].items()}
     train_cfg = {
