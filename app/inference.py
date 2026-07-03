@@ -14,6 +14,7 @@ from src.data.dataset import NeuroSymbolicDataset
 from src.models.cnn import CNNBaseline
 from src.rules.penalty import BinaryTransformer
 from src.rules.rule_types import RuleSet
+from src.utils.checkpoint import load_model_weights
 from src.utils.config import load_params
 from src.utils.logging_utils import get_logger
 
@@ -51,12 +52,9 @@ class InferenceService:
 
     def _load_model(self, model_path: str) -> CNNBaseline:
         model = CNNBaseline(num_classes=self.params["num_classes"], freeze_stage="full")
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(
-                f"Không tìm thấy checkpoint tại {model_path}. Hãy chạy `dvc repro` để huấn luyện trước."
-            )
-        state_dict = torch.load(model_path, map_location=self.device)
-        model.load_state_dict(state_dict)
+        # required=True: app serving PHẢI có model đã huấn luyện, không được
+        # âm thầm chạy trên trọng số ImageNet chưa fine-tune.
+        load_model_weights(model, model_path, self.device, required=True)
         model.to(self.device).eval()
         return model
 
