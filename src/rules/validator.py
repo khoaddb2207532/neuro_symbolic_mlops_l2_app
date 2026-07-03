@@ -1,12 +1,17 @@
-"""Lọc luật dựa trên support/confidence, vector hoá trên GPU."""
-from typing import Dict, List
+"""Lọc luật dựa trên support/confidence, vector hoá trên GPU.
+
+Chỉ còn 1 phương thức lọc luật: `validate()`, dùng trên val set (tập ảnh CNN
+chưa từng thấy khi train) — xem giải thích quyết định trong README.md, mục
+"Lọc luật (rule validation)". Trước đây có thêm `validate_crossval()` tự train
+lại K RandomForest trên các fold của TRAIN, gây trùng lặp với việc train RF đã
+làm trong `train_and_save_rf()` và không có gì đảm bảo tổng quát hoá tốt hơn
+val set thật — đã bỏ.
+"""
+from typing import List
 
 import torch
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import KFold
 from tqdm import tqdm
 
-from src.rules.extractor import RuleExtractor
 from src.rules.rule_types import Rule, RuleSet
 
 
@@ -80,32 +85,3 @@ class GPUFastRuleValidator:
                 filtered.append(rule)
 
         return RuleSet(rules=filtered)
-
-    def validate_crossval(self, features: torch.Tensor, labels: torch.Tensor, n_folds: int = 5) -> RuleSet:
-        device = features.device
-        X, y = features.cpu().numpy(), labels.cpu().numpy()
-        kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
-
-        all_valid: List[Rule] = []
-        for train_idx, val_idx in kf.split(X):
-            X_val = torch.from_numpy(X[val_idx]).float().to(device)
-            y_val = torch.from_numpy(y[val_idx]).long().to(device)
-            rf = RandomForestClassifier(n_estimators=100, max_depth=12, random_state=42)
-            rf.fit(X[train_idx], y[train_idx])
-            raw_fold = RuleExtractor().extract(rf)
-            valid_fold = self.validate(raw_fold, X_val, y_val)
-            all_valid.extend(valid_fold.rules)
-
-        return RuleSet(rules=self._deduplicate(all_valid))
-
-    @staticmethod
-    def _deduplicate(rules: List[Rule]) -> List[Rule]:
-        unique: Dict[tuple, Rule] = {}
-        for r in rules:
-            key = (
-                tuple((c.feature_index, c.operator, round(c.threshold, 6)) for c in r.conditions),
-                r.target_class,
-            )
-            if key not in unique:
-                unique[key] = r
-        return list(unique.values())
