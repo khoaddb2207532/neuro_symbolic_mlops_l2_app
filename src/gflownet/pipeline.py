@@ -301,7 +301,7 @@ class ImprovedRuleExtractionPipelineV2(BaseGFlowNetPipeline):
             val_bin = transformer.transform(val_features, RuleSet(rules=subset_rules))
             if val_bin.shape[1] == 0:
                 return 1e-30
-            clf = OneVsRestClassifier(LogisticRegression(max_iter=100, n_jobs=1))
+            clf = OneVsRestClassifier(LogisticRegression(max_iter=100))
             clf.fit(val_bin.cpu().numpy(), val_labels.cpu().numpy())
             return float(accuracy_score(val_labels.cpu().numpy(), clf.predict(val_bin.cpu().numpy())))
 
