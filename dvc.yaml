@@ -37,13 +37,15 @@ stages:
     cmd: python -m pipelines.stage3_extract_rules --config params.yaml
     deps:
       - pipelines/stage3_extract_rules.py
+      - src/data/features.py
       - src/rules/extractor.py
       - src/rules/validator.py
       - outputs/02_features
     params:
       - rules
     outs:
-      - outputs/03_rules/valid_rules_crossval.pkl
+      - outputs/03_rules/raw_rules.pkl
+      - outputs/03_rules/valid_rules.pkl
       - outputs/03_rules/rf_model.joblib
 
   select_rules_gflownet:
@@ -52,7 +54,7 @@ stages:
       - pipelines/stage4_select_rules_gflownet.py
       - src/gflownet/env.py
       - src/gflownet/pipeline.py
-      - outputs/03_rules/valid_rules_crossval.pkl
+      - outputs/03_rules/valid_rules.pkl
     params:
       - gflownet
     outs:
@@ -64,6 +66,8 @@ stages:
       - pipelines/stage5_train_rule_regularized.py
       - src/rules/penalty.py
       - src/training/trainer.py
+      - src/utils/checkpoint.py
+      - outputs/01_baseline/baseline_best.pth
       - outputs/04_filtered_rules/selected_rules_improved.pkl
     params:
       - transfer_learning

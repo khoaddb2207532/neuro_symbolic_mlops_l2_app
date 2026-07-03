@@ -119,7 +119,30 @@ transfer_learning:
 `dvc repro` sẽ tự phát hiện `params.yaml` đổi và chạy lại đúng `train_baseline`
 (và các stage phụ thuộc), không cần sửa code.
 
-## 6. Đổi metric cho EarlyStopping / chọn checkpoint tốt nhất
+## 6. Lọc luật (rule validation) — đã bỏ cross-validation train-RF
+
+Trước đây có 3 chỗ liên quan đến "train RF + trích/lọc luật" chồng chéo nhau:
+`train_and_save_rf()` train 1 RF nhưng luật trích ra từ nó không được dùng;
+`GPUFastRuleValidator.validate_crossval()` tự train thêm K RF khác trên các
+fold của **train** rồi lọc luật bằng chính fold đó (dữ liệu CNN đã "thấy" khi
+train); stage4 (`gflownet/pipeline.py`) sau đó lại gọi `validate()` một lần
+nữa trên **val set thật** với đúng `min_support`/`min_confidence` — tính lại
+y hệt kết quả cũ.
+
+Đã gộp lại theo nguyên tắc: **train RF một lần, lọc bằng val set thật (chưa
+từng qua CNN khi train)** — không dùng K-Fold trên train để lọc luật, vì luật
+lọc bằng dữ liệu train không phản ánh đúng khả năng tổng quát hoá bằng val set
+độc lập.
+
+- `train_and_save_rf()` (`src/data/features.py`) — nơi DUY NHẤT train RF,
+  đồng thời trích luật thô (`RuleExtractor`) ngay tại đây, trả về/lưu
+  `raw_rules.pkl`.
+- `GPUFastRuleValidator.validate_crossval()` — đã xoá hoàn toàn.
+- `stage3` — gọi `train_and_save_rf()` lấy luật thô, rồi `validator.validate(raw_rules, val_features, val_labels)` để lọc — một lần duy nhất.
+- `stage4` (`gflownet/pipeline.py::run()`) — nhận thẳng luật đã lọc từ stage3
+  (`valid_rule_set`), không re-validate lại nữa.
+
+## 7. Đổi metric cho EarlyStopping / chọn checkpoint tốt nhất
 
 Mặc định theo dõi `val_acc` (càng cao càng tốt). Muốn đổi sang `val_loss`
 (càng thấp càng tốt), chỉ cần sửa 1 dòng trong `params.yaml`:

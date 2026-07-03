@@ -1,0 +1,53 @@
+schema: '2.0'
+stages:
+  train_baseline:
+    cmd: python -m pipelines.stage1_train_baseline --config params.yaml
+    deps:
+    - path: pipelines/stage1_train_baseline.py
+      hash: md5
+      md5: 65af5ac818accbc10674b3306db40860
+      size: 2980
+    - path: src/data/dataset.py
+      hash: md5
+      md5: 0e34b650facd2a3c1162da65696c34d3
+      size: 3620
+    - path: src/models/cnn.py
+      hash: md5
+      md5: e24c1a3537984178484acf19f736a1ca
+      size: 6620
+    - path: src/training/trainer.py
+      hash: md5
+      md5: 8b9f7bcf5c5bd1fce8789e23d1424bbf
+      size: 10069
+    params:
+      params.yaml:
+        batch_size: 64
+        data_dir: D:/32526_LV/vietnamese_cultural_dataset
+        num_classes: 12
+        num_epochs: 1
+        patience: 5
+        seed: 42
+        transfer_learning:
+          lr_head: 0.0001
+          lr_backbone: 1e-05
+          freeze_bn: true
+          freeze_schedule:
+            0: head_only
+            5: last_block
+            15: full
+          freeze_schedule_stage2:
+            0: last_block
+            10: full
+    outs:
+    - path: outputs/01_baseline/baseline_best.pth
+      hash: md5
+      md5: a12b981358d91f00131801b7676a3df6
+      size: 27049907
+    - path: outputs/01_baseline/dvclive_baseline/metrics.json
+      hash: md5
+      md5: 064dd0f0effc6517cfac1c30f97ceddd
+      size: 335
+    - path: outputs/01_baseline/final_model_weights.pth
+      hash: md5
+      md5: a01b47bbb20426753696ccfc2f24a1a3
+      size: 17083959
