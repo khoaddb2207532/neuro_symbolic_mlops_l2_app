@@ -35,7 +35,7 @@ def main(params_path: str) -> None:
     gfn_cfg = params["gflownet"]
     pipeline = ImprovedRuleExtractionPipelineV2(
         device=device,
-        proxy_cache_path=os.path.join(output_dir, "proxy_reward_cache.pth"),
+        # proxy_cache_path=os.path.join(output_dir, "proxy_reward_cache.pth"),
         proxy_samples=gfn_cfg["proxy_samples"],
         proxy_epochs=gfn_cfg["proxy_epochs"],
     )
