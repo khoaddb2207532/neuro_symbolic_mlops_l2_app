@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 
-def get_logger(name: str, log_dir: str = "logs", level: int = logging.INFO) -> logging.Logger:
+def get_logger(name: str, log_dir: str = "kaggle/working/logs", level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:  # tránh add handler trùng khi gọi lại nhiều lần
         return logger
