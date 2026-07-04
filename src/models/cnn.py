@@ -102,16 +102,19 @@ class CNNBaseline(nn.Module):
                     m.weight.requires_grad = False
                     m.bias.requires_grad = False
                 else:
-                    m.weight.requires_grad = True
-                    m.bias.requires_grad = True
+                    # m.weight.requires_grad = True
+                    # m.bias.requires_grad = True
+                    m.eval()                        # tạm thời khóa BN tất cả stage
+                    m.weight.requires_grad = False 
+                    m.bias.requires_grad = False
 
     def trainable_param_groups(self, lr_head: float, lr_backbone: float):
         """Trả về param groups cho optimizer, áp dụng Differential Learning Rate."""
         head_params = [p for p in self.backbone.classifier.parameters() if p.requires_grad]
         backbone_params = [p for p in self.backbone.features.parameters() if p.requires_grad]
-        groups = [{"params": head_params, "lr": lr_head}]
+        groups = [{"params": head_params, "lr": lr_head, "name": "head"}]
         if backbone_params:
-            groups.append({"params": backbone_params, "lr": lr_backbone})
+            groups.append({"params": backbone_params, "lr": lr_backbone, "name" : "backbone"})
         return groups
 
 
