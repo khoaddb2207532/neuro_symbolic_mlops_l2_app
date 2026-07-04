@@ -22,7 +22,7 @@ stages:
     - outputs/01_baseline/final_model_weights.pth
     metrics:
     - outputs/01_baseline/dvclive_baseline/metrics.json:
-        cache: false
+        cache: true
 
   extract_features:
     cmd: python -m pipelines.stage2_extract_features --config params.yaml
@@ -76,7 +76,7 @@ stages:
     - outputs/05_rules_model/final_model_weights.pth
     metrics:
     - outputs/05_rules_model/dvclive_rule_regularized/metrics.json:
-        cache: false
+        cache: true
 params:
 - outputs/01_baseline/dvclive_baseline/params.yaml
 - outputs/01_baseline/dvclive_baseline/params.yaml
