@@ -1,6 +1,7 @@
 """Reproducibility helpers."""
 import os
 import random
+import warnings
 
 import numpy as np
 import torch
@@ -21,6 +22,9 @@ def set_seed(seed: int = 42) -> None:
 
 def seed_worker(worker_id: int) -> None:
     """worker_init_fn cho DataLoader để đảm bảo reproducibility đa tiến trình."""
+    warnings.filterwarnings("ignore", category=UserWarning, module="PIL.Image")
+    warnings.filterwarnings("ignore", message=".*Palette images with Transparency.*")
+    
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
