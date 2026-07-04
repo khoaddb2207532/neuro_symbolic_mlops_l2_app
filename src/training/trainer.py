@@ -210,7 +210,11 @@ def train_model(
                 penalty_module, freeze_bn=cfg.get("freeze_bn", True),
             )
             val_acc, val_loss = validate(model, val_loader, criterion, device)
-            current_lr = optimizer.param_groups[0]["lr"]
+            # current_lr = optimizer.param_groups[0]["lr"]
+            lr_details = " | ".join([
+                f"{g.get('name', f'group{i}')}:{g['lr']:.2e}" 
+                for i, g in enumerate(optimizer.param_groups)
+            ])
 
             history["train_loss"].append(train_loss)
             history["train_ce"].append(train_ce)
@@ -223,8 +227,8 @@ def train_model(
                 scheduler.step(val_loss)
 
             logger.info(
-                "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LR %.2e",
-                epoch + 1, num_epochs, train_loss, train_acc, train_ce, train_penalty, val_loss, val_acc, current_lr,
+                "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LRs %s ",
+                epoch + 1, num_epochs, train_loss, train_acc, train_ce, train_penalty, val_loss, val_acc, lr_details,
             )
             # DVCLive theo dõi đầy đủ 4 metric chính: train_loss, train_acc,
             # val_loss, val_acc — cộng thêm breakdown loss (ce/penalty) và lr.
@@ -234,7 +238,11 @@ def train_model(
             live.log_metric("train/penalty", train_penalty)
             live.log_metric("val/loss", val_loss)
             live.log_metric("val/acc", val_acc)
-            live.log_metric("lr", current_lr)
+
+            # live.log_metric("lr", current_lr)
+            for i, group in enumerate(optimizer.param_groups):
+                group_name = group.get("name", f"group_{i}")
+                live.log_metric(f"lr/{group_name}", group.get("lr", 0))
 
             # Giá trị dùng để quyết định "tốt nhất" phụ thuộc monitor_metric
             # (val_acc -> mode='max', val_loss -> mode='min'), xem MONITOR_MODES.
