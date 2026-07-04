@@ -10,7 +10,7 @@ output_dir: "outputs"
 num_classes: 12
 batch_size: 64
 num_workers: 4
-num_epochs: 50
+num_epochs: 5
 patience: 5
 weight_decay: !!float 1e-4
 monitor_metric: "val_loss"
@@ -37,7 +37,7 @@ transfer_learning:
 
 rules:
   min_support: 0.01
-  min_confidence: 1.0
+  min_confidence: 0.7
 
 
 rule_penalty:
@@ -45,15 +45,18 @@ rule_penalty:
   smoothing: 0.1
 
 gflownet:
-  max_rules: 120
+  max_rules: 48
   hidden_dim: 256
-  num_iterations: 5000
+  num_iterations: 1000
   batch_size: 256
   lr: !!float 1e-4
   logZ_lr: 0.1
-  validation_interval: 50
+  validation_interval: 100
   loss_type: "tb"          # "tb" | "db" | "fm"
   logZ_warmup_steps: 50
-  val_samples: 50
-  proxy_samples: 3000
-  proxy_epochs: 30
+  val_samples: 48
+  w_acc: 1.0
+  w_cov: 0.5
+  w_red: 0.3
+  w_comp: 0.2
+  beta: 3.0
