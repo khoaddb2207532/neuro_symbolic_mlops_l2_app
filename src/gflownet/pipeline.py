@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from src.gflownet.env import RuleSelectionEnv
 from src.gflownet.reward import RuleSetReward
+from src.gflownet.evaluation import debug_breakdown
 from src.rules.io import save_rules_excel
 from src.rules.rule_types import Rule, RuleSet
 from src.utils.logging_utils import get_logger
@@ -131,11 +132,18 @@ class BaseGFlowNetPipeline(abc.ABC):
         log_rs = final_trajs.log_rewards.cpu()
         best_idx = log_rs.argmax().item()
 
+        reward_module = getattr(env.reward_fn, "reward_module", None)
+        debug_breakdown(best_selected_ever, valid_rules, reward_module, logger, label="best_selected_ever")
+
+
         if log_rs[best_idx].item() > best_log_reward_ever:
             # nếu 20 mẫu cuối tình cờ tốt hơn cả lịch sử -> cập nhật
             final_selected = [valid_rules[i] for i in torch.where(term_states[best_idx])[0].tolist()]
         else:
             final_selected = best_selected_ever
+
+        debug_breakdown(final_selected, valid_rules, reward_module, logger, label="final_selected (returned)")
+
 
         logger.info("Final: %d rules, best=%.4f", len(final_selected), max(best_log_reward_ever, log_rs[best_idx].item()))
         return final_selected
@@ -238,7 +246,7 @@ class BaseGFlowNetPipeline(abc.ABC):
             loss_type=loss_type,
             output_dir=output_dir,
         )
-
+    
 
 class RuleExtractionPipeline(BaseGFlowNetPipeline):
     """Reward = accuracy + coverage - redundancy - complexity, tính hoàn toàn
@@ -277,10 +285,13 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
             w_comp=self.w_comp,
             beta=self.beta,
         )
+        self._last_reward_module = reward_module
 
         def reward_fn(states: torch.Tensor) -> torch.Tensor:
             if states.dim() == 1:
                 states = states.unsqueeze(0)
             return reward_module(states.to(self.device))
+        
+        reward_fn.reward_module = reward_module
 
         return reward_fn
