@@ -9,7 +9,6 @@ import torch
 
 from src.data.features import train_and_save_rf
 from src.rules.io import save_rules_excel
-from src.rules.validator import RuleValidator
 from src.utils.config import load_params
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
@@ -33,24 +32,14 @@ def main(params_path: str) -> None:
         rf_output_path=os.path.join(output_dir, "rf_model.joblib"),
         rules_output_path=os.path.join(output_dir, "raw_rules.pkl"),
     )
+    logger.info("Số luật thô trích từ RF: %d", len(raw_rules))
 
-    # Lọc luật bằng VAL SET THẬT (ảnh CNN chưa từng thấy khi train) — không
-    # dùng lại train_features/K-Fold nữa (xem lý do trong validator.py).
-    val_features = torch.load(f"{features_dir}/val_features.pt").to(device)
-    val_labels = torch.load(f"{features_dir}/val_labels.pt").to(device)
+    raw_rules_path = os.path.join(output_dir, "raw_rules.pkl")
+    with open(raw_rules_path, "wb") as f:
+        pickle.dump(raw_rules, f)
 
-    validator = RuleValidator(
-        min_supp=params["rules"]["min_support"],
-        min_conf=params["rules"]["min_confidence"],
-    )
-    valid_rules = validator.validate(raw_rules, val_features, val_labels)
-    logger.info("Số luật hợp lệ sau khi lọc bằng val set: %d", len(valid_rules))
-
-    valid_rules_path = os.path.join(output_dir, "valid_rules.pkl")
-    with open(valid_rules_path, "wb") as f:
-        pickle.dump(valid_rules, f)
-
-    save_rules_excel(valid_rules.rules, os.path.join(output_dir, "valid_rules.xlsx"))
+    save_rules_excel(raw_rules.rules, os.path.join(output_dir, "raw_rules.xlsx"))
+    
     logger.info("Stage 3 hoàn thành. Kết quả tại %s", output_dir)
 
 
