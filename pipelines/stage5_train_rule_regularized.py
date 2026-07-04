@@ -31,7 +31,7 @@ def main(params_path: str) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     filtered_dir = os.path.join(params["output_dir"], "04_filtered_rules")
-    with open(os.path.join(filtered_dir, "selected_rules_improved.pkl"), "rb") as f:
+    with open(os.path.join(filtered_dir, "selected_rules.pkl"), "rb") as f:
         selected_rules = pickle.load(f)
     rule_set = RuleSet(rules=selected_rules)
 
