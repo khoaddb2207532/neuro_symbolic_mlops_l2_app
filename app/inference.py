@@ -29,7 +29,7 @@ class InferenceService:
 
         out_dir = self.params["output_dir"]
         model_path = os.path.join(out_dir, "05_rules_model", "final_model_weights.pth")
-        rules_path = os.path.join(out_dir, "04_filtered_rules", "selected_rules_improved.pkl")
+        rules_path = os.path.join(out_dir, "04_filtered_rules", "selected_rules.pkl")
 
         self.class_names = self._load_class_names()
         self.model = self._load_model(model_path)
