@@ -6,7 +6,7 @@
 
 seed: 42
 data_dir: "D:/32526_LV/vietnamese_cultural_dataset"
-output_dir: "outputs"
+output_dir: "kaggle/working"
 num_classes: 12
 batch_size: 64
 num_workers: 4
