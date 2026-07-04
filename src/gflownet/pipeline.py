@@ -2,22 +2,18 @@
 import abc
 import os
 import random
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 import numpy as np
 import torch
 from gfn.estimators import DiscretePolicyEstimator, ScalarEstimator
 from gfn.gflownet import DBGFlowNet, FMGFlowNet, TBGFlowNet
 from gfn.utils.modules import MLP
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-from sklearn.multiclass import OneVsRestClassifier
 from tqdm import tqdm
 
 from src.gflownet.env import RuleSelectionEnv
-from src.models.proxy_reward import ProxyRewardNet
-from src.rules.io import save_rules_excel  # dùng chung, xem src/rules/io.py
-from src.rules.penalty import BinaryTransformer
+from src.gflownet.reward import RuleSetReward
+from src.rules.io import save_rules_excel
 from src.rules.rule_types import Rule, RuleSet
 from src.utils.logging_utils import get_logger
 
@@ -25,16 +21,18 @@ logger = get_logger(__name__)
 
 
 class BaseGFlowNetPipeline(abc.ABC):
-    """`min_support`/`min_confidence` đã bị bỏ khỏi constructor — pipeline
-    này không còn tự validate luật nữa (xem run(), nhận thẳng luật đã được
-    lọc từ stage3 qua GPUFastRuleValidator.validate())."""
 
     def __init__(self, device: str = "cuda"):
         self.device = torch.device(device)
 
     @abc.abstractmethod
     def _create_reward_function(
-        self, train_features, train_labels, val_features, val_labels, valid_rules, proxy_epochs, num_classes
+        self,
+        valid_rules: List[Rule],
+        cover: torch.Tensor,
+        correct: torch.Tensor,
+        rule_len: torch.Tensor,
+        max_rules: int,
     ) -> Callable:
         ...
 
@@ -57,7 +55,9 @@ class BaseGFlowNetPipeline(abc.ABC):
         output_dir: str,
     ) -> List[Rule]:
         best_log_reward = float("-inf")
-        best_selected: List[Rule] = []
+        best_log_reward_ever = float("-inf")  
+        best_selected_ever: List[Rule] = []     
+
         best_state_dict = None
         ema_val = None
         ema_alpha = 0.3
@@ -86,11 +86,13 @@ class BaseGFlowNetPipeline(abc.ABC):
             )
 
             if not in_warmup and (it + 1) % validation_interval == 0:
-                raw_vals = []
+                all_vt, raw_vals = [], []
                 with torch.no_grad():
                     for _ in range(3):
                         vt = gflownet.sample_trajectories(env, n=val_samples, save_logprobs=True)
+                        all_vt.append(vt)
                         raw_vals.append(vt.log_rewards.mean().item())
+
                 avg_val = float(np.mean(raw_vals))
                 ema_val = avg_val if ema_val is None else (1 - ema_alpha) * ema_val + ema_alpha * avg_val
                 scheduler.step(ema_val)
@@ -108,12 +110,14 @@ class BaseGFlowNetPipeline(abc.ABC):
                         },
                         best_ckpt_path,
                     )
-                    term = vt.terminating_states.tensor
-                    log_r = vt.log_rewards
-                    best_idx = log_r.argmax().item()
-                    best_mask_tensor = term[best_idx].bool().cpu()
-                    best_selected = [valid_rules[i] for i in torch.where(best_mask_tensor)[0].tolist()]
-                    logger.info("Iter %d: ema=%.4f best (%d rules)", it + 1, ema_val, len(best_selected))
+                for vt in all_vt:
+                    r = vt.log_rewards
+                    idx = r.argmax().item()
+                    if r[idx].item() > best_log_reward_ever:
+                        best_log_reward_ever = r[idx].item()
+                        mask = vt.terminating_states.tensor[idx].bool().cpu()
+                        best_selected_ever = [valid_rules[i] for i in torch.where(mask)[0].tolist()]
+                logger.info("Iter %d: ema=%.4f best (%d rules)", it + 1, ema_val, len(best_selected_ever))
 
         if best_state_dict is not None:
             gflownet.load_state_dict({k: v.to(self.device) for k, v in best_state_dict.items()})
@@ -125,20 +129,23 @@ class BaseGFlowNetPipeline(abc.ABC):
         final_trajs = gflownet.sample_trajectories(env, n=20, save_logprobs=True)
         term_states = final_trajs.terminating_states.tensor.bool().cpu()
         log_rs = final_trajs.log_rewards.cpu()
-        best_final = term_states[log_rs.argmax().item()]
-        final_indices = torch.where(best_final)[0].tolist()
-        final_selected = [valid_rules[i] for i in final_indices] if final_indices else best_selected
+        best_idx = log_rs.argmax().item()
 
-        logger.info("Final: %d rules, best_log_reward=%.4f", len(final_selected), best_log_reward)
+        if log_rs[best_idx].item() > best_log_reward_ever:
+            # nếu 20 mẫu cuối tình cờ tốt hơn cả lịch sử -> cập nhật
+            final_selected = [valid_rules[i] for i in torch.where(term_states[best_idx])[0].tolist()]
+        else:
+            final_selected = best_selected_ever
+
+        logger.info("Final: %d rules, best=%.4f", len(final_selected), max(best_log_reward_ever, log_rs[best_idx].item()))
         return final_selected
 
     def run(
         self,
-        valid_rule_set: RuleSet,
-        train_features: torch.Tensor,
-        train_labels: torch.Tensor,
-        val_features: torch.Tensor,
-        val_labels: torch.Tensor,
+        valid_rules: List[Rule],
+        cover: torch.Tensor,
+        correct: torch.Tensor,
+        rule_len: torch.Tensor,
         max_rules: int,
         output_dir: str,
         gfnet_hidden_dim: int = 256,
@@ -146,7 +153,6 @@ class BaseGFlowNetPipeline(abc.ABC):
         batch_size: int = 64,
         lr: float = 1e-3,
         logZ_lr: float = 1e-2,
-        proxy_epochs: int = 5,
         device: str = "cuda",
         validation_interval: int = 100,
         loss_type: str = "tb",
@@ -154,29 +160,32 @@ class BaseGFlowNetPipeline(abc.ABC):
         val_samples: int = 10,
         early_stop_delta: float = 0.001,
     ) -> List[Rule]:
-        """`valid_rule_set` phải là luật ĐÃ được lọc bằng val set ở stage3
-        (`GPUFastRuleValidator.validate()`) — không re-validate lại ở đây nữa.
-        Trước đây bước này gọi lại `validator.validate()` với đúng
-        `val_features`/`val_labels` mà stage3 đã dùng, cho ra kết quả giống
-        hệt — tính toán thừa nên đã bỏ (xem README.md, mục "Lọc luật")."""
+        """`valid_rules`/`cover`/`correct`/`rule_len` phải đến từ MỘT lần gọi
+        duy nhất `RuleValidator.validate_and_build_tensors()` ở ngoài (stage4)
+        — pipeline này KHÔNG tự tính lại cover/correct, tránh quét val set
+        lần thứ hai (xem README.md, mục "Reward")."""
         self.device = torch.device(device)
 
-        valid_rules = list(valid_rule_set.rules)
         if not valid_rules:
-            logger.warning("valid_rule_set rỗng — không có luật nào để GFlowNet chọn.")
+            logger.warning("valid_rules rỗng — không có luật nào để GFlowNet chọn.")
             return []
 
         n_valid = len(valid_rules)
-        num_classes = int(torch.unique(train_labels).numel())
         logger.info("Số luật hợp lệ: %d | loss_type: %s", n_valid, loss_type)
 
-        random.shuffle(valid_rules)
+        # Giữ đồng bộ thứ tự giữa valid_rules và các tensor cover/correct/rule_len
+        # khi shuffle: shuffle chỉ số rồi hoán vị tensor theo cùng permutation,
+        # không random.shuffle(valid_rules) riêng lẻ như trước (sẽ làm lệch hàng).
+        perm = torch.randperm(n_valid)
+        valid_rules = [valid_rules[i] for i in perm.tolist()]
+        cover = cover[perm].to(self.device)
+        correct = correct[perm].to(self.device)
+        rule_len = rule_len[perm].to(self.device)
+
         os.makedirs(output_dir, exist_ok=True)
         save_rules_excel(valid_rules, os.path.join(output_dir, "valid_rules.xlsx"))
 
-        reward_fn = self._create_reward_function(
-            train_features, train_labels, val_features, val_labels, valid_rules, proxy_epochs, num_classes
-        )
+        reward_fn = self._create_reward_function(valid_rules, cover, correct, rule_len, max_rules)
         env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=self.device)
 
         pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=gfnet_hidden_dim, n_hidden_layers=2)
@@ -231,106 +240,47 @@ class BaseGFlowNetPipeline(abc.ABC):
         )
 
 
-class ImprovedRuleExtractionPipeline(BaseGFlowNetPipeline):
-    """Pipeline V1: reward = accuracy(LR) + coverage + entropy (chậm, chạy trên CPU/sklearn)."""
-
-    def _create_reward_function(self, train_features, train_labels, val_features, val_labels, valid_rules, proxy_epochs, num_classes):
-        def reward_fn(states: torch.Tensor) -> torch.Tensor:
-            B = states.shape[0] if states.dim() == 2 else 1
-            if states.dim() == 1:
-                states = states.unsqueeze(0)
-            results = torch.zeros(B, device=states.device)
-
-            for b in range(B):
-                mask = states[b].bool()
-                if mask.sum().item() == 0:
-                    continue
-                sel_idx = torch.where(mask)[0].tolist()
-                subset_rules = [valid_rules[i] for i in sel_idx]
-                n_selected = len(subset_rules)
-
-                targets = [r.target_class for r in subset_rules]
-                counts = torch.bincount(torch.tensor(targets), minlength=num_classes)
-                coverage = (counts > 0).sum().item() / num_classes
-                probs = counts.float() / n_selected
-                entropy = -torch.sum(probs * torch.log(probs + 1e-9)).item()
-                norm_ent = entropy / (np.log(num_classes) if num_classes > 1 else 1.0)
-
-                transformer = BinaryTransformer()
-                train_bin = transformer.transform(train_features, RuleSet(rules=subset_rules)).cpu().numpy()
-                val_bin = transformer.transform(val_features, RuleSet(rules=subset_rules)).cpu().numpy()
-                clf = OneVsRestClassifier(LogisticRegression(max_iter=100, n_jobs=1))
-                clf.fit(train_bin, train_labels.cpu().numpy())
-                acc = accuracy_score(val_labels.cpu().numpy(), clf.predict(val_bin))
-
-                size_pen = min(0.05, 0.001 * n_selected)
-                results[b] = float(0.5 * acc + 0.3 * coverage + 0.2 * norm_ent - size_pen)
-
-            return results.clamp(min=1e-30)
-
-        return reward_fn
-
-
-class ImprovedRuleExtractionPipelineV2(BaseGFlowNetPipeline):
-    """Pipeline V2: dùng ProxyRewardNet (GPU) pretrain trên slow_reward_fn(sklearn)."""
+class RuleExtractionPipeline(BaseGFlowNetPipeline):
+    """Reward = accuracy + coverage - redundancy - complexity, tính hoàn toàn
+    bằng tensor cover/correct/rule_len đã được build sẵn từ bên ngoài
+    (RuleValidator.validate_and_build_tensors). Không sklearn, không proxy
+    net trong training loop."""
 
     def __init__(
         self,
         device: str = "cuda",
-        proxy_cache_path: str = None,
-        proxy_samples: int = 3000,
-        proxy_epochs: int = 30,
+        w_acc: float = 1.0,
+        w_cov: float = 0.5,
+        w_red: float = 0.3,
+        w_comp: float = 0.2,
+        beta: float = 3.0,
     ):
         super().__init__(device)
-        self.proxy_cache_path = proxy_cache_path
-        self.proxy_samples = proxy_samples
-        self.proxy_epochs = proxy_epochs
+        self.w_acc, self.w_cov, self.w_red, self.w_comp, self.beta = w_acc, w_cov, w_red, w_comp, beta
 
-    def _create_reward_function(self, train_features, train_labels, val_features, val_labels, valid_rules, proxy_epochs, num_classes):
-        n_rules = len(valid_rules)
-        device = self.device
-        cache_path = self.proxy_cache_path
+    def _create_reward_function(
+        self,
+        valid_rules: List[Rule],
+        cover: torch.Tensor,
+        correct: torch.Tensor,
+        rule_len: torch.Tensor,
+        max_rules: int,
+    ) -> Callable:
+        reward_module = RuleSetReward(
+            cover=cover,
+            correct=correct,
+            rule_len=rule_len,
+            max_rules=max_rules,
+            w_acc=self.w_acc,
+            w_cov=self.w_cov,
+            w_red=self.w_red,
+            w_comp=self.w_comp,
+            beta=self.beta,
+        )
 
-        def slow_reward_fn(selected_vector: torch.Tensor) -> float:
-            rule_mask = selected_vector.bool()
-            if rule_mask.sum().item() == 0:
-                return 1e-30
-            sel_idx = torch.where(rule_mask)[0].tolist()
-            subset_rules = [valid_rules[i] for i in sel_idx]
-            transformer = BinaryTransformer()
-            val_bin = transformer.transform(val_features, RuleSet(rules=subset_rules))
-            if val_bin.shape[1] == 0:
-                return 1e-30
-            clf = OneVsRestClassifier(LogisticRegression(max_iter=100))
-            clf.fit(val_bin.cpu().numpy(), val_labels.cpu().numpy())
-            return float(accuracy_score(val_labels.cpu().numpy(), clf.predict(val_bin.cpu().numpy())))
-
-        proxy_net = ProxyRewardNet(n_rules=n_rules, hidden_dim=128).to(device)
-
-        if cache_path and os.path.exists(cache_path):
-            logger.info("Loading ProxyRewardNet từ cache: %s", cache_path)
-            proxy_net.load_state_dict(torch.load(cache_path, map_location=device))
-        else:
-            proxy_net.pretrain(
-                true_reward_fn=slow_reward_fn,
-                n_rules=n_rules,
-                device=device,
-                n_samples=self.proxy_samples,
-                epochs=self.proxy_epochs,
-                lr=1e-3,
-            )
-            if cache_path:
-                torch.save(proxy_net.state_dict(), cache_path)
-
-        proxy_net.eval()
-        for p in proxy_net.parameters():
-            p.requires_grad_(False)
-
-        def fast_reward_fn(states: torch.Tensor) -> torch.Tensor:
+        def reward_fn(states: torch.Tensor) -> torch.Tensor:
             if states.dim() == 1:
                 states = states.unsqueeze(0)
-            with torch.no_grad():
-                rewards = proxy_net(states.float().to(device)).clamp(min=1e-30, max=1.0)
-            return rewards.squeeze(-1)
+            return reward_module(states.to(self.device))
 
-        return fast_reward_fn
+        return reward_fn
