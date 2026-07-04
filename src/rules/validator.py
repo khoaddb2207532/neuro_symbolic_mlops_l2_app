@@ -11,7 +11,7 @@ from typing import List
 
 import torch
 from tqdm import tqdm
-
+from typing import Tuple
 from src.rules.rule_types import Rule, RuleSet
 
 
@@ -85,3 +85,55 @@ class RuleValidator:
                 filtered.append(rule)
 
         return RuleSet(rules=filtered)
+    
+    def compute_cover_correct(
+        self,
+        rule_set: RuleSet,
+        val_features: torch.Tensor,
+        val_labels: torch.Tensor,
+        store_device: torch.device = torch.device("cpu"),
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Sinh cover/correct/rule_len cho TOÀN BỘ rule_set (không lọc), dùng
+        chung logic vector hóa với validate() để đảm bảo tính nhất quán.
+
+        Trả về:
+          cover:    (n_rules, n_val) bool
+          correct:  (n_rules, n_val) bool
+          rule_len: (n_rules,) float
+        store_device: nơi lưu kết quả cuối (nên để 'cpu' nếu n_rules*n_val lớn,
+        vì cover/correct là bool -> 1 byte/phần tử, vẫn có thể vượt VRAM).
+        """
+        device = val_features.device
+        N = val_features.size(0)
+        val_labels = val_labels.view(-1)
+        n_rules = len(rule_set.rules)
+
+        cover = torch.zeros((n_rules, N), dtype=torch.bool, device=store_device)
+        correct = torch.zeros((n_rules, N), dtype=torch.bool, device=store_device)
+        rule_len = torch.zeros(n_rules, dtype=torch.float, device=store_device)
+
+        for i in tqdm(range(0, n_rules, self.rule_batch_size), desc="Build cover/correct"):
+            batch_rules = rule_set.rules[i : i + self.rule_batch_size]
+            B = len(batch_rules)
+            feat_idx, thresholds, ops, valid_m, targets = self._build_rule_tensors(batch_rules, device)
+
+            rule_len[i : i + B] = valid_m.sum(dim=-1).to(store_device).float()
+
+            for d_start in range(0, N, self.data_batch_size):
+                d_end = min(N, d_start + self.data_batch_size)
+                feat_chunk = val_features[d_start:d_end]
+                lbl_chunk = val_labels[d_start:d_end]
+
+                sel = feat_chunk[:, feat_idx]                       # (n_chunk, B, max_conds)
+                cond_ok = ((sel <= thresholds) & ~ops) | ((sel > thresholds) & ops)
+                cond_ok = cond_ok | ~valid_m
+                rule_mask = cond_ok.all(dim=-1)                     # (n_chunk, B)
+
+                correct_mask = rule_mask & (lbl_chunk.unsqueeze(1) == targets.unsqueeze(0))
+
+                # rule_mask: (n_chunk, B) -> cần (B, n_chunk) để ghi vào cover
+                cover[i : i + B, d_start:d_end] = rule_mask.T.to(store_device)
+                correct[i : i + B, d_start:d_end] = correct_mask.T.to(store_device)
+
+        return cover, correct, rule_len
