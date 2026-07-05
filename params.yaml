@@ -43,6 +43,8 @@ rules:
 rule_penalty:
   weight: 0.1
   smoothing: 0.1
+  initial_temp: 2.0
+  final_temp: 15.0
 
 gflownet:
   max_rules: 48
