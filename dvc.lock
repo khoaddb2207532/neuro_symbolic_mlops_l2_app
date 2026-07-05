@@ -1,0 +1,216 @@
+schema: '2.0'
+stages:
+  train_baseline:
+    cmd: python -m pipelines.stage1_train_baseline --config params.yaml
+    deps:
+    - path: pipelines/stage1_train_baseline.py
+      hash: md5
+      md5: 30c411d578f353fd90d1f3b1f6a4ebb4
+      size: 2980
+    - path: src/data/dataset.py
+      hash: md5
+      md5: 0e34b650facd2a3c1162da65696c34d3
+      size: 3620
+    - path: src/models/cnn.py
+      hash: md5
+      md5: 7be0fdf7aa68a10f2dc1ace98dadb33e
+      size: 6960
+    - path: src/training/trainer.py
+      hash: md5
+      md5: 0d5ec160f861173be8f575f6046ac302
+      size: 14897
+    params:
+      params.yaml:
+        batch_size: 64
+        data_dir: D:/32526_LV/vietnamese_cultural_dataset
+        num_classes: 12
+        num_epochs: 5
+        patience: 5
+        seed: 42
+        transfer_learning:
+          lr_head: 0.0001
+          lr_backbone: 1e-05
+          freeze_bn: true
+          freeze_schedule:
+            0: head_only
+            5: last_block
+            15: full
+          freeze_schedule_stage2:
+            0: last_block
+            10: full
+    outs:
+    - path: outputs/01_baseline/baseline_best.pth
+      hash: md5
+      md5: 72b05ce8390d82f93e0dab4e066d1108
+      size: 27049907
+    - path: outputs/01_baseline/dvclive_baseline/metrics.json
+      hash: md5
+      md5: 24ff01638041c3c0f29b99c0abf6d8bc
+      size: 399
+    - path: outputs/01_baseline/final_model_weights.pth
+      hash: md5
+      md5: a19bf9cdd71382c6025bf67d8704fcbd
+      size: 17083959
+  extract_features:
+    cmd: python -m pipelines.stage2_extract_features --config params.yaml
+    deps:
+    - path: outputs/01_baseline/baseline_best.pth
+      hash: md5
+      md5: 72b05ce8390d82f93e0dab4e066d1108
+      size: 27049907
+    - path: pipelines/stage2_extract_features.py
+      hash: md5
+      md5: d6643c6e8e3af2e6ae2fe6979582e680
+      size: 1422
+    - path: src/data/features.py
+      hash: md5
+      md5: c5fbe42fee7d6c7f55fa0aa4743c1a23
+      size: 2968
+    outs:
+    - path: outputs/02_features
+      hash: md5
+      md5: c06b213214870491d2ad2ab281e693a3.dir
+      size: 54530504
+      nfiles: 6
+  extract_rules:
+    cmd: python -m pipelines.stage3_extract_rules --config params.yaml
+    deps:
+    - path: outputs/02_features
+      hash: md5
+      md5: c06b213214870491d2ad2ab281e693a3.dir
+      size: 54530504
+      nfiles: 6
+    - path: pipelines/stage3_extract_rules.py
+      hash: md5
+      md5: 81804a8bfb3b197f63b53a03d2fe9ecd
+      size: 1857
+    - path: src/data/features.py
+      hash: md5
+      md5: c5fbe42fee7d6c7f55fa0aa4743c1a23
+      size: 2968
+    - path: src/rules/extractor.py
+      hash: md5
+      md5: 5851ae1128d1de2f6489b58c08e4df86
+      size: 1318
+    - path: src/rules/validator.py
+      hash: md5
+      md5: 1a734031277f557d01b8d66f0f1413fb
+      size: 5766
+    params:
+      params.yaml:
+        rules:
+          min_support: 0.01
+          min_confidence: 0.7
+    outs:
+    - path: outputs/03_rules/raw_rules.pkl
+      hash: md5
+      md5: 7459de3daab3a53d15d1e992116996e6
+      size: 12456411
+    - path: outputs/03_rules/rf_model.joblib
+      hash: md5
+      md5: 6c1e1404b2b31c92aa459e6f72a0661b
+      size: 25248233
+  select_rules_gflownet:
+    cmd: python -m pipelines.stage4_select_rules_gflownet --config params.yaml
+    deps:
+    - path: outputs/03_rules/raw_rules.pkl
+      hash: md5
+      md5: 7459de3daab3a53d15d1e992116996e6
+      size: 12456411
+    - path: pipelines/stage4_select_rules_gflownet.py
+      hash: md5
+      md5: e41b4a9ccb38a658dd9e9c546e029119
+      size: 3541
+    - path: src/gflownet/env.py
+      hash: md5
+      md5: a07b8ea9e40b239a04fd722b067861b7
+      size: 3318
+    - path: src/gflownet/pipeline.py
+      hash: md5
+      md5: eb6b6437a7754ee74d35ee2beaee9560
+      size: 12564
+    params:
+      params.yaml:
+        gflownet:
+          max_rules: 48
+          hidden_dim: 256
+          num_iterations: 1000
+          batch_size: 256
+          lr: 0.0001
+          logZ_lr: 0.1
+          validation_interval: 100
+          loss_type: tb
+          logZ_warmup_steps: 50
+          val_samples: 48
+          w_acc: 1.0
+          w_cov: 0.5
+          w_red: 0.3
+          w_comp: 0.2
+          beta: 3.0
+    outs:
+    - path: outputs/04_filtered_rules/selected_rules.pkl
+      hash: md5
+      md5: dec7e64a434091163311cb4cab92c3cf
+      size: 21212
+    - path: outputs/04_filtered_rules/valid_rules.pkl
+      hash: md5
+      md5: 4263994734e75ae0f51a21bd49977848
+      size: 519040
+  train_rule_regularized:
+    cmd: python -m pipelines.stage5_train_rule_regularized --config params.yaml
+    deps:
+    - path: outputs/01_baseline/baseline_best.pth
+      hash: md5
+      md5: 72b05ce8390d82f93e0dab4e066d1108
+      size: 27049907
+    - path: outputs/04_filtered_rules/selected_rules.pkl
+      hash: md5
+      md5: dec7e64a434091163311cb4cab92c3cf
+      size: 21212
+    - path: outputs/04_filtered_rules/valid_rules.pkl
+      hash: md5
+      md5: 4263994734e75ae0f51a21bd49977848
+      size: 519040
+    - path: pipelines/stage5_train_rule_regularized.py
+      hash: md5
+      md5: 6762e8cd182709999c4f527da80941e8
+      size: 4487
+    - path: src/rules/penalty.py
+      hash: md5
+      md5: f882f4be8a43d1b7461a21d2b96ce072
+      size: 10575
+    - path: src/training/trainer.py
+      hash: md5
+      md5: 0d5ec160f861173be8f575f6046ac302
+      size: 14897
+    - path: src/utils/checkpoint.py
+      hash: md5
+      md5: f4f8407d0c2695217b5fd0cc6b1a4380
+      size: 2318
+    params:
+      params.yaml:
+        rule_penalty:
+          weight: 0.1
+          smoothing: 0.1
+          initial_temp: 2.0
+          final_temp: 15.0
+        transfer_learning:
+          lr_head: 0.0001
+          lr_backbone: 1e-05
+          freeze_bn: true
+          freeze_schedule:
+            0: head_only
+            5: last_block
+            15: full
+          freeze_schedule_stage2:
+            0: last_block
+            10: full
+    outs:
+    - path: outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+      hash: md5
+      md5: 18f1d2c21229ef14c79791a39d7861a6
+      size: 584
+    - path: outputs/05_rules_model/final_model_weights.pth
+      hash: md5
+      md5: 71425b091bba3706df893721d3de4b6c
+      size: 17083959
