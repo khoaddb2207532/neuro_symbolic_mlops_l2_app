@@ -81,6 +81,8 @@ def main(params_path: str) -> None:
         penalty_weight=params["rule_penalty"]["weight"],
         use_confidence=True,
         smoothing=params["rule_penalty"]["smoothing"],
+        initial_temp=params["rule_penalty"]["initial_temp"],
+        final_temp=params["rule_penalty"]["final_temp"],
         num_classes=params["num_classes"],
         config=train_cfg,
     )
