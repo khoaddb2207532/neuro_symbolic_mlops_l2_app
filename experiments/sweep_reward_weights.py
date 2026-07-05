@@ -10,9 +10,11 @@ Sau đó:
     python -m pipelines.stage4_select_rules_gflownet --config /kaggle/working/params.yaml
 """
 import argparse
+import csv
 import json
 import os
 import pickle
+import statistics
 from typing import Dict, List, Tuple
 import shutil
 import optuna
@@ -334,6 +336,138 @@ def stage3_training_dynamics(
 
 
 # --------------------------------------------------------------------------
+# XÁC NHẬN ỔN ĐỊNH — sau khi đã CHỌN xong 1 bộ tham số cuối cùng (best_weights +
+# best_beta_maxrules + best_training), chạy lại TOÀN BỘ pipeline GFlowNet với
+# CÙNG 1 cấu hình nhưng NHIỀU SEED khác nhau, lấy mean±std cho tất cả metric.
+#
+# Vì sao cần bước này (đã thảo luận trước): huấn luyện GFlowNet không tất định
+# (khởi tạo mạng ngẫu nhiên + sampling trajectory ngẫu nhiên trong trajectory
+# balance) — 1 lần chạy không đủ căn cứ để báo cáo trong luận văn. Đây KHÔNG
+# phải sweep tìm tham số (không có trial.suggest_* nào), chỉ là lặp lại đúng
+# 1 cấu hình đã chốt để đo phương sai do ngẫu nhiên huấn luyện gây ra.
+# --------------------------------------------------------------------------
+def multi_seed_validation(
+    params: dict,
+    best_weights: Dict,
+    best_beta_maxrules: Dict,
+    best_training: Dict,
+    valid_rules, cover, correct, rule_len,
+    device: str,
+    n_seeds: int,
+    sweep_root: str,
+) -> Dict:
+    if n_seeds < 5:
+        logger.warning(
+            "n_seeds=%d < 5 — số seed thấp có thể cho mean/std không đáng tin. "
+            "Khuyến nghị >=5 (lý tưởng 8-10 nếu đủ thời gian).", n_seeds,
+        )
+
+    gfn_cfg = params["gflownet"]
+    max_rules = best_beta_maxrules["max_rules"]
+    num_iterations = gfn_cfg["num_iterations"]  # full, giống lúc train thật ở stage4 chính thức
+
+    cfg = {
+        "w_acc": best_weights["w_acc"], "w_cov": best_weights["w_cov"],
+        "w_red": best_weights["w_red"], "w_comp": best_weights["w_comp"],
+        "beta": best_beta_maxrules["beta"],
+    }
+    fixed_kwargs = dict(
+        gfnet_hidden_dim=gfn_cfg["hidden_dim"],
+        batch_size=best_training["batch_size"],
+        lr=best_training["lr"], logZ_lr=gfn_cfg["logZ_lr"],
+        validation_interval=100, loss_type=gfn_cfg["loss_type"],
+        logZ_warmup_steps=50, val_samples=10,
+    )
+
+    # Offset seed hẳn ra khỏi vùng seed đã dùng trong 3 giai đoạn sweep phía
+    # trên (params["seed"] + trial.number, trial.number thường < n_trials sweep)
+    # để không vô tình lặp lại đúng 1 seed đã thấy trong lúc tìm tham số.
+    base_seed = params["seed"] + 10_000
+    seeds = [base_seed + i for i in range(n_seeds)]
+
+    metric_keys = ["n_rules", "accuracy", "coverage", "redundancy", "complexity", "f1_like"]
+    records = []
+    for i, seed in enumerate(seeds):
+        set_seed(seed)
+        output_dir = os.path.join(sweep_root, "multi_seed_validation", f"seed_{seed}")
+        os.makedirs(output_dir, exist_ok=True)
+        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len,
+                                max_rules, num_iterations, device, output_dir, fixed_kwargs)
+        metric["seed"] = seed
+        records.append(metric)
+        logger.info("[MultiSeedValidation] (%d/%d) seed=%d: %s", i + 1, n_seeds, seed, metric)
+
+    summary_stats = {}
+    for k in metric_keys:
+        vals = [r[k] for r in records]
+        summary_stats[f"{k}_mean"] = statistics.mean(vals)
+        summary_stats[f"{k}_std"] = statistics.pstdev(vals) if len(vals) > 1 else 0.0
+
+    logger.info("[MultiSeedValidation] Mean/Std trên %d seed: %s", n_seeds, summary_stats)
+
+    # ---- Lưu chi tiết từng seed (để tự kiểm tra outlier nếu cần) ----
+    detail_csv_path = os.path.join(sweep_root, "gflownet_multiseed_detail.csv")
+    with open(detail_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["seed"] + metric_keys)
+        writer.writeheader()
+        for r in records:
+            writer.writerow({"seed": r["seed"], **{k: r[k] for k in metric_keys}})
+
+    # ---- Lưu 1 dòng tổng hợp mean±std, ĐẶT TÊN CỘT KHỚP với CSV so sánh
+    # heuristic trước đó (method, so_luat, so_luat_std, accuracy, accuracy_std,
+    # coverage, coverage_std, redundancy, redundancy_std, f1_like, f1_like_std,
+    # n_runs) để bạn có thể NỐI TRỰC TIẾP dòng này vào file so sánh cũ.
+    # Cột "complexity"/"complexity_std" và "reward_score/reward_value" không
+    # có sẵn ở CSV cũ (định nghĩa nằm ở script khác) — bạn tự đối chiếu thêm
+    # nếu cần, không tự suy đoán công thức reward_score/reward_value ở đây.
+    summary_csv_path = os.path.join(sweep_root, "gflownet_multiseed_summary.csv")
+    with open(summary_csv_path, "w", newline="", encoding="utf-8") as f:
+        fieldnames = [
+            "method", "budget", "budget_value",
+            "so_luat", "so_luat_std",
+            "accuracy", "accuracy_std",
+            "coverage", "coverage_std",
+            "redundancy", "redundancy_std",
+            "complexity", "complexity_std",
+            "f1_like", "f1_like_std",
+            "n_runs",
+        ]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow({
+            "method": "gflownet_optimized",
+            "budget": "self",
+            "budget_value": max_rules,
+            "so_luat": summary_stats["n_rules_mean"],
+            "so_luat_std": summary_stats["n_rules_std"],
+            "accuracy": summary_stats["accuracy_mean"],
+            "accuracy_std": summary_stats["accuracy_std"],
+            "coverage": summary_stats["coverage_mean"],
+            "coverage_std": summary_stats["coverage_std"],
+            "redundancy": summary_stats["redundancy_mean"],
+            "redundancy_std": summary_stats["redundancy_std"],
+            "complexity": summary_stats["complexity_mean"],
+            "complexity_std": summary_stats["complexity_std"],
+            "f1_like": summary_stats["f1_like_mean"],
+            "f1_like_std": summary_stats["f1_like_std"],
+            "n_runs": n_seeds,
+        })
+
+    logger.info(
+        "[MultiSeedValidation] Đã lưu: chi tiết -> %s | tổng hợp (1 dòng, sẵn để "
+        "nối vào bảng so sánh heuristic) -> %s", detail_csv_path, summary_csv_path,
+    )
+
+    return {
+        "seeds": seeds,
+        "per_seed_records": records,
+        "summary_stats": summary_stats,
+        "detail_csv_path": detail_csv_path,
+        "summary_csv_path": summary_csv_path,
+    }
+
+
+# --------------------------------------------------------------------------
 # Ghi bộ tham số tốt nhất ngược lại vào params.yaml, để stage4 đọc trực tiếp
 # --------------------------------------------------------------------------
 def update_params_yaml(
@@ -373,7 +507,8 @@ def update_params_yaml(
 # --------------------------------------------------------------------------
 def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_stage3: int,
           force_resweep: bool = False,
-          pareto_lambda_red: float = 0.3, pareto_lambda_comp: float = 0.2):
+          pareto_lambda_red: float = 0.3, pareto_lambda_comp: float = 0.2,
+          n_seeds_validation: int = 5, skip_multiseed_validation: bool = False):
     params = load_params(params_path)
     set_seed(params["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -383,66 +518,98 @@ def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_
     storage_path = os.path.join(sweep_root, "optuna_study.db")
     summary_path = os.path.join(sweep_root, "sweep_summary.json")
 
+    # Load 1 lần, dùng chung cho cả sweep VÀ multi-seed validation phía dưới
+    # (kể cả khi tái sử dụng summary cũ, vẫn cần valid_rules/cover/correct/rule_len
+    # để chạy lại multi-seed validation).
+    valid_rules, cover, correct, rule_len = load_common_data(params, device)
+
     # --- Nếu đã có kết quả sweep trước đó và không ép chạy lại -> tái sử dụng ---
     if os.path.exists(summary_path) and not force_resweep:
         logger.info("Đã tìm thấy kết quả sweep trước đó tại %s — TÁI SỬ DỤNG, không chạy lại Optuna.", summary_path)
         with open(summary_path, "r") as f:
             summary = json.load(f)
-        update_params_yaml(params_path, summary["best_weights"],
-                            summary["best_beta_maxrules"], summary["best_training"])
+        best_weights = summary["best_weights"]
+        best_beta_maxrules = summary["best_beta_maxrules"]
+        best_training = summary["best_training"]
+        update_params_yaml(params_path, best_weights, best_beta_maxrules, best_training)
         logger.info("Đã nạp lại bộ tham số cũ vào %s. Dùng --force_resweep nếu muốn sweep lại từ đầu.", params_path)
-        return summary
+    else:
+        # --- Ngược lại: chạy sweep như bình thường ---
+        if n_trials_stage1 < 30 or n_trials_stage2 < 30 or n_trials_stage3 < 20:
+            logger.warning(
+                "n_trials_stage1=%d, n_trials_stage2=%d, n_trials_stage3=%d khá thấp cho "
+                "multi-objective (NSGA-II) — front có thể chưa hội tụ tốt. Khuyến nghị "
+                ">=30 cho stage1/2 và >=20 cho stage3 (stage3 chạy full num_iterations "
+                "nên tốn thời gian hơn nhiều mỗi trial — cân nhắc trade-off).",
+                n_trials_stage1, n_trials_stage2, n_trials_stage3,
+            )
 
-    # --- Ngược lại: chạy sweep như bình thường ---
-    valid_rules, cover, correct, rule_len = load_common_data(params, device)
-
-    if n_trials_stage1 < 30 or n_trials_stage2 < 30 or n_trials_stage3 < 20:
-        logger.warning(
-            "n_trials_stage1=%d, n_trials_stage2=%d, n_trials_stage3=%d khá thấp cho "
-            "multi-objective (NSGA-II) — front có thể chưa hội tụ tốt. Khuyến nghị "
-            ">=30 cho stage1/2 và >=20 cho stage3 (stage3 chạy full num_iterations "
-            "nên tốn thời gian hơn nhiều mỗi trial — cân nhắc trade-off).",
-            n_trials_stage1, n_trials_stage2, n_trials_stage3,
+        logger.info("GIAI ĐOẠN 1: Sweep reward weights (multi-objective)")
+        best_weights = stage1_reward_weights(
+            params, valid_rules, cover, correct, rule_len, device,
+            n_trials=n_trials_stage1, storage_path=storage_path, sweep_root=sweep_root,
+            pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
         )
 
-    logger.info("GIAI ĐOẠN 1: Sweep reward weights (multi-objective)")
-    best_weights = stage1_reward_weights(
-        params, valid_rules, cover, correct, rule_len, device,
-        n_trials=n_trials_stage1, storage_path=storage_path, sweep_root=sweep_root,
-        pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
+        logger.info("GIAI ĐOẠN 2: Sweep beta + max_rules (multi-objective)")
+        best_beta_maxrules = stage2_beta_maxrules(
+            params, best_weights, valid_rules, cover, correct, rule_len, device,
+            n_trials=n_trials_stage2, storage_path=storage_path, sweep_root=sweep_root,
+            pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
+        )
+
+        logger.info("GIAI ĐOẠN 3: Sweep lr/batch_size (multi-objective)")
+        best_training = stage3_training_dynamics(
+            params, best_weights, best_beta_maxrules, valid_rules, cover, correct, rule_len, device,
+            n_trials=n_trials_stage3, storage_path=storage_path, sweep_root=sweep_root,
+            pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
+        )
+
+        update_params_yaml(params_path, best_weights, best_beta_maxrules, best_training)
+
+        summary = {
+            "best_weights": best_weights,
+            "best_beta_maxrules": best_beta_maxrules,
+            "best_training": best_training,
+            # Ghi lại để tái lập đúng lựa chọn (đây là "khẩu vị" cố định dùng để
+            # chọn 1 điểm trên Pareto front, KHÔNG phải tham số được sweep).
+            "pareto_selection": {
+                "lambda_red": pareto_lambda_red,
+                "lambda_comp": pareto_lambda_comp,
+            },
+        }
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
+        logger.info("Sweep hoàn tất, kết quả lưu tại %s để tái sử dụng về sau.", summary_path)
+
+    # --- XÁC NHẬN ỔN ĐỊNH: chạy lại đúng bộ tham số đã chọn với nhiều seed ---
+    if skip_multiseed_validation:
+        logger.info("Bỏ qua multi-seed validation theo yêu cầu (--skip_multiseed_validation).")
+        return summary
+
+    logger.info(
+        "XÁC NHẬN ỔN ĐỊNH: chạy lại GFlowNet %d seed với bộ tham số đã chọn "
+        "(không sweep gì thêm ở bước này).", n_seeds_validation,
     )
-
-    logger.info("GIAI ĐOẠN 2: Sweep beta + max_rules (multi-objective)")
-    best_beta_maxrules = stage2_beta_maxrules(
-        params, best_weights, valid_rules, cover, correct, rule_len, device,
-        n_trials=n_trials_stage2, storage_path=storage_path, sweep_root=sweep_root,
-        pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
+    validation_result = multi_seed_validation(
+        params, best_weights, best_beta_maxrules, best_training,
+        valid_rules, cover, correct, rule_len, device,
+        n_seeds=n_seeds_validation, sweep_root=sweep_root,
     )
-
-    logger.info("GIAI ĐOẠN 3: Sweep lr/batch_size (multi-objective)")
-    best_training = stage3_training_dynamics(
-        params, best_weights, best_beta_maxrules, valid_rules, cover, correct, rule_len, device,
-        n_trials=n_trials_stage3, storage_path=storage_path, sweep_root=sweep_root,
-        pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
-    )
-
-    update_params_yaml(params_path, best_weights, best_beta_maxrules, best_training)
-
-    summary = {
-        "best_weights": best_weights,
-        "best_beta_maxrules": best_beta_maxrules,
-        "best_training": best_training,
-        # Ghi lại để tái lập đúng lựa chọn (đây là "khẩu vị" cố định dùng để
-        # chọn 1 điểm trên Pareto front, KHÔNG phải tham số được sweep).
-        "pareto_selection": {
-            "lambda_red": pareto_lambda_red,
-            "lambda_comp": pareto_lambda_comp,
-        },
+    summary["multi_seed_validation"] = {
+        "summary_stats": validation_result["summary_stats"],
+        "seeds": validation_result["seeds"],
+        "detail_csv_path": validation_result["detail_csv_path"],
+        "summary_csv_path": validation_result["summary_csv_path"],
+        # Không lưu per_seed_records đầy đủ vào summary.json (đã có trong
+        # detail_csv_path) để tránh file JSON phình to không cần thiết.
     }
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    logger.info("Sweep hoàn tất, kết quả lưu tại %s để tái sử dụng về sau.", summary_path)
+    logger.info(
+        "Hoàn tất toàn bộ (sweep + xác nhận ổn định). Tóm tắt: %s", summary_path,
+    )
     return summary
 
 
