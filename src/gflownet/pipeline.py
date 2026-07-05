@@ -119,7 +119,7 @@ class BaseGFlowNetPipeline(abc.ABC):
                         mask = vt.terminating_states.tensor[idx].bool().cpu()
                         best_selected_ever = [valid_rules[i] for i in torch.where(mask)[0].tolist()]
                 logger.info("Iter %d: ema=%.4f best (%d rules)", it + 1, ema_val, len(best_selected_ever))
-                logger.info("Loss= %.4f : avg_log_r= %.4f : logZ= %.4f ", loss.item(), avg_log_r, gflownet.logZ.item() if loss_type == "tb" else "N/A")
+                logger.info("Loss= %.4f : avg_log_r= %.4f : logZ= %.4f ", loss.item(), avg_log_r, gflownet.logZ.item() if loss_type == "tb" else 0.0)
 
         if best_state_dict is not None:
             gflownet.load_state_dict({k: v.to(self.device) for k, v in best_state_dict.items()})
