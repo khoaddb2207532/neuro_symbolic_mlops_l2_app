@@ -503,6 +503,59 @@ def update_params_yaml(
 
 
 # --------------------------------------------------------------------------
+# Chạy RIÊNG bước xác nhận đa-seed, dùng bộ tham số đã chốt sẵn trong
+# sweep_summary.json — KHÔNG đụng tới stage1/2/3, không cần Optuna storage.
+# Dùng khi: đã sweep xong từ trước, giờ chỉ muốn chạy lại validation (ví dụ
+# tăng n_seeds, hoặc lần trước lỗi giữa chừng).
+# --------------------------------------------------------------------------
+def _run_validation_only(params_path: str, n_seeds_validation: int) -> Dict:
+    params = load_params(params_path)
+    set_seed(params["seed"])
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    sweep_root = os.path.join(params["output_dir"], "experiments")
+    summary_path = os.path.join(sweep_root, "sweep_summary.json")
+
+    if not os.path.exists(summary_path):
+        raise FileNotFoundError(
+            f"Không tìm thấy {summary_path}. --only_multiseed_validation cần đã chạy "
+            "sweep đầy đủ ít nhất 1 lần trước đó (để có best_weights/best_beta_maxrules/"
+            "best_training). Chạy `python -m experiments.sweep_reward_weights --config "
+            f"{params_path}` (không có --only_multiseed_validation) trước."
+        )
+
+    with open(summary_path, "r") as f:
+        summary = json.load(f)
+    best_weights = summary["best_weights"]
+    best_beta_maxrules = summary["best_beta_maxrules"]
+    best_training = summary["best_training"]
+    logger.info(
+        "[ValidationOnly] Dùng bộ tham số có sẵn từ %s: weights=%s, beta_maxrules=%s, training=%s",
+        summary_path, best_weights, best_beta_maxrules, best_training,
+    )
+
+    valid_rules, cover, correct, rule_len = load_common_data(params, device)
+
+    validation_result = multi_seed_validation(
+        params, best_weights, best_beta_maxrules, best_training,
+        valid_rules, cover, correct, rule_len, device,
+        n_seeds=n_seeds_validation, sweep_root=sweep_root,
+    )
+
+    summary["multi_seed_validation"] = {
+        "summary_stats": validation_result["summary_stats"],
+        "seeds": validation_result["seeds"],
+        "detail_csv_path": validation_result["detail_csv_path"],
+        "summary_csv_path": validation_result["summary_csv_path"],
+    }
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+
+    logger.info("[ValidationOnly] Hoàn tất, đã cập nhật %s", summary_path)
+    return summary
+
+
+# --------------------------------------------------------------------------
 # Main — chạy tuần tự 3 giai đoạn
 # --------------------------------------------------------------------------
 def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_stage3: int,
@@ -632,7 +685,26 @@ if __name__ == "__main__":
                               "(chỉ dùng để chọn điểm, không dùng để lái search).")
     parser.add_argument("--pareto_lambda_comp", type=float, default=0.2,
                          help="Trọng số CỐ ĐỊNH phạt complexity khi chọn 1 điểm từ Pareto front.")
+    parser.add_argument("--n_seeds_validation", type=int, default=5,
+                         help="Số seed chạy lại GFlowNet với bộ tham số đã chốt, để lấy mean±std "
+                              "(khuyến nghị >=5).")
+    parser.add_argument("--skip_multiseed_validation", action="store_true",
+                         help="Bỏ qua hẳn bước xác nhận đa-seed (ví dụ khi chỉ muốn sweep tìm "
+                              "tham số, chưa cần validate).")
+    parser.add_argument("--only_multiseed_validation", action="store_true",
+                         help="CHỈ chạy bước xác nhận đa-seed, dùng bộ tham số đã có sẵn trong "
+                              "sweep_summary.json (bắt buộc phải tồn tại từ trước, KHÔNG sweep lại "
+                              "dù có --force_resweep hay không). Tương đương gọi main() với "
+                              "force_resweep=False và bỏ qua 3 giai đoạn sweep.")
     args = parser.parse_args()
-    main(args.config, args.n_trials_stage1, args.n_trials_stage2, args.n_trials_stage3,
-         force_resweep=args.force_resweep,
-         pareto_lambda_red=args.pareto_lambda_red, pareto_lambda_comp=args.pareto_lambda_comp)
+
+    if args.only_multiseed_validation:
+        _run_validation_only(
+            args.config, n_seeds_validation=args.n_seeds_validation,
+        )
+    else:
+        main(args.config, args.n_trials_stage1, args.n_trials_stage2, args.n_trials_stage3,
+             force_resweep=args.force_resweep,
+             pareto_lambda_red=args.pareto_lambda_red, pareto_lambda_comp=args.pareto_lambda_comp,
+             n_seeds_validation=args.n_seeds_validation,
+             skip_multiseed_validation=args.skip_multiseed_validation)
