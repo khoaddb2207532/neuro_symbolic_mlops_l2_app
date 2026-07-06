@@ -59,9 +59,9 @@ def train_and_save_rf(
     logger.info("RF model saved to %s", rf_output_path)
 
     raw_rules = RuleExtractor().extract(rf)
-    logger.info("Số luật thô trích từ RF: %d", len(raw_rules))
-    with open(rules_output_path, "wb") as f:
-        pickle.dump(raw_rules, f)
-    logger.info("Luật thô saved to %s", rules_output_path)
+    # logger.info("Số luật thô trích từ RF: %d", len(raw_rules))
+    # with open(rules_output_path, "wb") as f:
+    #     pickle.dump(raw_rules, f)
+    # logger.info("Luật thô saved to %s", rules_output_path)
 
     return raw_rules

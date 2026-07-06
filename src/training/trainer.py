@@ -70,10 +70,15 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
     """penalty_module: nếu không None (VectorizedRulePenalty), được cộng vào
     loss chính. Không còn nhánh loop-based riêng — chỉ một công thức.
 
-    Trả về (train_loss, train_ce, train_penalty, train_acc) — train_acc được
-    tính trên chính batch train (không phải eval mode) để theo dõi cùng lúc
-    với val_acc trên DVCLive, giúp phát hiện overfit/underfit qua khoảng cách
-    train_acc vs val_acc.
+    Trả về (train_loss, train_ce, train_penalty, train_acc, coverage_stats).
+    train_acc được tính trên chính batch train (không phải eval mode) để
+    theo dõi cùng lúc với val_acc trên DVCLive, giúp phát hiện overfit/
+    underfit qua khoảng cách train_acc vs val_acc.
+
+    coverage_stats (dict rỗng nếu không có penalty_module hoặc module không
+    hỗ trợ `last_coverage_stats()`): thống kê xem luật có thực sự "sống"
+    (đóng góp gradient) hay không, tổng hợp theo batch-size-weighted average
+    qua các batch trong epoch — xem src/rules/penalty.py::last_coverage_stats().
     """
     model.train()
     if freeze_bn and hasattr(model, "freeze_bn"):
@@ -82,6 +87,13 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
     total_loss = total_ce = total_penalty = 0.0
     total_correct = 0
     total_samples = 0
+
+    # Tích luỹ coverage stats qua các batch (weighted theo batch size, giống
+    # cách total_loss/total_ce/... được tích luỹ ở trên).
+    sum_coverage_ratio = 0.0
+    sum_mean_sat = 0.0
+    n_rules_total = 0
+    has_coverage = penalty_module is not None and hasattr(penalty_module, "last_coverage_stats")
 
     for images, labels in loader:
         images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
@@ -104,11 +116,29 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
         total_correct += (torch.argmax(logits, dim=1) == labels).sum().item()
         total_samples += bs
 
+        if has_coverage:
+            stats = penalty_module.last_coverage_stats()
+            n_rules_total = stats["n_rules_total"]  # không đổi giữa các batch
+            coverage_ratio = (
+                stats["n_rules_active_this_batch"] / n_rules_total if n_rules_total > 0 else 0.0
+            )
+            sum_coverage_ratio += coverage_ratio * bs
+            sum_mean_sat += stats["mean_rule_sat"] * bs
+
+    coverage_stats = {}
+    if has_coverage and total_samples > 0:
+        coverage_stats = {
+            "n_rules_total": n_rules_total,
+            "coverage_ratio": sum_coverage_ratio / total_samples,
+            "mean_rule_sat": sum_mean_sat / total_samples,
+        }
+
     return (
         total_loss / total_samples,
         total_ce / total_samples,
         total_penalty / total_samples,
         total_correct / total_samples,
+        coverage_stats,
     )
 
 
@@ -142,6 +172,8 @@ def train_model(
     use_confidence: bool = True,
     smoothing: float = 0.1,
     num_classes: int = 12,
+    initial_temp: float = 2.0,
+    final_temp: float = 15.0,
     config: Optional[Dict] = None,
 ) -> Tuple[nn.Module, dict]:
     cfg = {**DEFAULT_CONFIG, **(config or {})}
@@ -176,7 +208,8 @@ def train_model(
         penalty_module = VectorizedRulePenalty(
             rule_set, penalty_weight=penalty_weight, use_confidence=use_confidence,
             smoothing=smoothing, num_classes=num_classes,
-        )
+            initial_temp=initial_temp, final_temp=final_temp,
+        ).to(device)
 
     history = {
         "train_loss": [], "train_ce": [], "train_penalty": [], "train_acc": [],
@@ -194,6 +227,8 @@ def train_model(
                 "freeze_schedule": str(freeze_schedule),
                 "batch_size": train_loader.batch_size,
                 "total_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+                "initial_temp": initial_temp, 
+                "final_temp": final_temp,
             }
         )
 
@@ -205,12 +240,21 @@ def train_model(
                 model.set_freeze_stage(stage)
                 optimizer, scheduler = rebuild_optimizer()
 
-            train_loss, train_ce, train_penalty, train_acc = train_one_epoch(
+            # ---- Ủ nhiệt độ khớp luật: mềm ở epoch đầu -> cứng dần về cuối ----
+            if penalty_module is not None:
+                penalty_module.update_temperature(epoch, num_epochs)
+                live.log_metric("rules/temperature", penalty_module._temperature.item())
+
+            train_loss, train_ce, train_penalty, train_acc, coverage_stats = train_one_epoch(
                 model, train_loader, criterion, optimizer, device,
                 penalty_module, freeze_bn=cfg.get("freeze_bn", True),
             )
             val_acc, val_loss = validate(model, val_loader, criterion, device)
-            current_lr = optimizer.param_groups[0]["lr"]
+            # current_lr = optimizer.param_groups[0]["lr"]
+            lr_details = " | ".join([
+                f"{g.get('name', f'group{i}')}:{g['lr']:.2e}" 
+                for i, g in enumerate(optimizer.param_groups)
+            ])
 
             history["train_loss"].append(train_loss)
             history["train_ce"].append(train_ce)
@@ -223,8 +267,8 @@ def train_model(
                 scheduler.step(val_loss)
 
             logger.info(
-                "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LR %.2e",
-                epoch + 1, num_epochs, train_loss, train_acc, train_ce, train_penalty, val_loss, val_acc, current_lr,
+                "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LRs %s ",
+                epoch + 1, num_epochs, train_loss, train_acc, train_ce, train_penalty, val_loss, val_acc, lr_details,
             )
             # DVCLive theo dõi đầy đủ 4 metric chính: train_loss, train_acc,
             # val_loss, val_acc — cộng thêm breakdown loss (ce/penalty) và lr.
@@ -234,7 +278,24 @@ def train_model(
             live.log_metric("train/penalty", train_penalty)
             live.log_metric("val/loss", val_loss)
             live.log_metric("val/acc", val_acc)
-            live.log_metric("lr", current_lr)
+
+            # live.log_metric("lr", current_lr)
+            for i, group in enumerate(optimizer.param_groups):
+                group_name = group.get("name", f"group_{i}")
+                live.log_metric(f"lr/{group_name}", group.get("lr", 0))
+
+             # ---- Observability: bao nhiêu luật thực sự "sống" trong epoch này ----
+            if coverage_stats:
+                live.log_metric("rules/coverage_ratio", coverage_stats["coverage_ratio"])
+                live.log_metric("rules/mean_satisfaction", coverage_stats["mean_rule_sat"])
+                logger.info(
+                    "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | T=%.2f",
+                    round(coverage_stats["coverage_ratio"] * coverage_stats["n_rules_total"]),
+                    coverage_stats["n_rules_total"],
+                    coverage_stats["coverage_ratio"] * 100,
+                    coverage_stats["mean_rule_sat"],
+                    penalty_module._temperature.item(),
+                )    
 
             # Giá trị dùng để quyết định "tốt nhất" phụ thuộc monitor_metric
             # (val_acc -> mode='max', val_loss -> mode='min'), xem MONITOR_MODES.
@@ -261,6 +322,9 @@ def train_model(
             live.next_step()
 
     elapsed = time.time() - start_time
+    if penalty_module is not None:
+        progress_pct = (penalty_module._temperature.item() - initial_temp) / (final_temp - initial_temp) * 100
+        logger.info("Nhiệt độ dừng ở %.2f (%.1f%% quãng đường ủ dự kiến)", penalty_module._temperature.item(), progress_pct)
     logger.info("Training complete in %.2f minutes | Best Val Acc: %.4f", elapsed / 60, best_acc)
 
     model.load_state_dict(best_weights)

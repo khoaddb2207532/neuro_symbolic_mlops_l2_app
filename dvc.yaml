@@ -22,7 +22,7 @@ stages:
     - outputs/01_baseline/final_model_weights.pth
     metrics:
     - outputs/01_baseline/dvclive_baseline/metrics.json:
-        cache: false
+        cache: true
 
   extract_features:
     cmd: python -m pipelines.stage2_extract_features --config params.yaml
@@ -45,7 +45,6 @@ stages:
     - rules
     outs:
     - outputs/03_rules/raw_rules.pkl
-    - outputs/03_rules/valid_rules.pkl
     - outputs/03_rules/rf_model.joblib
 
   select_rules_gflownet:
@@ -54,11 +53,12 @@ stages:
     - pipelines/stage4_select_rules_gflownet.py
     - src/gflownet/env.py
     - src/gflownet/pipeline.py
-    - outputs/03_rules/valid_rules.pkl
+    - outputs/03_rules/raw_rules.pkl
     params:
     - gflownet
     outs:
-    - outputs/04_filtered_rules/selected_rules_improved.pkl
+    - outputs/04_filtered_rules/valid_rules.pkl
+    - outputs/04_filtered_rules/selected_rules.pkl
 
   train_rule_regularized:
     cmd: python -m pipelines.stage5_train_rule_regularized --config params.yaml
@@ -68,7 +68,8 @@ stages:
     - src/training/trainer.py
     - src/utils/checkpoint.py
     - outputs/01_baseline/baseline_best.pth
-    - outputs/04_filtered_rules/selected_rules_improved.pkl
+    - outputs/04_filtered_rules/valid_rules.pkl
+    - outputs/04_filtered_rules/selected_rules.pkl
     params:
     - transfer_learning
     - rule_penalty
@@ -76,7 +77,7 @@ stages:
     - outputs/05_rules_model/final_model_weights.pth
     metrics:
     - outputs/05_rules_model/dvclive_rule_regularized/metrics.json:
-        cache: false
+        cache: true
 params:
 - outputs/01_baseline/dvclive_baseline/params.yaml
 - outputs/01_baseline/dvclive_baseline/params.yaml
@@ -84,14 +85,18 @@ params:
 - outputs/01_baseline/dvclive_baseline/params.yaml
 - outputs/01_baseline/dvclive_baseline/params.yaml
 - outputs/01_baseline/dvclive_baseline/params.yaml
-- outputs/01_baseline/dvclive_baseline/params.yaml
-- outputs/01_baseline/dvclive_baseline/params.yaml
-- outputs/01_baseline/dvclive_baseline/params.yaml
-- outputs/01_baseline/dvclive_baseline/params.yaml
-- outputs/01_baseline/dvclive_baseline/params.yaml
-- outputs/01_baseline/dvclive_baseline/params.yaml
-- outputs/01_baseline/dvclive_baseline/params.yaml
-- outputs/01_baseline/dvclive_baseline/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
 - outputs/01_baseline/dvclive_baseline/params.yaml
 - outputs/01_baseline/dvclive_baseline/params.yaml
 - outputs/01_baseline/dvclive_baseline/params.yaml
@@ -104,8 +109,12 @@ params:
 - outputs/05_rules_model/dvclive_rule_regularized/params.yaml
 - outputs/05_rules_model/dvclive_rule_regularized/params.yaml
 - outputs/05_rules_model/dvclive_rule_regularized/params.yaml
-- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
-- outputs/05_rules_model/dvclive_rule_regularized/params.yaml
+- outputs/01_baseline/dvclive_baseline/params.yaml
+- outputs/01_baseline/dvclive_baseline/params.yaml
+- outputs/01_baseline/dvclive_baseline/params.yaml
+- outputs/01_baseline/dvclive_baseline/params.yaml
+- outputs/01_baseline/dvclive_baseline/params.yaml
+- outputs/01_baseline/dvclive_baseline/params.yaml
 - outputs/05_rules_model/dvclive_rule_regularized/params.yaml
 - outputs/05_rules_model/dvclive_rule_regularized/params.yaml
 - outputs/05_rules_model/dvclive_rule_regularized/params.yaml
@@ -119,14 +128,18 @@ metrics:
 - outputs/01_baseline/dvclive_baseline/metrics.json
 - outputs/01_baseline/dvclive_baseline/metrics.json
 - outputs/01_baseline/dvclive_baseline/metrics.json
-- outputs/01_baseline/dvclive_baseline/metrics.json
-- outputs/01_baseline/dvclive_baseline/metrics.json
-- outputs/01_baseline/dvclive_baseline/metrics.json
-- outputs/01_baseline/dvclive_baseline/metrics.json
-- outputs/01_baseline/dvclive_baseline/metrics.json
-- outputs/01_baseline/dvclive_baseline/metrics.json
-- outputs/01_baseline/dvclive_baseline/metrics.json
-- outputs/01_baseline/dvclive_baseline/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
 - outputs/01_baseline/dvclive_baseline/metrics.json
 - outputs/01_baseline/dvclive_baseline/metrics.json
 - outputs/01_baseline/dvclive_baseline/metrics.json
@@ -139,8 +152,12 @@ metrics:
 - outputs/05_rules_model/dvclive_rule_regularized/metrics.json
 - outputs/05_rules_model/dvclive_rule_regularized/metrics.json
 - outputs/05_rules_model/dvclive_rule_regularized/metrics.json
-- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
-- outputs/05_rules_model/dvclive_rule_regularized/metrics.json
+- outputs/01_baseline/dvclive_baseline/metrics.json
+- outputs/01_baseline/dvclive_baseline/metrics.json
+- outputs/01_baseline/dvclive_baseline/metrics.json
+- outputs/01_baseline/dvclive_baseline/metrics.json
+- outputs/01_baseline/dvclive_baseline/metrics.json
+- outputs/01_baseline/dvclive_baseline/metrics.json
 - outputs/05_rules_model/dvclive_rule_regularized/metrics.json
 - outputs/05_rules_model/dvclive_rule_regularized/metrics.json
 - outputs/05_rules_model/dvclive_rule_regularized/metrics.json
@@ -160,21 +177,29 @@ plots:
     x: step
 - outputs/01_baseline/dvclive_baseline/plots/metrics:
     x: step
-- outputs/01_baseline/dvclive_baseline/plots/metrics:
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
-- outputs/01_baseline/dvclive_baseline/plots/metrics:
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
-- outputs/01_baseline/dvclive_baseline/plots/metrics:
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
-- outputs/01_baseline/dvclive_baseline/plots/metrics:
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
-- outputs/01_baseline/dvclive_baseline/plots/metrics:
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
-- outputs/01_baseline/dvclive_baseline/plots/metrics:
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
-- outputs/01_baseline/dvclive_baseline/plots/metrics:
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
-- outputs/01_baseline/dvclive_baseline/plots/metrics:
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
+    x: step
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
+    x: step
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
+    x: step
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
+    x: step
+- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
 - outputs/01_baseline/dvclive_baseline/plots/metrics:
     x: step
@@ -200,9 +225,17 @@ plots:
     x: step
 - outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step
-- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
+- outputs/01_baseline/dvclive_baseline/plots/metrics:
     x: step
-- outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
+- outputs/01_baseline/dvclive_baseline/plots/metrics:
+    x: step
+- outputs/01_baseline/dvclive_baseline/plots/metrics:
+    x: step
+- outputs/01_baseline/dvclive_baseline/plots/metrics:
+    x: step
+- outputs/01_baseline/dvclive_baseline/plots/metrics:
+    x: step
+- outputs/01_baseline/dvclive_baseline/plots/metrics:
     x: step
 - outputs/05_rules_model/dvclive_rule_regularized/plots/metrics:
     x: step

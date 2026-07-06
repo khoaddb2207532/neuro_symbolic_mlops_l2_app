@@ -31,7 +31,7 @@ def main(params_path: str) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     filtered_dir = os.path.join(params["output_dir"], "04_filtered_rules")
-    with open(os.path.join(filtered_dir, "selected_rules_improved.pkl"), "rb") as f:
+    with open(os.path.join(filtered_dir, "selected_rules.pkl"), "rb") as f:
         selected_rules = pickle.load(f)
     rule_set = RuleSet(rules=selected_rules)
 
@@ -81,6 +81,8 @@ def main(params_path: str) -> None:
         penalty_weight=params["rule_penalty"]["weight"],
         use_confidence=True,
         smoothing=params["rule_penalty"]["smoothing"],
+        initial_temp=params["rule_penalty"]["initial_temp"],
+        final_temp=params["rule_penalty"]["final_temp"],
         num_classes=params["num_classes"],
         config=train_cfg,
     )

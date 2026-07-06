@@ -74,8 +74,5 @@ class RuleSelectionEnv(DiscreteEnv):
         return self.reward_fn(final_states.tensor)
 
     def log_reward(self, final_states: DiscreteStates) -> torch.Tensor:
-        log_r = torch.log(self.reward_fn(final_states.tensor).clamp(min=1e-30))
-        log_r_min, log_r_max = log_r.min(), log_r.max()
-        if log_r_max - log_r_min > 1e-6:
-            log_r = (log_r - log_r_max) / (log_r_max - log_r_min + 1e-8) * 5.0
-        return log_r
+        raw = self.reward_fn.reward_module.score(final_states.tensor)  # đã ở thang cố định (trước khi exp)
+        return self.reward_fn.reward_module.beta * raw

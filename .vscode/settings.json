@@ -1,4 +1,7 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda"
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "dvc.relink": false,
+    "dvc.trackLivePlots": false,
+    "dvc.showExperimentalFeatures": false
 }

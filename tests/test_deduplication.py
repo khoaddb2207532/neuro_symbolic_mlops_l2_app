@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from src.models.cnn import CNNBaseline, FeatureExtractor
@@ -22,11 +23,40 @@ def test_single_rule_penalty_implementation():
     assert not hasattr(penalty_module, "DynamicBinaryTransformer")
 
 
-def test_vectorized_penalty_has_no_dead_temperature_state():
+def test_vectorized_penalty_temperature_is_real_and_used():
+    """Trước đây update_temperature() là no-op (dead code) nên đã bị xoá.
+    Nay đã nâng cấp lên khớp mềm CÓ dùng nhiệt độ thật trong forward() — test
+    này khoá lại việc nhiệt độ thực sự ảnh hưởng tới rule_sat/loss, tránh
+    quay lại tình trạng "gọi update_temperature nhưng không có tác dụng"."""
     rule = Rule([Condition(0, "<=", 0.5)], target_class=0)
-    penalty = VectorizedRulePenalty(RuleSet(rules=[rule]), penalty_weight=0.1, num_classes=3)
-    assert not hasattr(penalty, "update_temperature")
-    assert not hasattr(penalty, "_temperature")
+    penalty = VectorizedRulePenalty(
+        RuleSet(rules=[rule]), penalty_weight=0.1, num_classes=3,
+        initial_temp=1.0, final_temp=50.0,
+    )
+    assert hasattr(penalty, "update_temperature")
+    assert hasattr(penalty, "_temperature")
+    assert penalty._temperature.item() == pytest.approx(1.0)
+
+    features = torch.tensor([[0.5]])  # đúng ngay tại ngưỡng -> sigmoid(0)=0.5 dù nhiệt độ nào
+    logits = torch.zeros(1, 3)
+
+    penalty.update_temperature(epoch=0, total_epochs=10)
+    temp_start = penalty._temperature.item()
+    loss_soft = penalty(features, logits)
+
+    penalty.update_temperature(epoch=9, total_epochs=10)
+    temp_end = penalty._temperature.item()
+    loss_sharp = penalty(features, logits)
+
+    assert temp_start < temp_end  # nhiệt độ phải tăng dần (mềm -> cứng)
+    # Với feature nằm lệch khỏi ngưỡng, rule_sat (và do đó loss) phải khác
+    # nhau rõ rệt giữa nhiệt độ thấp (mềm) và nhiệt độ cao (cứng).
+    features_offset = torch.tensor([[0.3]])
+    penalty.update_temperature(epoch=0, total_epochs=10)
+    sat_soft = penalty(features_offset, logits)
+    penalty.update_temperature(epoch=9, total_epochs=10)
+    sat_sharp = penalty(features_offset, logits)
+    assert sat_soft.item() != pytest.approx(sat_sharp.item())
 
 
 def test_vectorized_penalty_forward_runs():

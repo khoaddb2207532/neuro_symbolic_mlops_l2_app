@@ -11,7 +11,7 @@ from typing import List
 
 import torch
 from tqdm import tqdm
-
+from typing import Tuple
 from src.rules.rule_types import Rule, RuleSet
 
 
@@ -45,16 +45,35 @@ class RuleValidator:
                 valid_m[j, k] = True
         return feat_idx, thresholds, ops, valid_m, targets
 
-    def validate(self, rule_set: RuleSet, val_features: torch.Tensor, val_labels: torch.Tensor) -> RuleSet:
+    def validate_and_build_tensors(
+        self,
+        rule_set: RuleSet,
+        val_features: torch.Tensor,
+        val_labels: torch.Tensor,
+        store_device: torch.device = torch.device("cpu"),
+    ) -> Tuple[RuleSet, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Một lần quét duy nhất: vừa lọc rule theo min_supp/min_conf,
+        vừa trả về cover/correct/rule_len CHỈ cho các rule được giữ,
+        không tính lại lần 2.
+        """
         device = val_features.device
         N = val_features.size(0)
         val_labels = val_labels.view(-1)
-        filtered: List[Rule] = []
 
-        for i in tqdm(range(0, len(rule_set.rules), self.rule_batch_size), desc="GPU Validation"):
+        filtered_rules: List[Rule] = []
+        cover_chunks: List[torch.Tensor] = []
+        correct_chunks: List[torch.Tensor] = []
+        rule_len_chunks: List[torch.Tensor] = []
+
+        for i in tqdm(range(0, len(rule_set.rules), self.rule_batch_size), desc="Validate + build tensors"):
             batch_rules = rule_set.rules[i : i + self.rule_batch_size]
             B = len(batch_rules)
             feat_idx, thresholds, ops, valid_m, targets = self._build_rule_tensors(batch_rules, device)
+
+            # buffer giữ mask đầy đủ cho batch này (B, N) - chỉ tồn tại tạm thời
+            batch_cover = torch.zeros((B, N), dtype=torch.bool, device=device)
+            batch_correct = torch.zeros((B, N), dtype=torch.bool, device=device)
 
             total_supp = torch.zeros(B, dtype=torch.long, device=device)
             total_corr = torch.zeros(B, dtype=torch.long, device=device)
@@ -67,21 +86,36 @@ class RuleValidator:
                 sel = feat_chunk[:, feat_idx]
                 cond_ok = ((sel <= thresholds) & ~ops) | ((sel > thresholds) & ops)
                 cond_ok = cond_ok | ~valid_m
-                rule_mask = cond_ok.all(dim=-1)
+                rule_mask = cond_ok.all(dim=-1)                      # (n_chunk, B)
+                correct_mask = rule_mask & (lbl_chunk.unsqueeze(1) == targets.unsqueeze(0))
+
+                batch_cover[:, d_start:d_end] = rule_mask.T
+                batch_correct[:, d_start:d_end] = correct_mask.T
 
                 total_supp += rule_mask.sum(dim=0)
-                correct = rule_mask & (lbl_chunk.unsqueeze(1) == targets.unsqueeze(0))
-                total_corr += correct.sum(dim=0)
+                total_corr += correct_mask.sum(dim=0)
 
             supp_ratio = total_supp.float() / N
             confs = torch.zeros(B, device=device)
             valid_mask = total_supp > 0
             confs[valid_mask] = total_corr[valid_mask].float() / total_supp[valid_mask].float()
             keep = (supp_ratio >= self.min_supp) & (confs >= self.min_conf)
+            keep_idx = torch.where(keep)[0]
 
-            for idx in torch.where(keep)[0].cpu().tolist():
+            for idx in keep_idx.cpu().tolist():
                 rule = batch_rules[idx]
                 rule.confidence = confs[idx].item()
-                filtered.append(rule)
+                filtered_rules.append(rule)
 
-        return RuleSet(rules=filtered)
+            if keep_idx.numel() > 0:
+                cover_chunks.append(batch_cover[keep_idx].to(store_device))
+                correct_chunks.append(batch_correct[keep_idx].to(store_device))
+                rule_len_chunks.append(valid_m[keep_idx].sum(dim=-1).to(store_device).float())
+
+            del batch_cover, batch_correct  # giải phóng ngay, tránh giữ VRAM qua các batch
+
+        cover = torch.cat(cover_chunks, dim=0) if cover_chunks else torch.zeros((0, N), dtype=torch.bool)
+        correct = torch.cat(correct_chunks, dim=0) if correct_chunks else torch.zeros((0, N), dtype=torch.bool)
+        rule_len = torch.cat(rule_len_chunks, dim=0) if rule_len_chunks else torch.zeros(0)
+
+        return RuleSet(rules=filtered_rules), cover, correct, rule_len
