@@ -373,7 +373,7 @@ def multi_seed_validation(
     }
     fixed_kwargs = dict(
         gfnet_hidden_dim=gfn_cfg["hidden_dim"],
-        batch_size=best_training["batch_size"],
+        batch_size=gfn_cfg["batch_size"],
         lr=best_training["lr"], logZ_lr=gfn_cfg["logZ_lr"],
         validation_interval=100, loss_type=gfn_cfg["loss_type"],
         logZ_warmup_steps=50, val_samples=10,
