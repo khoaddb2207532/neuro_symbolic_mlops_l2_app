@@ -1,8 +1,22 @@
-"""Pipeline huấn luyện GFlowNet để chọn tập luật con tối ưu."""
+"""Pipeline huấn luyện GFlowNet để chọn tập luật con tối ưu.
+
+Refactor: tách vòng lặp train thành 3 mối quan tâm độc lập, để dễ đọc/test
+và để phần "train step thuần" match 1-1 với baseline trong intro_discrete.ipynb:
+
+  1. _train_step        — đúng 5 dòng lõi của torchgfn (sample -> loss -> step).
+  2. _EliteTracker       — theo dõi rule-set có log-reward cao nhất TỪNG THẤY,
+                           độc lập với trọng số model (đây là phần "tìm kiếm
+                           tổ hợp tốt nhất", không phải density estimation).
+  3. _CheckpointTracker  — EMA hoá log-reward validation để feed scheduler +
+                           lưu/khôi phục checkpoint model tốt nhất theo EMA.
+
+_train_gflownet giờ chỉ còn orchestrate 3 phần trên theo đúng thứ tự cũ,
+không thay đổi bất kỳ hành vi/số liệu nào so với bản gốc.
+"""
 import abc
 import os
 import random
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -21,10 +35,85 @@ from src.utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
+class _EliteTracker:
+    """Giữ lại rule-set tốt nhất TỪNG THẤY qua mọi lần validate, bất kể model
+    hiện tại có tốt hơn hay không. Đây là phần biến GFlowNet thành một công
+    cụ tìm kiếm tổ hợp (elitist), tách biệt khỏi việc train sampler."""
+
+    def __init__(self) -> None:
+        self.best_log_reward = float("-inf")
+        self.best_selected: List[Rule] = []
+
+    def update(self, val_trajectories: list, valid_rules: List[Rule]) -> None:
+        for vt in val_trajectories:
+            r = vt.log_rewards
+            idx = r.argmax().item()
+            if r[idx].item() > self.best_log_reward:
+                self.best_log_reward = r[idx].item()
+                mask = vt.terminating_states.tensor[idx].bool().cpu()
+                self.best_selected = [valid_rules[i] for i in torch.where(mask)[0].tolist()]
+
+
+class _CheckpointTracker:
+    """EMA-hoá log-reward validation (để scheduler ổn định hơn) và lưu/khôi
+    phục checkpoint của model ứng với EMA tốt nhất."""
+
+    def __init__(self, ckpt_path: str, ema_alpha: float = 0.3) -> None:
+        self.ckpt_path = ckpt_path
+        self.ema_alpha = ema_alpha
+        self.ema_val: Optional[float] = None
+        self.best_ema = float("-inf")
+
+    def update(
+        self,
+        avg_val: float,
+        gflownet,
+        iteration: int,
+        n_valid: int,
+        max_rules: int,
+        early_stop_delta: float,
+    ) -> Tuple[float, bool]:
+        """Cập nhật EMA, lưu checkpoint nếu cải thiện. Trả về (ema_val, improved)."""
+        self.ema_val = (
+            avg_val if self.ema_val is None
+            else (1 - self.ema_alpha) * self.ema_val + self.ema_alpha * avg_val
+        )
+        improved = self.ema_val > self.best_ema + early_stop_delta
+        if improved:
+            self.best_ema = self.ema_val
+            state_dict = {k: v.cpu().clone() for k, v in gflownet.state_dict().items()}
+            torch.save(
+                {
+                    "iteration": iteration,
+                    "model": state_dict,
+                    "best_log_reward": self.best_ema,
+                    "n_rules": n_valid,
+                    "max_rules": max_rules,
+                },
+                self.ckpt_path,
+            )
+        return self.ema_val, improved
+
+    def restore_best(self, gflownet, device: torch.device) -> float:
+        """Load checkpoint tốt nhất vào gflownet (in-place). Trả về best_log_reward
+        đã lưu (0.0 nếu không có checkpoint nào, giữ đúng hành vi gốc: trong
+        trường hợp đó self.best_ema vẫn ở -inf và không được dùng ở nơi khác)."""
+        if os.path.exists(self.ckpt_path):
+            ckpt = torch.load(self.ckpt_path, map_location=device)
+            gflownet.load_state_dict(ckpt["model"])
+            return ckpt["best_log_reward"]
+        return self.best_ema
+
+
 class BaseGFlowNetPipeline(abc.ABC):
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda", grad_clip_max_norm: Optional[float] = 5.0):
+        """grad_clip_max_norm: ngưỡng clip gradient. Đặt None để TẮT HẲN clipping
+        (dùng để kiểm tra giả thuyết grad-clip đang là nút thắt). Nới từ 1.0 (cũ)
+        lên 5.0 làm mặc định mới vì action space lớn (n_valid luật) khiến grad
+        norm tự nhiên của layer cuối MLP thường > 1 ngay cả khi hướng đúng."""
         self.device = torch.device(device)
+        self.grad_clip_max_norm = grad_clip_max_norm if grad_clip_max_norm is not None else float("inf")
 
     @abc.abstractmethod
     def _create_reward_function(
@@ -36,6 +125,49 @@ class BaseGFlowNetPipeline(abc.ABC):
         max_rules: int,
     ) -> Callable:
         ...
+
+    # ------------------------------------------------------------------
+    # 1) Train step thuần — match 1-1 với vòng lặp lõi trong
+    #    intro_discrete.ipynb (cell 59/69): sample -> loss -> backward -> step.
+    #    Phần warmup + grad clip được giữ lại vì chi phí gần như 0 và cần
+    #    thiết cho bài toán này (không phải "trang trí" thêm).
+    # ------------------------------------------------------------------
+    def _train_step(
+        self,
+        gflownet,
+        optimizer,
+        env: RuleSelectionEnv,
+        batch_size: int,
+        in_warmup: bool,
+    ):
+        for p in gflownet.pf_pb_parameters():
+            p.requires_grad_(not in_warmup)
+
+        trajectories = gflownet.sample_trajectories(env, n=batch_size, save_logprobs=True)
+        samples = gflownet.to_training_samples(trajectories)
+
+        optimizer.zero_grad()
+        loss = gflownet.loss(env, samples)
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            gflownet.parameters(), max_norm=self.grad_clip_max_norm
+        )
+        optimizer.step()
+
+        return loss, trajectories, grad_norm
+
+    # ------------------------------------------------------------------
+    # 2) Validation — sample nhiều lần để ước lượng log-reward ổn định hơn.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _run_validation(gflownet, env: RuleSelectionEnv, val_samples: int, n_repeats: int = 3):
+        all_vt, raw_vals = [], []
+        with torch.no_grad():
+            for _ in range(n_repeats):
+                vt = gflownet.sample_trajectories(env, n=val_samples, save_logprobs=True)
+                all_vt.append(vt)
+                raw_vals.append(vt.log_rewards.mean().item())
+        return all_vt, float(np.mean(raw_vals))
 
     def _train_gflownet(
         self,
@@ -55,78 +187,41 @@ class BaseGFlowNetPipeline(abc.ABC):
         loss_type: str,
         output_dir: str,
     ) -> List[Rule]:
-        best_log_reward = float("-inf")
-        best_log_reward_ever = float("-inf")  
-        best_selected_ever: List[Rule] = []     
-
-        best_state_dict = None
-        ema_val = None
-        ema_alpha = 0.3
-        best_ckpt_path = os.path.join(output_dir, "gflownet_best.pth")
+        elite = _EliteTracker()
+        ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best.pth"))
 
         pbar = tqdm(range(num_iterations), desc="GFlowNet (torchgfn)")
         for it in pbar:
             in_warmup = it < logZ_warmup_steps
-            for p in gflownet.pf_pb_parameters():
-                p.requires_grad_(not in_warmup)
 
-            trajectories = gflownet.sample_trajectories(env, n=batch_size, save_logprobs=True)
-            samples = gflownet.to_training_samples(trajectories)
-
-            optimizer.zero_grad()
-            loss = gflownet.loss(env, samples)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(gflownet.parameters(), max_norm=1.0)
-            optimizer.step()
+            loss, trajectories, grad_norm = self._train_step(gflownet, optimizer, env, batch_size, in_warmup)
 
             avg_log_r = trajectories.log_rewards.mean().item() if hasattr(trajectories, "log_rewards") else 0.0
             pbar.set_postfix(
                 loss=f"{loss.item():.4f}",
                 avg_log_r=f"{avg_log_r:.3f}",
+                grad_norm=f"{grad_norm.item():.2f}",
                 logZ=f"{gflownet.logZ.item():.3f}" if loss_type == "tb" else "N/A",
             )
 
             if not in_warmup and (it + 1) % validation_interval == 0:
-                all_vt, raw_vals = [], []
-                with torch.no_grad():
-                    for _ in range(3):
-                        vt = gflownet.sample_trajectories(env, n=val_samples, save_logprobs=True)
-                        all_vt.append(vt)
-                        raw_vals.append(vt.log_rewards.mean().item())
+                all_vt, avg_val = self._run_validation(gflownet, env, val_samples)
 
-                avg_val = float(np.mean(raw_vals))
-                ema_val = avg_val if ema_val is None else (1 - ema_alpha) * ema_val + ema_alpha * avg_val
+                ema_val, _ = ckpt.update(
+                    avg_val, gflownet, it + 1, n_valid, max_rules, early_stop_delta
+                )
                 scheduler.step(ema_val)
 
-                if ema_val > best_log_reward + early_stop_delta:
-                    best_log_reward = ema_val
-                    best_state_dict = {k: v.cpu().clone() for k, v in gflownet.state_dict().items()}
-                    torch.save(
-                        {
-                            "iteration": it + 1,
-                            "model": best_state_dict,
-                            "best_log_reward": best_log_reward,
-                            "n_rules": n_valid,
-                            "max_rules": max_rules,
-                        },
-                        best_ckpt_path,
-                    )
-                for vt in all_vt:
-                    r = vt.log_rewards
-                    idx = r.argmax().item()
-                    if r[idx].item() > best_log_reward_ever:
-                        best_log_reward_ever = r[idx].item()
-                        mask = vt.terminating_states.tensor[idx].bool().cpu()
-                        best_selected_ever = [valid_rules[i] for i in torch.where(mask)[0].tolist()]
-                logger.info("Iter %d: ema=%.4f best (%d rules)", it + 1, ema_val, len(best_selected_ever))
-                logger.info("Loss= %.4f : avg_log_r= %.4f : logZ= %.4f ", loss.item(), avg_log_r, gflownet.logZ.item() if loss_type == "tb" else 0.0)
+                elite.update(all_vt, valid_rules)
 
-        if best_state_dict is not None:
-            gflownet.load_state_dict({k: v.to(self.device) for k, v in best_state_dict.items()})
-        elif os.path.exists(best_ckpt_path):
-            ckpt = torch.load(best_ckpt_path, map_location=self.device)
-            gflownet.load_state_dict(ckpt["model"])
-            best_log_reward = ckpt["best_log_reward"]
+                logger.info("Iter %d: ema=%.4f best (%d rules)", it + 1, ema_val, len(elite.best_selected))
+                logger.info(
+                    "Loss= %.4f : avg_log_r= %.4f : logZ= %.4f : grad_norm= %.4f : lr= %.6g",
+                    loss.item(), avg_log_r, gflownet.logZ.item() if loss_type == "tb" else 0.0,
+                    grad_norm.item(), optimizer.param_groups[0]["lr"],
+                )
+
+        ckpt.restore_best(gflownet, self.device)
 
         final_trajs = gflownet.sample_trajectories(env, n=20, save_logprobs=True)
         term_states = final_trajs.terminating_states.tensor.bool().cpu()
@@ -134,19 +229,20 @@ class BaseGFlowNetPipeline(abc.ABC):
         best_idx = log_rs.argmax().item()
 
         reward_module = getattr(env.reward_fn, "reward_module", None)
-        debug_breakdown(best_selected_ever, valid_rules, reward_module, logger, label="best_selected_ever")
+        debug_breakdown(elite.best_selected, valid_rules, reward_module, logger, label="best_selected_ever")
 
-
-        if log_rs[best_idx].item() > best_log_reward_ever:
+        if log_rs[best_idx].item() > elite.best_log_reward:
             # nếu 20 mẫu cuối tình cờ tốt hơn cả lịch sử -> cập nhật
             final_selected = [valid_rules[i] for i in torch.where(term_states[best_idx])[0].tolist()]
         else:
-            final_selected = best_selected_ever
+            final_selected = elite.best_selected
 
         debug_breakdown(final_selected, valid_rules, reward_module, logger, label="final_selected (returned)")
 
-
-        logger.info("Final: %d rules, best=%.4f", len(final_selected), max(best_log_reward_ever, log_rs[best_idx].item()))
+        logger.info(
+            "Final: %d rules, best=%.4f",
+            len(final_selected), max(elite.best_log_reward, log_rs[best_idx].item()),
+        )
         return final_selected
 
     def run(
@@ -247,7 +343,7 @@ class BaseGFlowNetPipeline(abc.ABC):
             loss_type=loss_type,
             output_dir=output_dir,
         )
-    
+
 
 class RuleExtractionPipeline(BaseGFlowNetPipeline):
     """Reward = accuracy + coverage - redundancy - complexity, tính hoàn toàn
@@ -292,7 +388,7 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
             if states.dim() == 1:
                 states = states.unsqueeze(0)
             return reward_module(states.to(self.device))
-        
+
         reward_fn.reward_module = reward_module
 
         return reward_fn
