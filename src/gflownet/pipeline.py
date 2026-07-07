@@ -346,22 +346,25 @@ class BaseGFlowNetPipeline(abc.ABC):
 
 
 class RuleExtractionPipeline(BaseGFlowNetPipeline):
-    """Reward = accuracy + coverage - redundancy - complexity, tính hoàn toàn
-    bằng tensor cover/correct/rule_len đã được build sẵn từ bên ngoài
-    (RuleValidator.validate_and_build_tensors). Không sklearn, không proxy
-    net trong training loop."""
+    """Reward = accuracy + coverage - conflict_redundancy, tính hoàn toàn
+    bằng tensor cover/correct/rule_len/targets đã được build sẵn từ bên ngoài.
+    Không sklearn, không proxy net trong training loop.
+
+    Đã bỏ w_red (trùng lặp cùng target) và w_comp (số lượng luật) khỏi công
+    thức — reward này phục vụ MỤC ĐÍCH DUY NHẤT là chọn luật tốt cho
+    regularization ở stage5, không phải để tối ưu tính gọn/dễ đọc của tập
+    luật (xem docstring chi tiết trong src/gflownet/reward.py)."""
 
     def __init__(
         self,
         device: str = "cuda",
         w_acc: float = 1.0,
         w_cov: float = 0.5,
-        w_red: float = 0.3,
-        w_comp: float = 0.2,
+        w_conflict: float = 0.5,
         beta: float = 3.0,
     ):
         super().__init__(device)
-        self.w_acc, self.w_cov, self.w_red, self.w_comp, self.beta = w_acc, w_cov, w_red, w_comp, beta
+        self.w_acc, self.w_cov, self.w_conflict, self.beta = w_acc, w_cov, w_conflict, beta
 
     def _create_reward_function(
         self,
@@ -371,15 +374,16 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         rule_len: torch.Tensor,
         max_rules: int,
     ) -> Callable:
+        targets = torch.tensor([r.target_class for r in valid_rules], device=cover.device)
         reward_module = RuleSetReward(
             cover=cover,
             correct=correct,
             rule_len=rule_len,
             max_rules=max_rules,
+            targets=targets,
             w_acc=self.w_acc,
             w_cov=self.w_cov,
-            w_red=self.w_red,
-            w_comp=self.w_comp,
+            w_conflict=self.w_conflict,
             beta=self.beta,
         )
         self._last_reward_module = reward_module
