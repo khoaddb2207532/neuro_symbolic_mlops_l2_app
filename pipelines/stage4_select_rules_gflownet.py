@@ -54,8 +54,7 @@ def main(params_path: str) -> None:
         device=device,
         w_acc=gfn_cfg.get("w_acc", 1.0),
         w_cov=gfn_cfg.get("w_cov", 0.5),
-        w_red=gfn_cfg.get("w_red", 0.3),
-        w_comp=gfn_cfg.get("w_comp", 0.2),
+        w_conflict=gfn_cfg.get("w_conflict", 0.5),
         beta=gfn_cfg.get("beta", 3.0),
     )
     selected_rules = pipeline.run(

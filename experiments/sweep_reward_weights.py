@@ -77,7 +77,7 @@ def run_one_trial(
     pipeline = RuleExtractionPipeline(
         device=device,
         w_acc=cfg["w_acc"], w_cov=cfg["w_cov"],
-        w_red=cfg["w_red"], w_comp=cfg["w_comp"],
+        w_conflict=cfg["w_conflict"],
         beta=cfg["beta"],
     )
     selected = pipeline.run(
@@ -104,19 +104,18 @@ def run_one_trial(
 #     ngay từ đầu, ta quay lại đúng vấn đề của f1_like: một số chiều mục tiêu
 #     bị bỏ qua hoặc bị thiên lệch bởi chính tham số đang sweep.
 #   - Multi-objective (NSGA-II) khám phá ĐỀU trên toàn bộ không gian đánh đổi
-#     4 chiều (accuracy, coverage, redundancy, complexity), không thiên vị.
+#     3 chiều (accuracy, coverage, redundancy_conflict), không thiên vị.
 #   - Sau khi có Pareto front (nhiều lựa chọn không ai thống trị ai), NGƯỜI
-#     NGHIÊN CỨU mới áp "khẩu vị" của mình (lambda_red, lambda_comp) để chọn
-#     RA 1 điểm — vì pipeline sau (stage2, stage3, ghi params.yaml) cần 1 bộ
+#     NGHIÊN CỨU mới áp "khẩu vị" của mình (lambda_conflict) để chọn RA 1
+#     điểm — vì pipeline sau (stage2, stage3, ghi params.yaml) cần 1 bộ
 #     trọng số duy nhất, không thể mang cả 1 tập nghiệm đi tiếp.
-#   - lambda_red/lambda_comp ở đây là hằng số CỐ ĐỊNH do người dùng chọn,
-#     hoàn toàn tách biệt khỏi w_red/w_comp (là biến được GFlowNet sweep) —
-#     không có chuyện tự thưởng cho chính tham số đang được tối ưu.
+#   - lambda_conflict ở đây là hằng số CỐ ĐỊNH do người dùng chọn, hoàn toàn
+#     tách biệt khỏi w_conflict (là biến được GFlowNet sweep) — không có
+#     chuyện tự thưởng cho chính tham số đang được tối ưu.
 # --------------------------------------------------------------------------
 def select_from_pareto_front(
     study: "optuna.Study",
-    lambda_red: float = 0.3,
-    lambda_comp: float = 0.2,
+    lambda_conflict: float = 0.3,
 ) -> "optuna.trial.FrozenTrial":
     pareto_trials = study.best_trials
     if not pareto_trials:
@@ -132,33 +131,35 @@ def select_from_pareto_front(
         )
 
     def scalarize(t: "optuna.trial.FrozenTrial") -> float:
-        accuracy, coverage, redundancy, complexity = t.values
-        return accuracy + coverage - lambda_red * redundancy - lambda_comp * complexity
+        accuracy, coverage, redundancy_conflict = t.values
+        return accuracy + coverage - lambda_conflict * redundancy_conflict
 
     chosen = max(pareto_trials, key=scalarize)
     logger.info(
-        "[%s] Pareto front: %d điểm. Chọn trial=%d (lambda_red=%.2f, lambda_comp=%.2f) "
-        "-> (accuracy,coverage,redundancy,complexity)=%s, params=%s",
+        "[%s] Pareto front: %d điểm. Chọn trial=%d (lambda_conflict=%.2f) "
+        "-> (accuracy,coverage,redundancy_conflict)=%s, params=%s",
         study.study_name, len(pareto_trials), chosen.number,
-        lambda_red, lambda_comp, chosen.values, chosen.params,
+        lambda_conflict, chosen.values, chosen.params,
     )
     return chosen
 
 
 # --------------------------------------------------------------------------
-# GIAI ĐOẠN 1 — sweep w_acc / w_cov / w_red / w_comp (reward shape)
+# GIAI ĐOẠN 1 — sweep w_acc / w_cov / w_conflict (reward shape)
 # beta và max_rules giữ cố định ở giá trị mặc định từ params.yaml
 #
-# ĐÃ CHUYỂN SANG MULTI-OBJECTIVE (NSGA-II): objective trả về TUYỆT ĐỐI 4 chiều
-# (accuracy, coverage, redundancy, complexity) thay vì scalar f1_like — vì
-# f1_like không chứa redundancy/complexity nên trước đây w_red/w_comp bị đẩy
-# về cận dưới của khoảng sweep một cách có hệ thống (không có tín hiệu phản
-# hồi). Xem thảo luận trước khi đổi.
+# ĐÃ BỎ w_red (trùng lặp cùng target) và w_comp (số lượng luật) khỏi công
+# thức reward — reward giờ CHỈ phục vụ mục đích chọn luật tốt cho
+# regularization CNN, không phải để tối ưu tính gọn/dễ đọc của tập luật (đó
+# là thống kê mô tả riêng, không phải mục tiêu GFlowNet tối ưu). Vì vậy
+# objective đa mục tiêu giờ CHỈ còn 3 chiều: (accuracy, coverage,
+# redundancy_conflict) — bỏ complexity hoàn toàn khỏi cả search lẫn lựa chọn
+# điểm trên Pareto front. Xem thảo luận & reward.py để biết lý do đầy đủ.
 # --------------------------------------------------------------------------
 def stage1_reward_weights(
     params: dict, valid_rules, cover, correct, rule_len, device: str,
     n_trials: int, storage_path: str, sweep_root: str,
-    pareto_lambda_red: float = 0.3, pareto_lambda_comp: float = 0.2,
+    pareto_lambda_conflict: float = 0.3,
 ) -> Dict:
     gfn_cfg = params["gflownet"]
     max_rules = gfn_cfg["max_rules"]
@@ -175,8 +176,7 @@ def stage1_reward_weights(
         cfg = {
             "w_acc": trial.suggest_float("w_acc", 0.7, 1.3),
             "w_cov": trial.suggest_float("w_cov", 0.2, 0.8),
-            "w_red": trial.suggest_float("w_red", 0.1, 0.5),
-            "w_comp": trial.suggest_float("w_comp", 0.05, 0.35),
+            "w_conflict": trial.suggest_float("w_conflict", 0.2, 1.0),
             "beta": 3.0,  # cố định ở giai đoạn 1
         }
         set_seed(params["seed"] + trial.number)
@@ -188,13 +188,13 @@ def stage1_reward_weights(
         for k, v in metric.items():
             trial.set_user_attr(k, v)
         logger.info("[Stage1] Trial %d: %s", trial.number, metric)
-        # 4 mục tiêu riêng biệt — KHÔNG gộp thành 1 scalar ở đây (xem docstring
-        # select_from_pareto_front phía trên vì sao).
-        return metric["accuracy"], metric["coverage"], metric["redundancy"], metric["complexity"]
+        # 3 mục tiêu riêng biệt (đã bỏ complexity) — KHÔNG gộp thành 1 scalar
+        # ở đây (xem docstring select_from_pareto_front phía trên vì sao).
+        return metric["accuracy"], metric["coverage"], metric["redundancy_conflict"]
 
     study = optuna.create_study(
         study_name="stage1_reward_weights",
-        directions=["maximize", "maximize", "minimize", "minimize"],
+        directions=["maximize", "maximize", "minimize"],
         storage=f"sqlite:///{storage_path}",
         load_if_exists=True,
         sampler=optuna.samplers.NSGAIISampler(seed=params["seed"]),
@@ -205,8 +205,8 @@ def stage1_reward_weights(
     else:
         logger.info("[Stage1] Đã đủ %d trials từ lần chạy trước, bỏ qua.", n_trials)
 
-    chosen = select_from_pareto_front(study, pareto_lambda_red, pareto_lambda_comp)
-    return {**chosen.params, "beta": 3.0}  # trả về w_acc/w_cov/w_red/w_comp đã chọn từ Pareto front
+    chosen = select_from_pareto_front(study, pareto_lambda_conflict)
+    return {**chosen.params, "beta": 3.0}  # trả về w_acc/w_cov/w_conflict đã chọn từ Pareto front
 
 
 # --------------------------------------------------------------------------
@@ -215,7 +215,7 @@ def stage1_reward_weights(
 def stage2_beta_maxrules(
     params: dict, best_weights: Dict, valid_rules, cover, correct, rule_len, device: str,
     n_trials: int, storage_path: str, sweep_root: str,
-    pareto_lambda_red: float = 0.3, pareto_lambda_comp: float = 0.2,
+    pareto_lambda_conflict: float = 0.3,
 ) -> Dict:
     gfn_cfg = params["gflownet"]
     fixed_kwargs = dict(
@@ -230,7 +230,7 @@ def stage2_beta_maxrules(
     def objective(trial: optuna.Trial):
         cfg = {
             "w_acc": best_weights["w_acc"], "w_cov": best_weights["w_cov"],
-            "w_red": best_weights["w_red"], "w_comp": best_weights["w_comp"],
+            "w_conflict": best_weights["w_conflict"],
             "beta": trial.suggest_float("beta", 1.0, 8.0),
         }
         max_rules = trial.suggest_categorical("max_rules", [16, 24, 32, 40, 48])
@@ -243,15 +243,16 @@ def stage2_beta_maxrules(
         for k, v in metric.items():
             trial.set_user_attr(k, v)
         logger.info("[Stage2] Trial %d: %s", trial.number, metric)
-        # Cùng lý do như stage1: max_rules cũng là 1 "biến đang được sweep",
-        # nếu chấm điểm bằng f1_like (không phạt complexity) nó sẽ bị đẩy lên
-        # cận trên (48) một cách có hệ thống, vô hiệu hoá mục đích chọn budget
-        # gọn. Trả 4 chiều riêng để NSGA-II khám phá đúng đánh đổi.
-        return metric["accuracy"], metric["coverage"], metric["redundancy"], metric["complexity"]
+        # max_rules giờ CHỈ là trần ngân sách, không còn bị phạt complexity —
+        # ảnh hưởng của nó lên accuracy/coverage/redundancy_conflict là tín
+        # hiệu THẬT (ví dụ max_rules lớn có thể làm redundancy_conflict tăng
+        # tự nhiên do dễ lẫn luật xung đột hơn), không còn bị thiên lệch nhân
+        # tạo như hồi dùng f1_like.
+        return metric["accuracy"], metric["coverage"], metric["redundancy_conflict"]
 
     study = optuna.create_study(
         study_name="stage2_beta_maxrules",
-        directions=["maximize", "maximize", "minimize", "minimize"],
+        directions=["maximize", "maximize", "minimize"],
         storage=f"sqlite:///{storage_path}",
         load_if_exists=True,
         sampler=optuna.samplers.NSGAIISampler(seed=params["seed"]),
@@ -262,7 +263,7 @@ def stage2_beta_maxrules(
     else:
         logger.info("[Stage2] Đã đủ %d trials từ lần chạy trước, bỏ qua.", n_trials)
 
-    chosen = select_from_pareto_front(study, pareto_lambda_red, pareto_lambda_comp)
+    chosen = select_from_pareto_front(study, pareto_lambda_conflict)
     return {"beta": chosen.params["beta"], "max_rules": chosen.params["max_rules"]}
 
 
@@ -271,18 +272,15 @@ def stage2_beta_maxrules(
 # từ giai đoạn 1 và 2. Chạy full num_iterations vì mục đích là xác nhận
 # hội tụ, không phải dò nhanh như 2 giai đoạn trước.
 #
-# ĐÃ CHUYỂN SANG MULTI-OBJECTIVE cho NHẤT QUÁN với stage1/2 — dù lr/batch_size
-# không trực tiếp điều khiển redundancy/complexity như w_red/w_comp hay
-# max_rules, nhưng động lực học (lr, batch_size) vẫn có thể ảnh hưởng tới
-# CHẤT LƯỢNG hội tụ trên cả 4 chiều (ví dụ lr quá lớn có thể hội tụ về 1 tập
-# luật kém đa dạng hơn dù cùng reward weights) — dùng cùng 1 cơ chế đánh giá
-# xuyên suốt 3 giai đoạn tránh việc so sánh "táo với cam" giữa các giai đoạn.
+# NHẤT QUÁN với stage1/2: objective vẫn đa mục tiêu, giờ CHỈ còn 3 chiều
+# (accuracy, coverage, redundancy_conflict) — đã bỏ complexity khỏi toàn bộ
+# 3 giai đoạn, không riêng gì stage1/2.
 # --------------------------------------------------------------------------
 def stage3_training_dynamics(
     params: dict, best_weights: Dict, best_beta_maxrules: Dict,
     valid_rules, cover, correct, rule_len, device: str,
     n_trials: int, storage_path: str, sweep_root: str,
-    pareto_lambda_red: float = 0.3, pareto_lambda_comp: float = 0.2,
+    pareto_lambda_conflict: float = 0.3,
 ) -> Dict:
     gfn_cfg = params["gflownet"]
     max_rules = best_beta_maxrules["max_rules"]
@@ -291,7 +289,7 @@ def stage3_training_dynamics(
     def objective(trial: optuna.Trial):
         cfg = {
             "w_acc": best_weights["w_acc"], "w_cov": best_weights["w_cov"],
-            "w_red": best_weights["w_red"], "w_comp": best_weights["w_comp"],
+            "w_conflict": best_weights["w_conflict"],
             "beta": best_beta_maxrules["beta"],
         }
         lr = trial.suggest_categorical("lr", [5e-4, 1e-3, 2e-3])
@@ -316,11 +314,11 @@ def stage3_training_dynamics(
         for k, v in metric.items():
             trial.set_user_attr(k, v)
         logger.info("[Stage3] Trial %d: %s", trial.number, metric)
-        return metric["accuracy"], metric["coverage"], metric["redundancy"], metric["complexity"]
+        return metric["accuracy"], metric["coverage"], metric["redundancy_conflict"]
 
     study = optuna.create_study(
         study_name="stage3_training_dynamics",
-        directions=["maximize", "maximize", "minimize", "minimize"],
+        directions=["maximize", "maximize", "minimize"],
         storage=f"sqlite:///{storage_path}",
         load_if_exists=True,
         sampler=optuna.samplers.NSGAIISampler(seed=params["seed"]),
@@ -331,7 +329,7 @@ def stage3_training_dynamics(
     else:
         logger.info("[Stage3] Đã đủ %d trials từ lần chạy trước, bỏ qua.", n_trials)
 
-    chosen = select_from_pareto_front(study, pareto_lambda_red, pareto_lambda_comp)
+    chosen = select_from_pareto_front(study, pareto_lambda_conflict)
     return {"lr": chosen.params["lr"], "batch_size": chosen.params["batch_size"]}
 
 
@@ -368,12 +366,12 @@ def multi_seed_validation(
 
     cfg = {
         "w_acc": best_weights["w_acc"], "w_cov": best_weights["w_cov"],
-        "w_red": best_weights["w_red"], "w_comp": best_weights["w_comp"],
+        "w_conflict": best_weights["w_conflict"],
         "beta": best_beta_maxrules["beta"],
     }
     fixed_kwargs = dict(
         gfnet_hidden_dim=gfn_cfg["hidden_dim"],
-        batch_size=gfn_cfg["batch_size"],
+        batch_size=best_training["batch_size"],
         lr=best_training["lr"], logZ_lr=gfn_cfg["logZ_lr"],
         validation_interval=100, loss_type=gfn_cfg["loss_type"],
         logZ_warmup_steps=50, val_samples=10,
@@ -385,7 +383,10 @@ def multi_seed_validation(
     base_seed = params["seed"] + 10_000
     seeds = [base_seed + i for i in range(n_seeds)]
 
-    metric_keys = ["n_rules", "accuracy", "coverage", "redundancy", "complexity", "f1_like"]
+    # "redundancy"/"complexity" vẫn được BÁO CÁO (thống kê mô tả, dùng cho
+    # phần diễn giải tập luật), dù không còn là mục tiêu GFlowNet tối ưu.
+    # "redundancy_conflict" mới là thành phần thực sự nằm trong reward.
+    metric_keys = ["n_rules", "accuracy", "coverage", "redundancy", "redundancy_conflict", "complexity", "f1_like"]
     records = []
     for i, seed in enumerate(seeds):
         set_seed(seed)
@@ -417,9 +418,10 @@ def multi_seed_validation(
     # heuristic trước đó (method, so_luat, so_luat_std, accuracy, accuracy_std,
     # coverage, coverage_std, redundancy, redundancy_std, f1_like, f1_like_std,
     # n_runs) để bạn có thể NỐI TRỰC TIẾP dòng này vào file so sánh cũ.
-    # Cột "complexity"/"complexity_std" và "reward_score/reward_value" không
-    # có sẵn ở CSV cũ (định nghĩa nằm ở script khác) — bạn tự đối chiếu thêm
-    # nếu cần, không tự suy đoán công thức reward_score/reward_value ở đây.
+    # Thêm redundancy_conflict/redundancy_conflict_std (thành phần thực sự
+    # nằm trong reward giờ đây) — CSV so sánh heuristic cũ (random/topk/greedy)
+    # sẽ KHÔNG có 2 cột này (vì heuristic không dùng reward này), để trống
+    # hoặc bạn tự bổ sung nếu muốn so sánh chéo.
     summary_csv_path = os.path.join(sweep_root, "gflownet_multiseed_summary.csv")
     with open(summary_csv_path, "w", newline="", encoding="utf-8") as f:
         fieldnames = [
@@ -428,6 +430,7 @@ def multi_seed_validation(
             "accuracy", "accuracy_std",
             "coverage", "coverage_std",
             "redundancy", "redundancy_std",
+            "redundancy_conflict", "redundancy_conflict_std",
             "complexity", "complexity_std",
             "f1_like", "f1_like_std",
             "n_runs",
@@ -446,6 +449,8 @@ def multi_seed_validation(
             "coverage_std": summary_stats["coverage_std"],
             "redundancy": summary_stats["redundancy_mean"],
             "redundancy_std": summary_stats["redundancy_std"],
+            "redundancy_conflict": summary_stats["redundancy_conflict_mean"],
+            "redundancy_conflict_std": summary_stats["redundancy_conflict_std"],
             "complexity": summary_stats["complexity_mean"],
             "complexity_std": summary_stats["complexity_std"],
             "f1_like": summary_stats["f1_like_mean"],
@@ -482,8 +487,11 @@ def update_params_yaml(
     gfn_cfg = params.setdefault("gflownet", {})
     gfn_cfg["w_acc"] = best_weights["w_acc"]
     gfn_cfg["w_cov"] = best_weights["w_cov"]
-    gfn_cfg["w_red"] = best_weights["w_red"]
-    gfn_cfg["w_comp"] = best_weights["w_comp"]
+    gfn_cfg["w_conflict"] = best_weights["w_conflict"]
+    # Dọn key cũ (w_red/w_comp) nếu params.yaml từ lần chạy trước còn sót lại,
+    # tránh nhầm lẫn khi đọc file thấy cả key cũ lẫn mới.
+    gfn_cfg.pop("w_red", None)
+    gfn_cfg.pop("w_comp", None)
     gfn_cfg["beta"] = best_beta_maxrules["beta"]
     gfn_cfg["max_rules"] = best_beta_maxrules["max_rules"]
     gfn_cfg["lr"] = best_training["lr"]
@@ -560,7 +568,7 @@ def _run_validation_only(params_path: str, n_seeds_validation: int) -> Dict:
 # --------------------------------------------------------------------------
 def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_stage3: int,
           force_resweep: bool = False,
-          pareto_lambda_red: float = 0.3, pareto_lambda_comp: float = 0.2,
+          pareto_lambda_conflict: float = 0.3,
           n_seeds_validation: int = 5, skip_multiseed_validation: bool = False):
     params = load_params(params_path)
     set_seed(params["seed"])
@@ -601,21 +609,21 @@ def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_
         best_weights = stage1_reward_weights(
             params, valid_rules, cover, correct, rule_len, device,
             n_trials=n_trials_stage1, storage_path=storage_path, sweep_root=sweep_root,
-            pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
+            pareto_lambda_conflict=pareto_lambda_conflict,
         )
 
         logger.info("GIAI ĐOẠN 2: Sweep beta + max_rules (multi-objective)")
         best_beta_maxrules = stage2_beta_maxrules(
             params, best_weights, valid_rules, cover, correct, rule_len, device,
             n_trials=n_trials_stage2, storage_path=storage_path, sweep_root=sweep_root,
-            pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
+            pareto_lambda_conflict=pareto_lambda_conflict,
         )
 
         logger.info("GIAI ĐOẠN 3: Sweep lr/batch_size (multi-objective)")
         best_training = stage3_training_dynamics(
             params, best_weights, best_beta_maxrules, valid_rules, cover, correct, rule_len, device,
             n_trials=n_trials_stage3, storage_path=storage_path, sweep_root=sweep_root,
-            pareto_lambda_red=pareto_lambda_red, pareto_lambda_comp=pareto_lambda_comp,
+            pareto_lambda_conflict=pareto_lambda_conflict,
         )
 
         update_params_yaml(params_path, best_weights, best_beta_maxrules, best_training)
@@ -627,8 +635,7 @@ def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_
             # Ghi lại để tái lập đúng lựa chọn (đây là "khẩu vị" cố định dùng để
             # chọn 1 điểm trên Pareto front, KHÔNG phải tham số được sweep).
             "pareto_selection": {
-                "lambda_red": pareto_lambda_red,
-                "lambda_comp": pareto_lambda_comp,
+                "lambda_conflict": pareto_lambda_conflict,
             },
         }
         with open(summary_path, "w") as f:
@@ -680,11 +687,9 @@ if __name__ == "__main__":
                               "với n_trials thấp. Tăng nếu đủ tài nguyên (khuyến nghị >=20).")
     parser.add_argument("--force_resweep", action="store_true",
                          help="Bỏ qua kết quả sweep cũ, chạy lại toàn bộ 3 giai đoạn từ đầu.")
-    parser.add_argument("--pareto_lambda_red", type=float, default=0.3,
-                         help="Trọng số CỐ ĐỊNH phạt redundancy khi chọn 1 điểm từ Pareto front "
-                              "(chỉ dùng để chọn điểm, không dùng để lái search).")
-    parser.add_argument("--pareto_lambda_comp", type=float, default=0.2,
-                         help="Trọng số CỐ ĐỊNH phạt complexity khi chọn 1 điểm từ Pareto front.")
+    parser.add_argument("--pareto_lambda_conflict", type=float, default=0.3,
+                         help="Trọng số CỐ ĐỊNH phạt redundancy_conflict khi chọn 1 điểm từ "
+                              "Pareto front (chỉ dùng để chọn điểm, không dùng để lái search).")
     parser.add_argument("--n_seeds_validation", type=int, default=5,
                          help="Số seed chạy lại GFlowNet với bộ tham số đã chốt, để lấy mean±std "
                               "(khuyến nghị >=5).")
@@ -705,6 +710,6 @@ if __name__ == "__main__":
     else:
         main(args.config, args.n_trials_stage1, args.n_trials_stage2, args.n_trials_stage3,
              force_resweep=args.force_resweep,
-             pareto_lambda_red=args.pareto_lambda_red, pareto_lambda_comp=args.pareto_lambda_comp,
+             pareto_lambda_conflict=args.pareto_lambda_conflict,
              n_seeds_validation=args.n_seeds_validation,
              skip_multiseed_validation=args.skip_multiseed_validation)
