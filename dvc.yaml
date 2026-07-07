@@ -59,6 +59,21 @@ stages:
     outs:
     - outputs/04_filtered_rules/valid_rules.pkl
     - outputs/04_filtered_rules/selected_rules.pkl
+    - outputs/04_filtered_rules/gflownet_rule_order.pkl
+    - outputs/04_filtered_rules/gflownet_best.pth
+
+  analyze_rule_rankings:
+    cmd: python -m pipelines.stage4b_analyze_rule_rankings --config params.yaml
+    deps:
+    - pipelines/stage4b_analyze_rule_rankings.py
+    - src/gflownet/rule_ranking_analysis.py
+    - outputs/04_filtered_rules/gflownet_best.pth
+    - outputs/04_filtered_rules/gflownet_rule_order.pkl
+    params:
+    - rule_ranking_analysis
+    outs:
+    - outputs/04_filtered_rules/rule_ranking_analysis.csv
+    - outputs/04_filtered_rules/rule_ranking_analysis_summary.txt
 
   train_rule_regularized:
     cmd: python -m pipelines.stage5_train_rule_regularized --config params.yaml
@@ -77,6 +92,27 @@ stages:
     - outputs/05_rules_model/final_model_weights.pth
     metrics:
     - outputs/05_rules_model/dvclive_rule_regularized/metrics.json:
+        cache: true
+
+  train_rule_regularized_bayesian:
+    cmd: python -m pipelines.stage5_train_rule_bayesian --config params.yaml
+    deps:
+    - pipelines/stage5_train_rule_bayesian.py
+    - src/rules/bayesian_penalty.py
+    - src/gflownet/rule_ranking_analysis.py
+    - src/training/trainer.py
+    - src/utils/checkpoint.py
+    - outputs/01_baseline/baseline_best.pth
+    - outputs/04_filtered_rules/gflownet_best.pth
+    - outputs/04_filtered_rules/gflownet_rule_order.pkl
+    params:
+    - transfer_learning
+    - rule_penalty
+    - rule_penalty_bayesian
+    outs:
+    - outputs/05b_rules_model_bayesian/final_model_weights.pth
+    metrics:
+    - outputs/05b_rules_model_bayesian/dvclive_rule_regularized_bayesian/metrics.json:
         cache: true
 params:
 - outputs/01_baseline/dvclive_baseline/params.yaml

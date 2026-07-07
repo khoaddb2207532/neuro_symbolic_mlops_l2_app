@@ -15,6 +15,7 @@ không thay đổi bất kỳ hành vi/số liệu nào so với bản gốc.
 """
 import abc
 import os
+import pickle
 import random
 from typing import Callable, List, Optional, Tuple
 
@@ -292,6 +293,37 @@ class BaseGFlowNetPipeline(abc.ABC):
 
         reward_fn = self._create_reward_function(valid_rules, cover, correct, rule_len, max_rules)
         env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=self.device)
+
+        # Lưu lại NGUYÊN VẸN thứ tự valid_rules SAU permutation + cover/correct/
+        # rule_len tương ứng, kèm cấu hình kiến trúc (loss_type/hidden_dim) và
+        # trọng số reward — vì `gflownet_best.pth` (lưu ở _CheckpointTracker,
+        # xem class đó phía trên) CHỈ chứa state_dict, KHÔNG chứa permutation.
+        # Action index i của policy đã train tương ứng với valid_rules[i] SAU
+        # permutation, không phải valid_rules gốc trước khi shuffle — nếu thiếu
+        # file này, không cách nào ánh xạ đúng lại action -> luật khi nạp lại
+        # gflownet_best.pth cho một quá trình khác (vd bước phân tích ranking
+        # hoặc Bayesian marginalization ở stage5), vì permutation dùng
+        # torch.randperm không được set_seed cố định riêng theo lần gọi.
+        rule_order_path = os.path.join(output_dir, "gflownet_rule_order.pkl")
+        with open(rule_order_path, "wb") as f:
+            pickle.dump(
+                {
+                    "valid_rules": valid_rules,           # đã permute, khớp index với cover/correct/rule_len bên dưới
+                    "cover": cover.cpu(),
+                    "correct": correct.cpu(),
+                    "rule_len": rule_len.cpu(),
+                    "n_valid": n_valid,
+                    "max_rules": max_rules,
+                    "loss_type": loss_type,
+                    "gfnet_hidden_dim": gfnet_hidden_dim,
+                    "w_acc": getattr(self, "w_acc", 1.0),
+                    "w_cov": getattr(self, "w_cov", 0.5),
+                    "w_conflict": getattr(self, "w_conflict", 0.5),
+                    "beta": getattr(self, "beta", 3.0),
+                },
+                f,
+            )
+        logger.info("Đã lưu rule order + tensor (khớp index với gflownet_best.pth) tại %s", rule_order_path)
 
         pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=gfnet_hidden_dim, n_hidden_layers=2)
         pb_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions - 1, hidden_dim=gfnet_hidden_dim, n_hidden_layers=2)

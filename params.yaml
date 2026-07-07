@@ -46,6 +46,18 @@ rule_penalty:
   initial_temp: 2.0
   final_temp: 15.0
 
+# Dùng bởi pipelines/stage5_train_rule_bayesian.py — regularization kiểu
+# Bayesian marginalization (frozen GFlowNet sampler, resample K tập luật MỚI
+# mỗi bước train CNN, xem src/rules/bayesian_penalty.py).
+rule_penalty_bayesian:
+  K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
+  resolve_loss_conflict: true  # bật PCGrad giữa CE loss và rule-penalty loss
+
+# Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
+# GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.
+rule_ranking_analysis:
+  K: 300                       # số trajectory sample từ policy đã train
+
 gflownet:
   max_rules: 48
   hidden_dim: 256
@@ -59,6 +71,5 @@ gflownet:
   val_samples: 48
   w_acc: 1.0
   w_cov: 0.5
-  w_red: 0.3
-  w_comp: 0.2
+  w_conflict: 0.5
   beta: 3.0

@@ -48,6 +48,10 @@ DEFAULT_CONFIG = {
     "monitor_metric": "val_acc",  # đổi thành "val_loss" nếu muốn early-stop/lưu checkpoint theo loss
     # Chiến lược progressive unfreezing mặc định: epoch -> freeze_stage
     "freeze_schedule": {0: "head_only"},
+    # Nếu True: xử lý xung đột gradient (PCGrad) giữa CE loss và rule-penalty
+    # loss thay vì backward trực tiếp trên tổng — xem _resolve_loss_conflict().
+    # Mặc định False để KHÔNG đổi hành vi/số liệu của các pipeline hiện có.
+    "resolve_loss_conflict": False,
 }
 
 
@@ -66,9 +70,87 @@ def save_checkpoint(path: str, model: nn.Module, optimizer, epoch: int, best_acc
     )
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=None, freeze_bn=True):
-    """penalty_module: nếu không None (VectorizedRulePenalty), được cộng vào
-    loss chính. Không còn nhánh loop-based riêng — chỉ một công thức.
+def _resolve_loss_conflict(ce_loss: torch.Tensor, penalty: torch.Tensor, params: list) -> Tuple[bool, float]:
+    """Xử lý xung đột gradient giữa CE loss (nhiệm vụ chính) và rule-penalty
+    loss (regularizer) trên các tham số DÙNG CHUNG `params` — kỹ thuật
+    PCGrad (Projecting Conflicting Gradients, Yu et al. 2020) rút gọn cho
+    đúng 2 loss:
+
+      1. Tính grad_ce, grad_penalty RIÊNG BIỆT (2 lần `torch.autograd.grad`
+         trên cùng graph, không phải 2 lần forward).
+      2. Nếu cos(grad_ce, grad_penalty) < 0 (2 gradient "kéo" NGƯỢC hướng
+         nhau — dấu hiệu 2 loss đang xung đột trên cùng tham số) -> chiếu
+         grad_penalty lên phần KHÔNG xung đột với grad_ce (loại bỏ thành
+         phần đối nghịch bằng phép chiếu vector), giữ nguyên grad_ce.
+      3. Nếu KHÔNG xung đột (dot >= 0) -> cộng thẳng grad_ce + grad_penalty,
+         numerically giống hệt `(ce_loss + penalty).backward()` (không đổi
+         hành vi cũ trong trường hợp phổ biến 2 loss "hợp tác").
+      4. Gán gradient cuối cùng vào `.grad` của từng tham số (thay cho
+         `loss.backward()` thông thường).
+
+    Trả về (had_conflict, cos_similarity) để quan sát/log — không phải để
+    quyết định logic bên ngoài.
+
+    Nếu `penalty` không có graph (vd rule_set rỗng, trả về hằng số 0 không
+    `requires_grad`) thì bỏ qua toàn bộ cơ chế này, chỉ backward `ce_loss`.
+    """
+    if not (penalty.requires_grad and penalty.grad_fn is not None):
+        for p in params:
+            p.grad = None
+        ce_loss.backward()
+        return False, 0.0
+
+    grad_ce = torch.autograd.grad(ce_loss, params, retain_graph=True, allow_unused=True)
+    grad_pen = torch.autograd.grad(penalty, params, retain_graph=False, allow_unused=True)
+
+    flat_ce = torch.cat([
+        (g if g is not None else torch.zeros_like(p)).reshape(-1)
+        for g, p in zip(grad_ce, params)
+    ])
+    flat_pen = torch.cat([
+        (g if g is not None else torch.zeros_like(p)).reshape(-1)
+        for g, p in zip(grad_pen, params)
+    ])
+
+    dot = torch.dot(flat_ce, flat_pen)
+    ce_norm_sq = flat_ce.dot(flat_ce)
+    pen_norm = flat_pen.norm()
+    ce_norm = ce_norm_sq.sqrt()
+    cos_sim = (dot / (ce_norm * pen_norm + 1e-12)).item() if pen_norm > 0 and ce_norm > 0 else 0.0
+
+    had_conflict = dot.item() < 0
+    if had_conflict:
+        # Loại bỏ thành phần của grad_penalty đối nghịch với grad_ce (chiếu
+        # lên siêu phẳng trực giao với grad_ce), giữ grad_ce nguyên vẹn —
+        # đúng công thức PCGrad cho cặp (task chính, regularizer).
+        proj_coeff = dot / (ce_norm_sq + 1e-12)
+        flat_pen = flat_pen - proj_coeff * flat_ce
+
+    combined_flat = flat_ce + flat_pen
+
+    idx = 0
+    for p in params:
+        numel = p.numel()
+        p.grad = combined_flat[idx: idx + numel].view_as(p).clone()
+        idx += numel
+
+    return had_conflict, cos_sim
+
+
+def train_one_epoch(
+    model, loader, criterion, optimizer, device, penalty_module=None, freeze_bn=True,
+    resolve_conflict: bool = False,
+):
+    """penalty_module: nếu không None (VectorizedRulePenalty hoặc
+    BayesianRuleMarginalization — cùng chữ ký forward(features, logits)),
+    được cộng vào loss chính. Không còn nhánh loop-based riêng — chỉ một
+    công thức.
+
+    resolve_conflict: nếu True và penalty_module có graph (không phải hằng
+    số 0), xử lý xung đột gradient giữa CE loss và rule-penalty loss bằng
+    PCGrad (xem `_resolve_loss_conflict`) thay vì backward tổng trực tiếp.
+    Mặc định False để giữ nguyên hành vi cũ (loss = ce+penalty; backward
+    trên tổng) cho các script chưa bật cờ này.
 
     Trả về (train_loss, train_ce, train_penalty, train_acc, coverage_stats).
     train_acc được tính trên chính batch train (không phải eval mode) để
@@ -79,6 +161,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
     hỗ trợ `last_coverage_stats()`): thống kê xem luật có thực sự "sống"
     (đóng góp gradient) hay không, tổng hợp theo batch-size-weighted average
     qua các batch trong epoch — xem src/rules/penalty.py::last_coverage_stats().
+    Khi resolve_conflict=True, coverage_stats còn thêm "conflict_ratio":
+    tỉ lệ batch mà CE và rule-penalty xung đột (cos<0) trong epoch này.
     """
     model.train()
     if freeze_bn and hasattr(model, "freeze_bn"):
@@ -87,6 +171,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
     total_loss = total_ce = total_penalty = 0.0
     total_correct = 0
     total_samples = 0
+    n_conflict_batches = 0
+    n_batches = 0
 
     # Tích luỹ coverage stats qua các batch (weighted theo batch size, giống
     # cách total_loss/total_ce/... được tích luỹ ở trên).
@@ -94,6 +180,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
     sum_mean_sat = 0.0
     n_rules_total = 0
     has_coverage = penalty_module is not None and hasattr(penalty_module, "last_coverage_stats")
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad] if resolve_conflict else None
 
     for images, labels in loader:
         images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
@@ -105,12 +193,19 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
         ce_loss = criterion(logits, labels)
         penalty = penalty_module(features, logits) if penalty_module is not None else torch.tensor(0.0, device=device)
 
-        loss = ce_loss + penalty
-        loss.backward()
+        if resolve_conflict and penalty_module is not None:
+            had_conflict, _cos_sim = _resolve_loss_conflict(ce_loss, penalty, trainable_params)
+            n_conflict_batches += int(had_conflict)
+            n_batches += 1
+        else:
+            loss = ce_loss + penalty
+            loss.backward()
+
         optimizer.step()
 
         bs = images.size(0)
-        total_loss += loss.item() * bs
+        loss_value = ce_loss.item() + penalty.item()
+        total_loss += loss_value * bs
         total_ce += ce_loss.item() * bs
         total_penalty += penalty.item() * bs
         total_correct += (torch.argmax(logits, dim=1) == labels).sum().item()
@@ -132,6 +227,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, penalty_module=
             "coverage_ratio": sum_coverage_ratio / total_samples,
             "mean_rule_sat": sum_mean_sat / total_samples,
         }
+        if resolve_conflict:
+            coverage_stats["conflict_ratio"] = n_conflict_batches / n_batches if n_batches > 0 else 0.0
 
     return (
         total_loss / total_samples,
@@ -175,7 +272,17 @@ def train_model(
     initial_temp: float = 2.0,
     final_temp: float = 15.0,
     config: Optional[Dict] = None,
+    penalty_module: Optional[nn.Module] = None,
 ) -> Tuple[nn.Module, dict]:
+    """penalty_module: nếu được truyền sẵn (vd
+    `src.rules.bayesian_penalty.BayesianRuleMarginalization`), dùng TRỰC
+    TIẾP module này thay vì tự build `VectorizedRulePenalty` từ `rule_set` —
+    cho phép cắm chiến lược rule-regularization khác (Bayesian
+    marginalization qua frozen GFlowNet sampler) mà không phải sửa vòng lặp
+    train — cắm module khác vào chỉ bằng cách truyền tham số này. Nếu None
+    (mặc định, hành vi cũ), vẫn build `VectorizedRulePenalty`
+    từ `rule_set`/`penalty_weight` như trước.
+    """
     cfg = {**DEFAULT_CONFIG, **(config or {})}
     cfg.setdefault("lr", lr)
     os.makedirs(cfg["save_dir"], exist_ok=True)
@@ -193,7 +300,8 @@ def train_model(
 
     optimizer, scheduler = rebuild_optimizer()
 
-    ckpt_name = os.path.join(cfg["save_dir"], "rule_regularized_best.pth" if penalty_weight > 0 else "baseline_best.pth")
+    is_rule_regularized_run = penalty_weight > 0 or penalty_module is not None
+    ckpt_name = os.path.join(cfg["save_dir"], "rule_regularized_best.pth" if is_rule_regularized_run else "baseline_best.pth")
     monitor_metric = cfg["monitor_metric"]
     if monitor_metric not in MONITOR_MODES:
         raise ValueError(
@@ -203,13 +311,19 @@ def train_model(
     stopper = EarlyStopping(patience=patience, verbose=True, mode=MONITOR_MODES[monitor_metric])
     logger.info("EarlyStopping theo dõi '%s' (mode='%s')", monitor_metric, MONITOR_MODES[monitor_metric])
 
-    penalty_module = None
-    if penalty_weight > 0 and rule_set is not None:
+    if penalty_module is None and penalty_weight > 0 and rule_set is not None:
         penalty_module = VectorizedRulePenalty(
             rule_set, penalty_weight=penalty_weight, use_confidence=use_confidence,
             smoothing=smoothing, num_classes=num_classes,
             initial_temp=initial_temp, final_temp=final_temp,
         ).to(device)
+    elif penalty_module is not None:
+        penalty_module = penalty_module.to(device)
+        logger.info("Dùng penalty_module được truyền sẵn: %s", type(penalty_module).__name__)
+
+    resolve_conflict = cfg.get("resolve_loss_conflict", False) and penalty_module is not None
+    if resolve_conflict:
+        logger.info("Bật xử lý xung đột gradient (PCGrad) giữa CE loss và rule-penalty loss.")
 
     history = {
         "train_loss": [], "train_ce": [], "train_penalty": [], "train_acc": [],
@@ -229,6 +343,7 @@ def train_model(
                 "total_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
                 "initial_temp": initial_temp, 
                 "final_temp": final_temp,
+                "resolve_loss_conflict": resolve_conflict,
             }
         )
 
@@ -248,6 +363,7 @@ def train_model(
             train_loss, train_ce, train_penalty, train_acc, coverage_stats = train_one_epoch(
                 model, train_loader, criterion, optimizer, device,
                 penalty_module, freeze_bn=cfg.get("freeze_bn", True),
+                resolve_conflict=resolve_conflict,
             )
             val_acc, val_loss = validate(model, val_loader, criterion, device)
             lr_details = " | ".join([
@@ -287,13 +403,18 @@ def train_model(
             if coverage_stats:
                 live.log_metric("rules/coverage_ratio", coverage_stats["coverage_ratio"])
                 live.log_metric("rules/mean_satisfaction", coverage_stats["mean_rule_sat"])
+                if "mean_ruleset_size" in coverage_stats:
+                    live.log_metric("rules/mean_ruleset_size", coverage_stats["mean_ruleset_size"])
+                if "conflict_ratio" in coverage_stats:
+                    live.log_metric("rules/grad_conflict_ratio", coverage_stats["conflict_ratio"])
                 logger.info(
-                    "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | T=%.2f",
+                    "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | T=%.2f%s",
                     round(coverage_stats["coverage_ratio"] * coverage_stats["n_rules_total"]),
                     coverage_stats["n_rules_total"],
                     coverage_stats["coverage_ratio"] * 100,
                     coverage_stats["mean_rule_sat"],
                     penalty_module._temperature.item(),
+                    f" | grad_conflict_ratio={coverage_stats['conflict_ratio']:.2f}" if "conflict_ratio" in coverage_stats else "",
                 )    
 
             # Giá trị dùng để quyết định "tốt nhất" phụ thuộc monitor_metric
