@@ -250,7 +250,6 @@ def train_model(
                 penalty_module, freeze_bn=cfg.get("freeze_bn", True),
             )
             val_acc, val_loss = validate(model, val_loader, criterion, device)
-            # current_lr = optimizer.param_groups[0]["lr"]
             lr_details = " | ".join([
                 f"{g.get('name', f'group{i}')}:{g['lr']:.2e}" 
                 for i, g in enumerate(optimizer.param_groups)
