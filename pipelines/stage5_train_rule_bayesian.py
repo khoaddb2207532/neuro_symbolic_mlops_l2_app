@@ -84,10 +84,10 @@ def main(params_path: str) -> None:
 
     # Giống stage5 gốc: tiếp tục từ baseline đã hội tụ (stage1), không phải
     # từ ImageNet.
-    baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
-    load_model_weights(model, baseline_ckpt, device, required=True)
+    # baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    # load_model_weights(model, baseline_ckpt, device, required=True)
 
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule_stage2"].items()}
+    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule"].items()}
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],
         "lr_head": params["transfer_learning"]["lr_head"],
