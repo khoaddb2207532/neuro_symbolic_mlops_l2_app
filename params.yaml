@@ -59,6 +59,5 @@ gflownet:
   val_samples: 48
   w_acc: 1.0
   w_cov: 0.5
-  w_red: 0.3
-  w_comp: 0.2
+  w_conflict: 0.5
   beta: 3.0
