@@ -469,8 +469,9 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         w_cov: float = 0.5,
         w_conflict: float = 0.5,
         beta: float = 3.0,
+        grad_clip_max_norm : Optional[float] = None, 
     ):
-        super().__init__(device)
+        super().__init__(device, grad_clip_max_norm )
         self.w_acc, self.w_cov, self.w_conflict, self.beta = w_acc, w_cov, w_conflict, beta
 
     def _reward_params(self) -> Dict[str, Any]:

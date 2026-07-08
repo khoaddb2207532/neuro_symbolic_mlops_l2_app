@@ -73,3 +73,4 @@ gflownet:
   w_cov: 0.5
   w_conflict: 0.5
   beta: 1.5
+  grad_clip_max_norm : None
