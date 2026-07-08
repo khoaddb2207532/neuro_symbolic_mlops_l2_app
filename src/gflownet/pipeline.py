@@ -110,37 +110,7 @@ class _CheckpointTracker:
     
 # --- Thêm trong pipeline.py, cạnh _CheckpointTracker ---
 
-@staticmethod
-def _distribution_metrics(all_vt: list) -> Dict[str, float]:
-    """Đo diversity/calibration của các rule-set được sample trong MỘT vòng
-    validate. avg_val/ema KHÔNG phát hiện được mode-collapse — reward trung
-    bình vẫn có thể tăng dù policy đang co cụm vào vài rule-set tốt nhất
-    (tốt cho _EliteTracker, XẤU cho vai trò frozen sampler của
-    BayesianRuleMarginalization, vốn cần K mẫu/bước THỰC SỰ đa dạng)."""
-    states = torch.cat([vt.terminating_states.tensor.bool().cpu() for vt in all_vt], dim=0)
-    log_rs = torch.cat([vt.log_rewards.cpu() for vt in all_vt], dim=0)
-    n = states.shape[0]
 
-    uniq, inverse, counts = torch.unique(states, dim=0, return_inverse=True, return_counts=True)
-    n_unique = uniq.shape[0]
-    unique_ratio = n_unique / n
-
-    probs = counts.float() / n
-    entropy = -(probs * probs.clamp(min=1e-12).log()).sum().item()
-    entropy_norm = entropy / max(float(np.log(n_unique)), 1e-8) if n_unique > 1 else 0.0
-    top1_share = counts.max().item() / n
-
-    if n_unique >= 3:
-        mean_log_r = torch.zeros(n_unique).scatter_reduce_(0, inverse, log_rs, reduce="mean", include_self=False)
-        fr = counts.float().argsort().argsort().float()
-        rr = mean_log_r.argsort().argsort().float()
-        fr, rr = fr - fr.mean(), rr - rr.mean()
-        calib_corr = (fr * rr).sum().item() / (fr.norm() * rr.norm()).clamp(min=1e-8).item()
-    else:
-        calib_corr = 0.0
-
-    return {"unique_ratio": unique_ratio, "entropy_norm": entropy_norm,
-            "top1_share": top1_share, "calib_corr": calib_corr}
 
 
 class _SamplerCheckpointTracker:
@@ -241,6 +211,38 @@ class BaseGFlowNetPipeline(abc.ABC):
                 all_vt.append(vt)
                 raw_vals.append(vt.log_rewards.mean().item())
         return all_vt, float(np.mean(raw_vals))
+    
+    @staticmethod
+    def _distribution_metrics(all_vt: list) -> Dict[str, float]:
+        """Đo diversity/calibration của các rule-set được sample trong MỘT vòng
+        validate. avg_val/ema KHÔNG phát hiện được mode-collapse — reward trung
+        bình vẫn có thể tăng dù policy đang co cụm vào vài rule-set tốt nhất
+        (tốt cho _EliteTracker, XẤU cho vai trò frozen sampler của
+        BayesianRuleMarginalization, vốn cần K mẫu/bước THỰC SỰ đa dạng)."""
+        states = torch.cat([vt.terminating_states.tensor.bool().cpu() for vt in all_vt], dim=0)
+        log_rs = torch.cat([vt.log_rewards.cpu() for vt in all_vt], dim=0)
+        n = states.shape[0]
+
+        uniq, inverse, counts = torch.unique(states, dim=0, return_inverse=True, return_counts=True)
+        n_unique = uniq.shape[0]
+        unique_ratio = n_unique / n
+
+        probs = counts.float() / n
+        entropy = -(probs * probs.clamp(min=1e-12).log()).sum().item()
+        entropy_norm = entropy / max(float(np.log(n_unique)), 1e-8) if n_unique > 1 else 0.0
+        top1_share = counts.max().item() / n
+
+        if n_unique >= 3:
+            mean_log_r = torch.zeros(n_unique).scatter_reduce_(0, inverse, log_rs, reduce="mean", include_self=False)
+            fr = counts.float().argsort().argsort().float()
+            rr = mean_log_r.argsort().argsort().float()
+            fr, rr = fr - fr.mean(), rr - rr.mean()
+            calib_corr = (fr * rr).sum().item() / (fr.norm() * rr.norm()).clamp(min=1e-8).item()
+        else:
+            calib_corr = 0.0
+
+        return {"unique_ratio": unique_ratio, "entropy_norm": entropy_norm,
+                "top1_share": top1_share, "calib_corr": calib_corr}
 
     def _train_gflownet(
         self,
