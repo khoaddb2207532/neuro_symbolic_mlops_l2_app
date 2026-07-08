@@ -315,7 +315,7 @@ class BaseGFlowNetPipeline(abc.ABC):
                     live.log_metric("val/calib_corr", dist_metrics["calib_corr"])
                     live.log_metric("val/sampler_best_ema", sampler_ckpt.best_ema)
 
-                logger.info("Iter %d: ema=%.4f best (%d rules)\n", it + 1, ema_val, len(elite.best_selected))
+                logger.info("Iter %d: ema=%.4f best (%d rules), calib_corr=%.4f \n", it + 1, ema_val, len(elite.best_selected),dist_metrics["calib_corr"])
                 logger.info(
                     "Loss= %.4f : avg_log_r= %.4f : logZ= %.4f : grad_norm= %.4f : lr= %.6g",
                     loss.item(), avg_log_r, logZ_val,
