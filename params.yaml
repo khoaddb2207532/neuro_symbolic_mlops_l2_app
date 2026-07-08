@@ -10,7 +10,7 @@ output_dir: "outputs"
 num_classes: 12
 batch_size: 64
 num_workers: 4
-num_epochs: 5
+num_epochs: 100
 patience: 5
 weight_decay: !!float 1e-4
 monitor_metric: "val_loss"
@@ -61,7 +61,7 @@ rule_ranking_analysis:
 gflownet:
   max_rules: 120
   hidden_dim: 256
-  num_iterations: 1000
+  num_iterations: 5000
   batch_size: 256
   lr: !!float 1e-3
   logZ_lr: 0.1
@@ -72,5 +72,5 @@ gflownet:
   w_acc: 1.0
   w_cov: 0.5
   w_conflict: 0.5
-  beta: 1.5
+  beta: 1.0
   grad_clip_max_norm : None

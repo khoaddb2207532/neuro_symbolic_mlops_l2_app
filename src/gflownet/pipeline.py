@@ -107,6 +107,69 @@ class _CheckpointTracker:
             gflownet.load_state_dict(ckpt["model"])
             return ckpt["best_log_reward"]
         return self.best_ema
+    
+# --- Thêm trong pipeline.py, cạnh _CheckpointTracker ---
+
+@staticmethod
+def _distribution_metrics(all_vt: list) -> Dict[str, float]:
+    """Đo diversity/calibration của các rule-set được sample trong MỘT vòng
+    validate. avg_val/ema KHÔNG phát hiện được mode-collapse — reward trung
+    bình vẫn có thể tăng dù policy đang co cụm vào vài rule-set tốt nhất
+    (tốt cho _EliteTracker, XẤU cho vai trò frozen sampler của
+    BayesianRuleMarginalization, vốn cần K mẫu/bước THỰC SỰ đa dạng)."""
+    states = torch.cat([vt.terminating_states.tensor.bool().cpu() for vt in all_vt], dim=0)
+    log_rs = torch.cat([vt.log_rewards.cpu() for vt in all_vt], dim=0)
+    n = states.shape[0]
+
+    uniq, inverse, counts = torch.unique(states, dim=0, return_inverse=True, return_counts=True)
+    n_unique = uniq.shape[0]
+    unique_ratio = n_unique / n
+
+    probs = counts.float() / n
+    entropy = -(probs * probs.clamp(min=1e-12).log()).sum().item()
+    entropy_norm = entropy / max(float(np.log(n_unique)), 1e-8) if n_unique > 1 else 0.0
+    top1_share = counts.max().item() / n
+
+    if n_unique >= 3:
+        mean_log_r = torch.zeros(n_unique).scatter_reduce_(0, inverse, log_rs, reduce="mean", include_self=False)
+        fr = counts.float().argsort().argsort().float()
+        rr = mean_log_r.argsort().argsort().float()
+        fr, rr = fr - fr.mean(), rr - rr.mean()
+        calib_corr = (fr * rr).sum().item() / (fr.norm() * rr.norm()).clamp(min=1e-8).item()
+    else:
+        calib_corr = 0.0
+
+    return {"unique_ratio": unique_ratio, "entropy_norm": entropy_norm,
+            "top1_share": top1_share, "calib_corr": calib_corr}
+
+
+class _SamplerCheckpointTracker:
+    """Checkpoint RIÊNG cho vai trò frozen sampler (BayesianRuleMarginalization,
+    stage4b ranking) — khác _CheckpointTracker vốn chỉ tối ưu avg-reward.
+    Chỉ chấp nhận 'improved' nếu diversity KHÔNG dưới ngưỡng tối thiểu."""
+
+    def __init__(self, ckpt_path: str, ema_alpha: float = 0.3,
+                 min_unique_ratio: float = 0.2, min_entropy_norm: float = 0.4):
+        self.ckpt_path = ckpt_path
+        self.ema_alpha = ema_alpha
+        self.min_unique_ratio = min_unique_ratio
+        self.min_entropy_norm = min_entropy_norm
+        self.ema_val: Optional[float] = None
+        self.best_ema = float("-inf")
+
+    def update(self, avg_val, dist_metrics, gflownet, iteration, n_valid, max_rules, early_stop_delta):
+        self.ema_val = (avg_val if self.ema_val is None
+                        else (1 - self.ema_alpha) * self.ema_val + self.ema_alpha * avg_val)
+        diversity_ok = (dist_metrics["unique_ratio"] >= self.min_unique_ratio
+                        and dist_metrics["entropy_norm"] >= self.min_entropy_norm)
+        improved = diversity_ok and (self.ema_val > self.best_ema + early_stop_delta)
+        if improved:
+            self.best_ema = self.ema_val
+            state_dict = {k: v.cpu().clone() for k, v in gflownet.state_dict().items()}
+            torch.save({"iteration": iteration, "model": state_dict, "best_log_reward": self.best_ema,
+                        "n_rules": n_valid, "max_rules": max_rules, "dist_metrics": dist_metrics},
+                       self.ckpt_path)
+        return self.ema_val, improved
 
 
 class BaseGFlowNetPipeline(abc.ABC):
@@ -200,6 +263,7 @@ class BaseGFlowNetPipeline(abc.ABC):
     ) -> List[Rule]:
         elite = _EliteTracker()
         ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best.pth"))
+        sampler_ckpt = _SamplerCheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler.pth"))
 
         pbar = tqdm(range(num_iterations), desc="GFlowNet (torchgfn)")
         for it in pbar:
@@ -226,19 +290,27 @@ class BaseGFlowNetPipeline(abc.ABC):
 
             if not in_warmup and (it + 1) % validation_interval == 0:
                 all_vt, avg_val = self._run_validation(gflownet, env, val_samples)
+                dist_metrics = self._distribution_metrics(all_vt)
 
                 ema_val, _ = ckpt.update(
                     avg_val, gflownet, it + 1, n_valid, max_rules, early_stop_delta
                 )
                 scheduler.step(ema_val)
 
+                sampler_ckpt.update(avg_val, dist_metrics, gflownet, it + 1, n_valid, max_rules, early_stop_delta)
                 elite.update(all_vt, valid_rules)
+
 
                 if live is not None:
                     live.log_metric("val/avg_log_reward", avg_val)
                     live.log_metric("val/ema_log_reward", ema_val)
                     live.log_metric("val/best_ema", ckpt.best_ema)
                     live.log_metric("val/best_log_reward_ever", elite.best_log_reward)
+                    
+                    live.log_metric("val/unique_ratio", dist_metrics["unique_ratio"])
+                    live.log_metric("val/entropy_norm", dist_metrics["entropy_norm"])
+                    live.log_metric("val/calib_corr", dist_metrics["calib_corr"])
+                    live.log_metric("val/sampler_best_ema", sampler_ckpt.best_ema)
 
                 logger.info("Iter %d: ema=%.4f best (%d rules)", it + 1, ema_val, len(elite.best_selected))
                 logger.info(
@@ -275,6 +347,13 @@ class BaseGFlowNetPipeline(abc.ABC):
             live.summary["best_log_reward"] = final_best_log_reward
             live.summary["n_rules_selected"] = len(final_selected)
             live.end()
+
+        if not os.path.exists(sampler_ckpt.ckpt_path):
+            logger.warning("Không checkpoint nào đạt ngưỡng diversity — lưu tạm trọng số cuối làm sampler.")
+            torch.save({"iteration": num_iterations,
+                        "model": {k: v.cpu().clone() for k, v in gflownet.state_dict().items()},
+                        "best_log_reward": None, "n_rules": n_valid, "max_rules": max_rules},
+                    sampler_ckpt.ckpt_path)
 
         return final_selected
 

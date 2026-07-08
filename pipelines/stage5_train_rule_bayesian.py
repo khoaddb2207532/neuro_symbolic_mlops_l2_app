@@ -43,7 +43,11 @@ def main(params_path: str) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     filtered_dir = os.path.join(params["output_dir"], "04_filtered_rules")
-    ckpt_path = os.path.join(filtered_dir, "gflownet_best.pth")
+    ckpt_path = os.path.join(filtered_dir, "gflownet_best_sampler.pth")
+    if not os.path.exists(ckpt_path):
+        logger.warning("Chưa có gflownet_best_sampler.pth — fallback gflownet_best.pth "
+                        "(checkpoint tối ưu avg reward, có thể kém đa dạng hơn cho marginalization).")
+        ckpt_path = os.path.join(filtered_dir, "gflownet_best.pth")
 
     # ---- 1) Nạp lại policy GFlowNet đã train làm FROZEN SAMPLER (không
     # train lại bất kỳ tham số nào của nó) ----
