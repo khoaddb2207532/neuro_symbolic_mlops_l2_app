@@ -63,13 +63,13 @@ gflownet:
   hidden_dim: 256
   num_iterations: 1000
   batch_size: 256
-  lr: !!float 1e-4
+  lr: !!float 1e-3
   logZ_lr: 0.1
   validation_interval: 100
   loss_type: "tb"          # "tb" | "db" | "fm"
   logZ_warmup_steps: 50
-  val_samples: 48
+  val_samples: 140
   w_acc: 1.0
   w_cov: 0.5
   w_conflict: 0.5
-  beta: 3.0
+  beta: 1.5
