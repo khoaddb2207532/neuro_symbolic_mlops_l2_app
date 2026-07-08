@@ -15,11 +15,18 @@ def evaluate_run(
     LƯU Ý: `redundancy`/`complexity` ở đây là THỐNG KÊ MÔ TẢ (để báo cáo,
     theo dõi tính gọn/dễ đọc của tập luật) — KHÔNG còn là thành phần của hàm
     reward mà GFlowNet tối ưu (xem reward.py: score() giờ chỉ còn
-    accuracy + coverage - w_conflict * redundancy_conflict). `redundancy`
-    (tính trên self.jaccard đầy đủ) đo TOÀN BỘ trùng lặp bất kể target;
-    `redundancy_conflict` (mới, tính trên self.jaccard_conflict) chỉ đo phần
-    trùng lặp KHÁC target — đây mới là phần thực sự ảnh hưởng tới chất lượng
-    regularization và là phần GFlowNet đang được thưởng/phạt trực tiếp."""
+    accuracy + coverage - w_conflict * conflict_ratio).
+      - `redundancy` (tính trên self.jaccard đầy đủ, trung bình theo CẶP
+        luật) đo TOÀN BỘ trùng lặp bất kể target — thuần thống kê mô tả.
+      - `redundancy_conflict` giờ lấy TRỰC TIẾP từ
+        `reward_module.components(s)["conflict_ratio"]` — đúng con số thật
+        mà GFlowNet đang bị phạt (tỉ lệ MẪU bị phủ bởi >=2 target khác nhau
+        trong số luật đã chọn, KHÔNG chia theo số cặp luật — xem docstring
+        trong reward.py để biết vì sao đổi cách đo này). Dùng chung 1 hàm
+        `components()` với `score()` để tránh 2 nơi tính công thức khác
+        nhau (rủi ro cũ: evaluation.py tự tính lại bằng công thức pairwise
+        đã lỗi thời, gây lệch số liệu báo cáo so với reward thật).
+    """
     if not final_selected_rules:
         return {"n_rules": 0, "accuracy": 0.0, "coverage": 0.0,
                 "redundancy": 0.0, "redundancy_conflict": 0.0,
@@ -34,24 +41,18 @@ def evaluate_run(
     s = mask.unsqueeze(0)
 
     n_sel = s.sum(-1)
-    covered = (s @ reward_module.cover) > 0
-    correct_cov = (s @ reward_module.correct) > 0
-    accuracy = (correct_cov.float().sum(-1) / covered.float().sum(-1).clamp(min=1)).item()
-    coverage = covered.float().mean(-1).item()
 
+    comp = reward_module.components(s)
+    accuracy = comp["accuracy"].item()
+    coverage = comp["coverage"].item()
+    redundancy_conflict = comp["conflict_ratio"].item()
+
+    # `redundancy` (toàn bộ overlap, không tách theo target) vẫn tính riêng
+    # từ self.jaccard đầy đủ — thuần mô tả, không liên quan tới việc
+    # GFlowNet có bị phạt vì nó hay không.
     n_pairs = (n_sel * (n_sel - 1)).clamp(min=1)
-
     pair_red = (s.unsqueeze(1) * s.unsqueeze(2) * reward_module.jaccard).sum((-1, -2))
     redundancy = (pair_red / n_pairs).item()
-
-    # Thành phần MỚI: chỉ phần trùng lặp KHÁC target (xung đột thật sự) —
-    # đây là số hạng duy nhất trong reward.score() liên quan tới overlap.
-    jaccard_conflict = getattr(reward_module, "jaccard_conflict", None)
-    if jaccard_conflict is not None:
-        pair_conflict = (s.unsqueeze(1) * s.unsqueeze(2) * jaccard_conflict).sum((-1, -2))
-        redundancy_conflict = (pair_conflict / n_pairs).item()
-    else:
-        redundancy_conflict = 0.0  # reward_module cũ (trước khi có conflict-split), không lỗi
 
     complexity = (n_sel / reward_module.max_rules).item()
 

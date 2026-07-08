@@ -17,7 +17,7 @@ import abc
 import os
 import pickle
 import random
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -32,6 +32,9 @@ from src.gflownet.evaluation import debug_breakdown
 from src.rules.io import save_rules_excel
 from src.rules.rule_types import Rule, RuleSet
 from src.utils.logging_utils import get_logger
+
+from dvclive import Live
+
 
 logger = get_logger(__name__)
 
@@ -127,6 +130,12 @@ class BaseGFlowNetPipeline(abc.ABC):
     ) -> Callable:
         ...
 
+    def _reward_params(self) -> Dict[str, Any]:
+        """Các hyperparameter riêng của reward function (vd w_acc, w_cov...)
+        để DVC log lại cùng params huấn luyện chung. Mặc định rỗng; subclass
+        override nếu muốn track thêm."""
+        return {}
+
     # ------------------------------------------------------------------
     # 1) Train step thuần — match 1-1 với vòng lặp lõi trong
     #    intro_discrete.ipynb (cell 59/69): sample -> loss -> backward -> step.
@@ -187,6 +196,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         early_stop_delta: float,
         loss_type: str,
         output_dir: str,
+        live: Optional["Live"] = None, # type: ignore
     ) -> List[Rule]:
         elite = _EliteTracker()
         ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best.pth"))
@@ -198,12 +208,21 @@ class BaseGFlowNetPipeline(abc.ABC):
             loss, trajectories, grad_norm = self._train_step(gflownet, optimizer, env, batch_size, in_warmup)
 
             avg_log_r = trajectories.log_rewards.mean().item() if hasattr(trajectories, "log_rewards") else 0.0
+            logZ_val = gflownet.logZ.item() if loss_type == "tb" else 0.0
             pbar.set_postfix(
                 loss=f"{loss.item():.4f}",
                 avg_log_r=f"{avg_log_r:.3f}",
                 grad_norm=f"{grad_norm.item():.2f}",
-                logZ=f"{gflownet.logZ.item():.3f}" if loss_type == "tb" else "N/A",
+                logZ=f"{logZ_val:.3f}" if loss_type == "tb" else "N/A",
             )
+
+            if live is not None:
+                live.log_metric("train/loss", loss.item())
+                live.log_metric("train/avg_log_reward", avg_log_r)
+                live.log_metric("train/grad_norm", grad_norm.item())
+                live.log_metric("train/lr", optimizer.param_groups[0]["lr"])
+                if loss_type == "tb":
+                    live.log_metric("train/logZ", logZ_val)
 
             if not in_warmup and (it + 1) % validation_interval == 0:
                 all_vt, avg_val = self._run_validation(gflownet, env, val_samples)
@@ -215,12 +234,21 @@ class BaseGFlowNetPipeline(abc.ABC):
 
                 elite.update(all_vt, valid_rules)
 
+                if live is not None:
+                    live.log_metric("val/avg_log_reward", avg_val)
+                    live.log_metric("val/ema_log_reward", ema_val)
+                    live.log_metric("val/best_ema", ckpt.best_ema)
+                    live.log_metric("val/best_log_reward_ever", elite.best_log_reward)
+
                 logger.info("Iter %d: ema=%.4f best (%d rules)", it + 1, ema_val, len(elite.best_selected))
                 logger.info(
                     "Loss= %.4f : avg_log_r= %.4f : logZ= %.4f : grad_norm= %.4f : lr= %.6g",
-                    loss.item(), avg_log_r, gflownet.logZ.item() if loss_type == "tb" else 0.0,
+                    loss.item(), avg_log_r, logZ_val,
                     grad_norm.item(), optimizer.param_groups[0]["lr"],
                 )
+
+            if live is not None:
+                live.next_step()
 
         ckpt.restore_best(gflownet, self.device)
 
@@ -229,7 +257,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         log_rs = final_trajs.log_rewards.cpu()
         best_idx = log_rs.argmax().item()
 
-        reward_module = getattr(env.reward_fn, "reward_module", None)
+        reward_module = env.reward_module
         debug_breakdown(elite.best_selected, valid_rules, reward_module, logger, label="best_selected_ever")
 
         if log_rs[best_idx].item() > elite.best_log_reward:
@@ -240,10 +268,14 @@ class BaseGFlowNetPipeline(abc.ABC):
 
         debug_breakdown(final_selected, valid_rules, reward_module, logger, label="final_selected (returned)")
 
-        logger.info(
-            "Final: %d rules, best=%.4f",
-            len(final_selected), max(elite.best_log_reward, log_rs[best_idx].item()),
-        )
+        final_best_log_reward = max(elite.best_log_reward, log_rs[best_idx].item())
+        logger.info("Final: %d rules, best=%.4f", len(final_selected), final_best_log_reward)
+
+        if live is not None:
+            live.summary["best_log_reward"] = final_best_log_reward
+            live.summary["n_rules_selected"] = len(final_selected)
+            live.end()
+
         return final_selected
 
     def run(
@@ -265,11 +297,21 @@ class BaseGFlowNetPipeline(abc.ABC):
         logZ_warmup_steps: int = 50,
         val_samples: int = 10,
         early_stop_delta: float = 0.001,
+        use_dvc: bool = True,
+        dvc_dir: Optional[str] = None,
     ) -> List[Rule]:
         """`valid_rules`/`cover`/`correct`/`rule_len` phải đến từ MỘT lần gọi
         duy nhất `RuleValidator.validate_and_build_tensors()` ở ngoài (stage4)
         — pipeline này KHÔNG tự tính lại cover/correct, tránh quét val set
-        lần thứ hai (xem README.md, mục "Reward")."""
+        lần thứ hai (xem README.md, mục "Reward").
+
+        `use_dvc`: bật/tắt tracking bằng DVCLive (loss, avg_log_reward,
+        grad_norm, lr, logZ mỗi bước train; avg/ema/best log-reward mỗi lần
+        validate; best_log_reward + n_rules_selected làm summary cuối cùng).
+        Cần cài `dvclive` (`pip install dvclive`); nếu thiếu, tự động bỏ qua
+        và chỉ log qua logger như trước. `dvc_dir` mặc định là
+        `<output_dir>/dvclive`.
+        """
         self.device = torch.device(device)
 
         if not valid_rules:
@@ -358,23 +400,56 @@ class BaseGFlowNetPipeline(abc.ABC):
         gflownet.to(self.device)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3, threshold=1e-4)
 
-        return self._train_gflownet(
-            gflownet=gflownet,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            env=env,
-            valid_rules=valid_rules,
-            n_valid=n_valid,
-            max_rules=max_rules,
-            num_iterations=num_iterations,
-            batch_size=batch_size,
-            validation_interval=validation_interval,
-            logZ_warmup_steps=logZ_warmup_steps,
-            val_samples=val_samples,
-            early_stop_delta=early_stop_delta,
-            loss_type=loss_type,
-            output_dir=output_dir,
-        )
+        live = None
+        if use_dvc:
+            if Live is None:
+                logger.warning(
+                    "use_dvc=True nhưng chưa cài dvclive (`pip install dvclive`) — bỏ qua tracking DVC."
+                )
+            else:
+                live = Live(dir=dvc_dir or os.path.join(output_dir, "dvclive"), report="html")
+                live.log_params(
+                    {
+                        "loss_type": loss_type,
+                        "n_valid_rules": n_valid,
+                        "max_rules": max_rules,
+                        "num_iterations": num_iterations,
+                        "batch_size": batch_size,
+                        "lr": lr,
+                        "logZ_lr": logZ_lr,
+                        "gfnet_hidden_dim": gfnet_hidden_dim,
+                        "validation_interval": validation_interval,
+                        "logZ_warmup_steps": logZ_warmup_steps,
+                        "val_samples": val_samples,
+                        "early_stop_delta": early_stop_delta,
+                        "grad_clip_max_norm": self.grad_clip_max_norm,
+                        **self._reward_params(),
+                    }
+                )
+
+        try:
+            return self._train_gflownet(
+                gflownet=gflownet,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                env=env,
+                valid_rules=valid_rules,
+                n_valid=n_valid,
+                max_rules=max_rules,
+                num_iterations=num_iterations,
+                batch_size=batch_size,
+                validation_interval=validation_interval,
+                logZ_warmup_steps=logZ_warmup_steps,
+                val_samples=val_samples,
+                early_stop_delta=early_stop_delta,
+                loss_type=loss_type,
+                output_dir=output_dir,
+                live=live,
+            )
+        except Exception:
+            if live is not None:
+                live.end()
+            raise
 
 
 class RuleExtractionPipeline(BaseGFlowNetPipeline):
@@ -398,6 +473,14 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         super().__init__(device)
         self.w_acc, self.w_cov, self.w_conflict, self.beta = w_acc, w_cov, w_conflict, beta
 
+    def _reward_params(self) -> Dict[str, Any]:
+        return {
+            "w_acc": self.w_acc,
+            "w_cov": self.w_cov,
+            "w_conflict": self.w_conflict,
+            "beta": self.beta,
+        }
+
     def _create_reward_function(
         self,
         valid_rules: List[Rule],
@@ -420,11 +503,4 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         )
         self._last_reward_module = reward_module
 
-        def reward_fn(states: torch.Tensor) -> torch.Tensor:
-            if states.dim() == 1:
-                states = states.unsqueeze(0)
-            return reward_module(states.to(self.device))
-
-        reward_fn.reward_module = reward_module
-
-        return reward_fn
+        return reward_module

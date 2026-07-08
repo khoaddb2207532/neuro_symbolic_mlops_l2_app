@@ -1,5 +1,5 @@
 """Môi trường DAG rời rạc để chọn tập luật con bằng GFlowNet (pattern FacesEnv)."""
-from typing import Callable, Optional
+from typing import Optional
 
 import torch
 from gfn.actions import Actions
@@ -7,22 +7,31 @@ from gfn.env import DiscreteEnv
 from gfn.states import DiscreteStates
 from gfn.preprocessors import IdentityPreprocessor
 
+from src.gflownet.reward import RuleSetReward
+
 
 class RuleSelectionEnv(DiscreteEnv):
     """Trạng thái: vector nhị phân {0,1}^n_rules. Hành động {0..n_rules-1}=thêm
     luật i; {n_rules}=exit. Forward mask cấm chọn lại luật đã có hoặc vượt max_rules;
-    backward mask cho phép bỏ luật đang được chọn."""
+    backward mask cho phép bỏ luật đang được chọn.
+
+    Env SỞ HỮU TRỰC TIẾP `reward_module` (một `RuleSetReward`), thay vì nhận
+    một callable đã bị bọc/gắn thêm attribute từ bên ngoài (pattern cũ khiến
+    pipeline phải làm `reward_fn.reward_module = reward_module` — một hack
+    rò rỉ trách nhiệm). `reward()` và `log_reward()` chỉ là hai cách đọc khác
+    nhau của CÙNG một `reward_module.score()`, giống cách các env chuẩn của
+    torchgfn (vd FacesEnv) tự quản lý reward của chính nó."""
 
     def __init__(
         self,
         n_rules: int,
         max_rules: int,
-        reward_fn: Callable[[torch.Tensor], torch.Tensor],
+        reward_module: RuleSetReward,
         device: Optional[torch.device] = None,
     ):
         self.n_rules = n_rules
         self.max_rules = max_rules
-        self.reward_fn = reward_fn
+        self.reward_module = reward_module
 
         device = device if device is not None else torch.device("cpu")
         s0 = torch.zeros(n_rules, dtype=torch.float, device=device)
@@ -71,8 +80,8 @@ class RuleSelectionEnv(DiscreteEnv):
         return self.States(new_tensor)
 
     def reward(self, final_states: DiscreteStates) -> torch.Tensor:
-        return self.reward_fn(final_states.tensor)
+        return self.reward_module(final_states.tensor)
 
     def log_reward(self, final_states: DiscreteStates) -> torch.Tensor:
-        raw = self.reward_fn.reward_module.score(final_states.tensor)  # đã ở thang cố định (trước khi exp)
-        return self.reward_fn.reward_module.beta * raw
+        raw = self.reward_module.score(final_states.tensor)  # đã ở thang cố định (trước khi exp)
+        return self.reward_module.beta * raw
