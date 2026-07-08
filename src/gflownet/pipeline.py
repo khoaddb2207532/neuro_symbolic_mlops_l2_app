@@ -139,6 +139,7 @@ class _SamplerCheckpointTracker:
             torch.save({"iteration": iteration, "model": state_dict, "best_log_reward": self.best_ema,
                         "n_rules": n_valid, "max_rules": max_rules, "dist_metrics": dist_metrics},
                        self.ckpt_path)
+            logger.info("Update ema_val! Save checkpoint!")
         return self.ema_val, improved
 
 
@@ -314,7 +315,7 @@ class BaseGFlowNetPipeline(abc.ABC):
                     live.log_metric("val/calib_corr", dist_metrics["calib_corr"])
                     live.log_metric("val/sampler_best_ema", sampler_ckpt.best_ema)
 
-                logger.info("Iter %d: ema=%.4f best (%d rules)", it + 1, ema_val, len(elite.best_selected))
+                logger.info("Iter %d: ema=%.4f best (%d rules)\n", it + 1, ema_val, len(elite.best_selected))
                 logger.info(
                     "Loss= %.4f : avg_log_r= %.4f : logZ= %.4f : grad_norm= %.4f : lr= %.6g",
                     loss.item(), avg_log_r, logZ_val,
