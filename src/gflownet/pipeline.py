@@ -277,8 +277,8 @@ class BaseGFlowNetPipeline(abc.ABC):
         live: Optional["Live"] = None, # type: ignore
     ) -> List[Rule]:
         elite = _EliteTracker()
-        ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best.pth"))
-        sampler_ckpt = _SamplerCheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler.pth"))
+        ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler.pth"))
+        sampler_ckpt = _SamplerCheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler1.pth"))
 
         pbar = tqdm(range(num_iterations), desc="GFlowNet (torchgfn)")
         for it in pbar:
@@ -308,9 +308,9 @@ class BaseGFlowNetPipeline(abc.ABC):
                 dist_metrics = self._distribution_metrics(all_vt)
 
                 ema_val, _ = ckpt.update(
-                    avg_val, gflownet, it + 1, n_valid, max_rules, early_stop_delta
+                    -tb_residual, gflownet, it + 1, n_valid, max_rules, early_stop_delta
                 )
-                scheduler.step(ema_val)
+                scheduler.step(tb_residual)
 
                 sampler_ckpt.update(avg_val, dist_metrics, gflownet, it + 1, n_valid, max_rules, early_stop_delta)
                 elite.update(all_vt, valid_rules)
@@ -494,7 +494,7 @@ class BaseGFlowNetPipeline(abc.ABC):
             raise ValueError(f"loss_type phải là 'tb'/'db'/'fm', nhận '{loss_type}'")
 
         gflownet.to(self.device)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.7, patience=10, threshold=1e-4, min_lr=1e-6)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.7, patience=10, threshold=1e-4, min_lr=1e-6)
 
         live = None
         if use_dvc:
