@@ -191,7 +191,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         samples = gflownet.to_training_samples(trajectories)
 
         optimizer.zero_grad()
-        loss = gflownet.loss(env, samples)
+        loss = gflownet.loss(env=env, trajectories = samples, recalculate_all_logprobs = False)
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(
             gflownet.parameters(), max_norm=self.grad_clip_max_norm
@@ -204,14 +204,26 @@ class BaseGFlowNetPipeline(abc.ABC):
     # 2) Validation — sample nhiều lần để ước lượng log-reward ổn định hơn.
     # ------------------------------------------------------------------
     @staticmethod
+    # def _run_validation(gflownet, env: RuleSelectionEnv, val_samples: int, n_repeats: int = 3):
+    #     all_vt, raw_vals = [], []
+    #     with torch.no_grad():
+    #         for _ in range(n_repeats):
+    #             vt = gflownet.sample_trajectories(env, n=val_samples, save_logprobs=True)
+    #             all_vt.append(vt)
+    #             raw_vals.append(vt.log_rewards.mean().item())
+    #     return all_vt, float(np.mean(raw_vals))
     def _run_validation(gflownet, env: RuleSelectionEnv, val_samples: int, n_repeats: int = 3):
-        all_vt, raw_vals = [], []
+        """1 vòng validate: sample trajectories MỘT LẦN, dùng lại đúng batch đó
+        để tính cả avg reward lẫn TB residual — không sample 2 lần, không tách
+        rời logic khiến phải duyệt all_vt thêm một vòng riêng."""
+        all_vt, raw_vals, residuals = [], [], []
         with torch.no_grad():
             for _ in range(n_repeats):
                 vt = gflownet.sample_trajectories(env, n=val_samples, save_logprobs=True)
                 all_vt.append(vt)
                 raw_vals.append(vt.log_rewards.mean().item())
-        return all_vt, float(np.mean(raw_vals))
+                residuals.append(gflownet.loss(env, gflownet.to_training_samples(vt)).item())
+        return all_vt, float(np.mean(raw_vals)), float(np.mean(residuals))
     
     @staticmethod
     def _distribution_metrics(all_vt: list) -> Dict[str, float]:
@@ -292,7 +304,7 @@ class BaseGFlowNetPipeline(abc.ABC):
                     live.log_metric("train/logZ", logZ_val)
 
             if not in_warmup and (it + 1) % validation_interval == 0:
-                all_vt, avg_val = self._run_validation(gflownet, env, val_samples)
+                all_vt, avg_val, tb_residual  = self._run_validation(gflownet, env, val_samples)
                 dist_metrics = self._distribution_metrics(all_vt)
 
                 ema_val, _ = ckpt.update(
@@ -315,7 +327,9 @@ class BaseGFlowNetPipeline(abc.ABC):
                     live.log_metric("val/calib_corr", dist_metrics["calib_corr"])
                     live.log_metric("val/sampler_best_ema", sampler_ckpt.best_ema)
 
-                logger.info("Iter %d: ema=%.4f best (%d rules), calib_corr=%.4f \n", it + 1, ema_val, len(elite.best_selected),dist_metrics["calib_corr"])
+                    live.log_metric("val/tb_residual", tb_residual)
+
+                logger.info("Iter %d: ema=%.4f best (%d rules), tb_residual=%.4f \n", it + 1, ema_val, len(elite.best_selected), tb_residual)
                 logger.info(
                     "Loss= %.4f : avg_log_r= %.4f : logZ= %.4f : grad_norm= %.4f : lr= %.6g",
                     loss.item(), avg_log_r, logZ_val,
