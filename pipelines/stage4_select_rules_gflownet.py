@@ -56,6 +56,7 @@ def main(params_path: str) -> None:
         w_cov=gfn_cfg.get("w_cov", 0.5),
         w_conflict=gfn_cfg.get("w_conflict", 0.5),
         beta=gfn_cfg.get("beta", 3.0),
+        grad_clip_max_norm=gfn_cfg.get("grad_clip_max_norm", 5.0),
     )
     selected_rules = pipeline.run(
         valid_rules=valid_rules,
