@@ -56,15 +56,15 @@ def main(params_path: str) -> None:
     # Load features và logits của validation và test
     splits = ['val', 'test']  # test có thể có hoặc không, nhưng nên đánh giá
     for split in splits:
-        feat_path = os.path.join(features_dir, f'{split}_features.npy')
-        label_path = os.path.join(features_dir, f'{split}_labels.npy')
+        feat_path = os.path.join(features_dir, f'{split}_features.pt')
+        label_path = os.path.join(features_dir, f'{split}_labels.pt')
         logits_path = os.path.join(features_dir, f'{split}_logits.pt')
         if not (os.path.exists(feat_path) and os.path.exists(label_path) and os.path.exists(logits_path)):
             logger.warning(f"Bỏ qua {split} vì thiếu file")
             continue
 
-        X = np.load(feat_path)
-        y = np.load(label_path)
+        X = torch.load(feat_path).numpy()
+        y = torch.load(label_path).numpy()
         logits = torch.load(logits_path).numpy()  # shape (n, num_classes)
 
         eval_result = evaluate_rf(rf_model, X, y, cnn_logits=logits)
