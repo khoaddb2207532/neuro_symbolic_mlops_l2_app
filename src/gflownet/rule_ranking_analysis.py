@@ -88,8 +88,8 @@ def rebuild_gflownet(rule_order: Dict, ckpt_path: str, device: torch.device):
 
     env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=device)
 
-    pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=hidden_dim, n_hidden_layers=2)
-    pb_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions - 1, hidden_dim=hidden_dim, n_hidden_layers=2)
+    pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=hidden_dim, n_hidden_layers=2, add_layer_norm = True)
+    pb_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions - 1, hidden_dim=hidden_dim, n_hidden_layers=2, add_layer_norm = True)
     pf_estimator = DiscretePolicyEstimator(module=pf_module, n_actions=env.n_actions, is_backward=False, preprocessor=env.preprocessor)
     pb_estimator = DiscretePolicyEstimator(module=pb_module, n_actions=env.n_actions, is_backward=True, preprocessor=env.preprocessor)
 
