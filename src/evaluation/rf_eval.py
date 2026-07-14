@@ -63,7 +63,19 @@ def evaluate_rf(rf_model, X, y_true, cnn_logits=None, class_names=None):
     return results
 
 
+def _convert_to_native(obj):
+    """Chuyển đổi đệ quy numpy types sang Python native."""
+    if isinstance(obj, (np.integer, np.floating)):
+        return obj.item()
+    elif isinstance(obj, list):
+        return [_convert_to_native(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: _convert_to_native(v) for k, v in obj.items()}
+    else:
+        return obj
+
 def save_rf_evaluation(results, save_path):
-    """Lưu kết quả đánh giá dạng JSON."""
+    """Lưu kết quả đánh giá dạng JSON (xử lý numpy types)."""
+    converted = _convert_to_native(results)
     with open(save_path, 'w') as f:
-        json.dump(results, f, indent=2)
+        json.dump(converted, f, indent=2)
