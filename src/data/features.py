@@ -56,7 +56,8 @@ def train_and_save_rf(
     features_dir: str,
     rf_output_path: str,
     rules_output_path: str,
-    n_estimators: int = 100,
+    n_estimators: int = 150,
+    max_depth: int = 13,
 ) -> RuleSet:
     """Train RF một lần trên toàn bộ train set, lưu model, đồng thời trích
     luật thô (chưa lọc) ngay tại đây và lưu ra `rules_output_path` — nơi khác
@@ -66,7 +67,7 @@ def train_and_save_rf(
     X_train = torch.load(f"{features_dir}/train_features.pt").numpy()
     y_train = torch.load(f"{features_dir}/train_labels.pt").numpy()
 
-    rf = RandomForestClassifier(n_estimators=n_estimators, max_depth=12, random_state=42, n_jobs=-1)
+    rf = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42, n_jobs=-1)
     rf.fit(X_train, y_train)
     joblib.dump(rf, rf_output_path)
     logger.info("RF model saved to %s", rf_output_path)

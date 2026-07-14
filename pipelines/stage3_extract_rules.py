@@ -31,6 +31,8 @@ def main(params_path: str) -> None:
         features_dir=features_dir,
         rf_output_path=os.path.join(output_dir, "rf_model.joblib"),
         rules_output_path=os.path.join(output_dir, "raw_rules.pkl"),
+        n_estimators=params["rf"]["n_estimators"],
+        max_depth=params["rf"]["max_depth"],
     )
     logger.info("Số luật thô trích từ RF: %d", len(raw_rules))
 

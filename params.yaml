@@ -34,7 +34,9 @@ transfer_learning:
   freeze_schedule_stage2:
     0: "last_block"
     10: "full"
-
+rf:
+  n_estimators: 150
+  max_depth: 13
 rules:
   min_support: 0.01
   min_confidence: 0.7
