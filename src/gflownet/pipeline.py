@@ -161,6 +161,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         correct: torch.Tensor,
         rule_len: torch.Tensor,
         max_rules: int,
+        sample_weight: Optional[torch.Tensor] = None,
     ) -> Callable:
         ...
 
@@ -277,8 +278,8 @@ class BaseGFlowNetPipeline(abc.ABC):
         live: Optional["Live"] = None, # type: ignore
     ) -> List[Rule]:
         elite = _EliteTracker()
-        ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler.pth"))
-        sampler_ckpt = _SamplerCheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler1.pth"))
+        ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best.pth"))
+        sampler_ckpt = _SamplerCheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler.pth"))
 
         pbar = tqdm(range(num_iterations), desc="GFlowNet (torchgfn)")
         for it in pbar:
@@ -395,6 +396,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         early_stop_delta: float = 0.001,
         use_dvc: bool = True,
         dvc_dir: Optional[str] = None,
+        sample_weight: Optional[torch.Tensor] = None,
     ) -> List[Rule]:
         """`valid_rules`/`cover`/`correct`/`rule_len` phải đến từ MỘT lần gọi
         duy nhất `RuleValidator.validate_and_build_tensors()` ở ngoài (stage4)
@@ -429,7 +431,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         os.makedirs(output_dir, exist_ok=True)
         save_rules_excel(valid_rules, os.path.join(output_dir, "valid_rules.xlsx"))
 
-        reward_fn = self._create_reward_function(valid_rules, cover, correct, rule_len, max_rules)
+        reward_fn = self._create_reward_function(valid_rules, cover, correct, rule_len, max_rules, sample_weight)
         env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=self.device)
 
         # Lưu lại NGUYÊN VẸN thứ tự valid_rules SAU permutation + cover/correct/
@@ -565,7 +567,7 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         w_cov: float = 0.5,
         w_conflict: float = 0.5,
         beta: float = 3.0,
-        grad_clip_max_norm : Optional[float] = None, 
+        grad_clip_max_norm : Optional[float] = 5.0, 
     ):
         super().__init__(device, grad_clip_max_norm )
         self.w_acc, self.w_cov, self.w_conflict, self.beta = w_acc, w_cov, w_conflict, beta
@@ -585,6 +587,8 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         correct: torch.Tensor,
         rule_len: torch.Tensor,
         max_rules: int,
+        sample_weight : Optional[torch.Tensor] = None,
+
     ) -> Callable:
         targets = torch.tensor([r.target_class for r in valid_rules], device=cover.device)
         reward_module = RuleSetReward(
@@ -597,6 +601,7 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
             w_cov=self.w_cov,
             w_conflict=self.w_conflict,
             beta=self.beta,
+            sample_weight=sample_weight,
         )
         self._last_reward_module = reward_module
 

@@ -1,9 +1,12 @@
+from typing import Optional
+
 import torch
 
 
 class RuleSetReward:
     def __init__(self, cover: torch.Tensor, correct: torch.Tensor,
                  rule_len: torch.Tensor, max_rules: int, targets: torch.Tensor,
+                 sample_weight: Optional[torch.Tensor] = None,
                  w_acc=1.0, w_cov=0.5, w_conflict=0.5, beta=3.0):
         """
         cover:    (n_rules, n_val) bool - luật i có match mẫu j không
@@ -14,6 +17,21 @@ class RuleSetReward:
         targets:  (n_rules,) long - target_class của từng luật, dùng để tách
                   "trùng lặp vô hại" (2 luật cùng phủ 1 vùng, CÙNG target) khỏi
                   "xung đột thật sự" (2 luật cùng phủ 1 vùng, KHÁC target).
+        sample_weight: (n_val,) float, optional - trọng số THEO MẪU dùng để
+                  reweight `coverage` (KHÔNG dùng cho accuracy/conflict_ratio,
+                  xem giải thích trong components()). Mặc định None -> mọi
+                  mẫu có trọng số bằng nhau (hành vi CŨ, coverage = tỉ lệ mẫu
+                  phủ thô trên n_val).
+
+                  Ý NGHĨA THIẾT KẾ: cho phép biến `coverage` từ "tỉ lệ mẫu
+                  được phủ" thành "tỉ lệ TRỌNG SỐ được phủ" — ví dụ dùng độ
+                  không chắc chắn/lỗi hiện tại của CNN (biến thể D: u_error +
+                  lam*(1-u_error)*u_entropy, xem src/gflownet/uncertainty.py)
+                  để luật phủ đúng vùng CNN đang yếu được thưởng coverage cao
+                  hơn luật chỉ phủ vùng CNN vốn đã tự tin/đúng. QUAN TRỌNG:
+                  `sample_weight` phải cùng THỨ TỰ HÀNG với `cover`/`correct`
+                  (cùng tập validation, cùng permutation mẫu) — nếu không sẽ
+                  trọng số nhầm sang mẫu khác.
 
         THIẾT KẾ (đã đổi so với bản đầu): reward này dùng để CHỌN luật phục vụ
         MỘT mục đích duy nhất — làm regularizer tốt cho CNN ở stage5, không
@@ -47,6 +65,16 @@ class RuleSetReward:
         KHÔNG bị pha loãng khi thêm luật — ngược lại, thêm luật xung đột
         thực sự sẽ làm `conflict_ratio` tăng lên đúng theo số mẫu bị ảnh
         hưởng, phản ánh đúng mức độ "hỏng" của ruleset.
+
+        SỬA LẦN 3 — thêm `sample_weight` cho coverage (không đổi accuracy/
+        conflict_ratio): `accuracy` đo độ tin cậy NỘI TẠI của luật (đúng hay
+        sai trong phần được phủ) — không liên quan tới việc mẫu đó dễ hay
+        khó với CNN, nên KHÔNG reweight. `conflict_ratio` đo mức độ gây hại
+        của xung đột — xung đột gây hại BẤT KỂ mẫu dễ hay khó (thậm chí trên
+        mẫu dễ, nơi CNN vốn đã đúng, một tín hiệu mâu thuẫn còn có nguy cơ
+        PHÁ một dự đoán đang đúng), nên cũng KHÔNG reweight. Chỉ `coverage`
+        được reweight, vì đây đúng là đại lượng cần trả lời câu hỏi "luật có
+        đang phủ ĐÚNG CHỖ cần hay không", khác với "phủ bao nhiêu" thuần túy.
         """
         self.cover = cover.float()
         self.correct = correct.float()
@@ -55,6 +83,18 @@ class RuleSetReward:
         self.max_rules = max_rules
         self.w_acc, self.w_cov, self.w_conflict = w_acc, w_cov, w_conflict
         self.beta = beta
+
+        if sample_weight is not None:
+            assert sample_weight.shape[0] == self.n_val, (
+                f"sample_weight có {sample_weight.shape[0]} phần tử, "
+                f"nhưng n_val = {self.n_val} — phải cùng thứ tự hàng với "
+                "cover/correct."
+            )
+            self.sample_weight = sample_weight.to(cover.device).float()
+        else:
+            # Fallback: mọi mẫu trọng số bằng nhau -> coverage weighted quy
+            # về đúng công thức coverage thô cũ (mean trên n_val).
+            self.sample_weight = torch.ones(self.n_val, device=cover.device)
 
         # ma trận overlap giữa các luật (Jaccard) — CHỈ dùng cho thống kê mô
         # tả bên ngoài (evaluate_run báo cáo độ trùng lặp tổng quát, không
@@ -84,15 +124,24 @@ class RuleSetReward:
         """
         covered = (s @ self.cover) > 0                       # (B, n_val)
         correct_covered = (s @ self.correct) > 0
-        coverage = covered.float().mean(-1)
-        # accuracy chỉ tính trên phần được phủ
+        # accuracy chỉ tính trên phần được phủ - KHÔNG reweight theo
+        # sample_weight (đo độ tin cậy nội tại của luật, không phụ thuộc
+        # mẫu đó dễ/khó với CNN - xem docstring __init__ SỬA LẦN 3).
         accuracy = (correct_covered.float().sum(-1)) / covered.float().sum(-1).clamp(min=1)
+
+        # coverage: TỈ LỆ TRỌNG SỐ mẫu được phủ, không phải tỉ lệ SỐ LƯỢNG
+        # mẫu thô. Nếu sample_weight = ones (mặc định), công thức này quy
+        # về đúng coverage.mean(-1) như bản gốc (không đổi hành vi cũ).
+        w = self.sample_weight
+        coverage = (covered.float() * w).sum(-1) / w.sum().clamp(min=1e-8)
 
         # conflict_ratio: với mỗi target c, gộp (OR) coverage của các luật
         # ĐƯỢC CHỌN thuộc target đó -> covered_by_class (B, C, n_val). Một
         # mẫu bị "xung đột" nếu nó được phủ bởi >= 2 target khác nhau trong
         # số các luật đã chọn. Đo theo TỈ LỆ MẪU (chia n_val cố định), không
         # theo trung bình cặp luật -> không bị pha loãng khi ruleset lớn dần.
+        # KHÔNG reweight theo sample_weight - xung đột gây hại bất kể mẫu
+        # dễ/khó (xem docstring __init__ SỬA LẦN 3).
         if self.num_classes > 0:
             s_by_class = s.unsqueeze(1) * self.class_masks.unsqueeze(0)      # (B, C, R)
             covered_by_class = torch.einsum("bcr,rj->bcj", s_by_class, self.cover) > 0  # (B, C, n_val)

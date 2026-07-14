@@ -10,7 +10,7 @@ output_dir: "outputs"
 num_classes: 12
 batch_size: 64
 num_workers: 4
-num_epochs: 100
+num_epochs: 5
 patience: 5
 weight_decay: !!float 1e-4
 monitor_metric: "val_loss"
@@ -69,8 +69,13 @@ gflownet:
   loss_type: "tb"          # "tb" | "db" | "fm"
   logZ_warmup_steps: 50
   val_samples: 140
-  w_acc: 1.0
-  w_cov: 0.5
+  w_acc: 0.5
+  w_cov: 1.0
   w_conflict: 0.5
   beta: 1.0
-  grad_clip_max_norm : None
+  grad_clip_max_norm : 5.0
+
+uncertainty:
+  enabled: true
+  lam: 0.3
+  clip_max: null        # đặt số nếu cần giới hạn u

@@ -24,19 +24,32 @@ logger = get_logger(__name__)
 
 
 def extract_and_save_features(model, dataloaders: dict, output_dir: str, device="cuda") -> None:
+    """Trích và lưu CẢ features 1280-d LẪN logits (num_classes-d), cùng một
+    lần forward — không forward lại CNN ở stage4 để tính uncertainty nữa.
+
+    `model` là `FeatureExtractor` (forward() chỉ trả features, dừng ở
+    classifier[0:3]) — logits được tính thêm bằng đúng lớp Linear cuối cùng
+    của CÙNG backbone (`model.backbone.classifier[3]`), không đổi
+    `FeatureExtractor.forward()` để tránh ảnh hưởng các nơi khác đang gọi nó
+    chỉ để lấy features (vd stage3 trích luật)."""
     model = model.to(device).eval()
     os.makedirs(output_dir, exist_ok=True)
     valid_splits = [s for s in ["train", "val", "test"] if s in dataloaders and dataloaders[s] is not None]
     with torch.no_grad():
         for split in valid_splits:
-            all_features, all_labels = [], []
+            all_features, all_logits, all_labels = [], [], []
             for images, labels in tqdm(dataloaders[split], desc=f"Extracting {split}"):
-                feats = model(images.to(device))
+                logits, feats = model(images.to(device))
                 all_features.append(feats.cpu())
+                all_logits.append(logits.cpu())
                 all_labels.append(labels.cpu())
             torch.save(torch.cat(all_features, 0), os.path.join(output_dir, f"{split}_features.pt"))
+            torch.save(torch.cat(all_logits, 0), os.path.join(output_dir, f"{split}_logits.pt"))
             torch.save(torch.cat(all_labels, 0), os.path.join(output_dir, f"{split}_labels.pt"))
-            logger.info("Saved %s: %d-dim features", split, all_features[0].shape[-1])
+            logger.info(
+                "Saved %s: %d-dim features, %d-class logits",
+                split, all_features[0].shape[-1], all_logits[0].shape[-1],
+            )
 
 
 def train_and_save_rf(

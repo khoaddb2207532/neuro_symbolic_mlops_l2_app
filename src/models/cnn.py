@@ -139,4 +139,7 @@ class FeatureExtractor(nn.Module):
         x = self.backbone.features(x)
         x = self.backbone.avgpool(x)
         x = torch.flatten(x, 1)
-        return self.backbone.classifier[0:3](x)
+        features = self.backbone.classifier[0:3](x)  # 1280-dim
+        logits = self.backbone.classifier[3](features)
+        return logits, features
+        

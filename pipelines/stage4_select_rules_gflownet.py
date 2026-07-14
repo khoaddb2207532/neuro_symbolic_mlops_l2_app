@@ -6,6 +6,7 @@ import pickle
 import torch
 
 from src.gflownet.pipeline import RuleExtractionPipeline
+from src.gflownet.uncertainty import compute_prediction_stats_from_logits, compute_sample_weight
 from src.rules.validator import RuleValidator
 from src.rules.io import save_rules_excel
 from src.utils.config import load_params
@@ -49,6 +50,52 @@ def main(params_path: str) -> None:
     valid_rules = list(valid_rule_set.rules)
     logger.info("Số luật hợp lệ sau khi lọc bằng val set: %d", len(valid_rules))
 
+    # ------------------------------------------------------------------
+    # sample_weight (u) — độ không chắc chắn/lỗi của CNN trên ĐÚNG
+    # val_features/val_labels đã dùng để build cover/correct ở trên.
+    #
+    # KHÔNG forward lại CNN: nạp thẳng `val_logits.pt` đã được stage2 lưu
+    # sẵn cùng lúc với val_features.pt (xem features.py::extract_and_save_
+    # features) — cùng một lần forward, cùng checkpoint, cùng thứ tự mẫu,
+    # loại bỏ hoàn toàn rủi ro lệch checkpoint hoặc lệch kiến trúc so với
+    # lúc trích features cho RF.
+    #
+    # Biến thể D:  u = u_error + lam * (1 - u_error) * u_entropy_normalized
+    # Xem src/gflownet/uncertainty.py và src/gflownet/reward.py để biết
+    # cách u chỉ tác động tới `coverage`, không đụng accuracy/conflict_ratio.
+    # ------------------------------------------------------------------
+    uc_cfg = params.get("uncertainty", {})
+    sample_weight = None
+    if uc_cfg.get("enabled", False):
+        num_classes = params["num_classes"]
+        val_logits = torch.load(f"{features_dir}/val_logits.pt").to(device)
+        assert val_logits.shape[0] == val_labels.shape[0], (
+            f"val_logits ({val_logits.shape[0]} hàng) không khớp val_labels "
+            f"({val_labels.shape[0]} hàng) — kiểm tra lại stage2 đã lưu logits "
+            "đúng cùng lần forward với features/labels chưa."
+        )
+
+        pred, entropy_norm = compute_prediction_stats_from_logits(
+            logits=val_logits, num_classes=num_classes,
+        )
+        sample_weight = compute_sample_weight(
+            pred=pred,
+            entropy_norm=entropy_norm,
+            y_true=val_labels.cpu(),
+            lam=uc_cfg.get("lam", 0.3),
+            clip_max=uc_cfg.get("clip_max", None),
+        )
+        logger.info(
+            "sample_weight (u): n=%d, mean=%.4f, frac(u>0.5)=%.4f",
+            sample_weight.shape[0],
+            sample_weight.mean().item(),
+            (sample_weight > 0.5).float().mean().item(),
+        )
+        with open(os.path.join(output_dir, "sample_weight.pkl"), "wb") as f:
+            pickle.dump(sample_weight, f)
+    else:
+        logger.info("uncertainty.enabled = False — dùng coverage thô (không weighted).")
+
     gfn_cfg = params["gflownet"]
     pipeline = RuleExtractionPipeline(
         device=device,
@@ -75,6 +122,7 @@ def main(params_path: str) -> None:
         loss_type=gfn_cfg["loss_type"],
         logZ_warmup_steps=gfn_cfg["logZ_warmup_steps"],
         val_samples=gfn_cfg["val_samples"],
+        sample_weight=sample_weight,
     )
 
     with open(os.path.join(output_dir, "selected_rules.pkl"), "wb") as f:

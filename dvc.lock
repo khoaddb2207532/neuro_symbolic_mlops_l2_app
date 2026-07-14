@@ -5,20 +5,20 @@ stages:
     deps:
     - path: pipelines/stage1_train_baseline.py
       hash: md5
-      md5: 30c411d578f353fd90d1f3b1f6a4ebb4
-      size: 2980
+      md5: 219c51639a07a25b6caf5a0808bb56cd
+      size: 3058
     - path: src/data/dataset.py
       hash: md5
-      md5: 0e34b650facd2a3c1162da65696c34d3
-      size: 3620
+      md5: eda36d5325d7633b8eb66b8e6d910760
+      size: 3716
     - path: src/models/cnn.py
       hash: md5
-      md5: 7be0fdf7aa68a10f2dc1ace98dadb33e
-      size: 6960
+      md5: 4e48ec341642b9f4505c64b740846eb9
+      size: 7075
     - path: src/training/trainer.py
       hash: md5
-      md5: 0d5ec160f861173be8f575f6046ac302
-      size: 14897
+      md5: 978bb706023e157d4d50e5e8997775dc
+      size: 21333
     params:
       params.yaml:
         batch_size: 64
@@ -60,38 +60,42 @@ stages:
       size: 27049907
     - path: pipelines/stage2_extract_features.py
       hash: md5
-      md5: d6643c6e8e3af2e6ae2fe6979582e680
-      size: 1422
+      md5: 9b1b16173bd512d971f2b3a814c5f94c
+      size: 1460
     - path: src/data/features.py
       hash: md5
-      md5: c5fbe42fee7d6c7f55fa0aa4743c1a23
-      size: 2968
+      md5: 9fab57025519afadc6c1073d4ad58032
+      size: 3812
+    - path: src/models/cnn.py
+      hash: md5
+      md5: 4e48ec341642b9f4505c64b740846eb9
+      size: 7075
     outs:
     - path: outputs/02_features
       hash: md5
-      md5: c06b213214870491d2ad2ab281e693a3.dir
-      size: 54530504
-      nfiles: 6
+      md5: a08fda67d5d9a52f105a5c8b04efcb42.dir
+      size: 55045591
+      nfiles: 9
   extract_rules:
     cmd: python -m pipelines.stage3_extract_rules --config params.yaml
     deps:
     - path: outputs/02_features
       hash: md5
-      md5: c06b213214870491d2ad2ab281e693a3.dir
-      size: 54530504
-      nfiles: 6
+      md5: a08fda67d5d9a52f105a5c8b04efcb42.dir
+      size: 55045591
+      nfiles: 9
     - path: pipelines/stage3_extract_rules.py
       hash: md5
       md5: 81804a8bfb3b197f63b53a03d2fe9ecd
       size: 1857
     - path: src/data/features.py
       hash: md5
-      md5: c5fbe42fee7d6c7f55fa0aa4743c1a23
-      size: 2968
+      md5: 9fab57025519afadc6c1073d4ad58032
+      size: 3812
     - path: src/rules/extractor.py
       hash: md5
-      md5: 5851ae1128d1de2f6489b58c08e4df86
-      size: 1318
+      md5: 515fc24fbf052db35fba7e941b7b9882
+      size: 1348
     - path: src/rules/validator.py
       hash: md5
       md5: 1a734031277f557d01b8d66f0f1413fb
@@ -113,45 +117,70 @@ stages:
   select_rules_gflownet:
     cmd: python -m pipelines.stage4_select_rules_gflownet --config params.yaml
     deps:
+    - path: outputs/02_features
+      hash: md5
+      md5: a08fda67d5d9a52f105a5c8b04efcb42.dir
+      size: 55045591
+      nfiles: 9
     - path: outputs/03_rules/raw_rules.pkl
       hash: md5
       md5: 7459de3daab3a53d15d1e992116996e6
       size: 12456411
     - path: pipelines/stage4_select_rules_gflownet.py
       hash: md5
-      md5: e41b4a9ccb38a658dd9e9c546e029119
-      size: 3541
+      md5: 9212cebb3cba3e6e98a41ddd944899b4
+      size: 6089
     - path: src/gflownet/env.py
       hash: md5
-      md5: a07b8ea9e40b239a04fd722b067861b7
-      size: 3318
+      md5: 79f7c276e3756a224369198403d56fc0
+      size: 3851
     - path: src/gflownet/pipeline.py
       hash: md5
-      md5: eb6b6437a7754ee74d35ee2beaee9560
-      size: 12564
+      md5: 920b9ecf02eede45fc442bc4ee918334
+      size: 28810
+    - path: src/gflownet/reward.py
+      hash: md5
+      md5: 86549afb72f65e80cb2ebbc740a517c9
+      size: 11143
+    - path: src/gflownet/uncertainty.py
+      hash: md5
+      md5: 1f041130d4b51de8d4b65f629df706ef
+      size: 7666
     params:
       params.yaml:
         gflownet:
-          max_rules: 48
+          max_rules: 120
           hidden_dim: 256
-          num_iterations: 1000
+          num_iterations: 5000
           batch_size: 256
-          lr: 0.0001
+          lr: 0.001
           logZ_lr: 0.1
           validation_interval: 100
           loss_type: tb
           logZ_warmup_steps: 50
-          val_samples: 48
-          w_acc: 1.0
-          w_cov: 0.5
-          w_red: 0.3
-          w_comp: 0.2
-          beta: 3.0
+          val_samples: 140
+          w_acc: 0.5
+          w_cov: 1.0
+          w_conflict: 0.5
+          beta: 1.0
+          grad_clip_max_norm: 5.0
+        uncertainty:
+          enabled: true
+          lam: 0.3
+          clip_max:
     outs:
+    - path: outputs/04_filtered_rules/gflownet_best.pth
+      hash: md5
+      md5: 8f1cfdea9914cc3ec8793d643fff60df
+      size: 4570886
+    - path: outputs/04_filtered_rules/gflownet_rule_order.pkl
+      hash: md5
+      md5: 9e4a3038867fa7301c10f3eec5082da8
+      size: 4701135
     - path: outputs/04_filtered_rules/selected_rules.pkl
       hash: md5
-      md5: dec7e64a434091163311cb4cab92c3cf
-      size: 21212
+      md5: edb3cd7a251b2a4bc6e23ec85b1588dc
+      size: 75156
     - path: outputs/04_filtered_rules/valid_rules.pkl
       hash: md5
       md5: 4263994734e75ae0f51a21bd49977848
