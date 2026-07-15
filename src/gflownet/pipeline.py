@@ -192,7 +192,10 @@ class BaseGFlowNetPipeline(abc.ABC):
         samples = gflownet.to_training_samples(trajectories)
 
         optimizer.zero_grad()
-        loss = gflownet.loss(env=env, trajectories = samples, recalculate_all_logprobs = False)
+        if self.loss_type == "fm":
+            loss = gflownet.loss(env, samples)
+        else:
+            loss = gflownet.loss(env, samples, recalculate_all_logprobs = False)
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(
             gflownet.parameters(), max_norm=self.grad_clip_max_norm
@@ -277,6 +280,9 @@ class BaseGFlowNetPipeline(abc.ABC):
         output_dir: str,
         live: Optional["Live"] = None, # type: ignore
     ) -> List[Rule]:
+        
+        self.loss_type = loss_type
+
         elite = _EliteTracker()
         ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best.pth"))
         sampler_ckpt = _SamplerCheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler.pth"))
@@ -490,7 +496,7 @@ class BaseGFlowNetPipeline(abc.ABC):
                 ]
             )
         elif loss_type == "fm":
-            gflownet = FMGFlowNet(estimator=pf_estimator)
+            gflownet = FMGFlowNet(logF=pf_estimator)
             optimizer = torch.optim.Adam(gflownet.parameters(), lr=lr, weight_decay=1e-5)
         else:
             raise ValueError(f"loss_type phải là 'tb'/'db'/'fm', nhận '{loss_type}'")
