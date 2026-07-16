@@ -162,13 +162,15 @@ class BaseGFlowNetPipeline(abc.ABC):
         patience: int = 10, min_diversity: float = 0.2,
     ) -> bool:
         """Dừng sớm nếu diversity sụp đổ (mode collapse) HOẶC val_loss không
-        cải thiện so với min trong `patience` lần validate liền trước."""
+        tạo best mới trong `patience` lần validate liên tiếp."""
         if mode_diversity < min_diversity:
             return True
         if len(val_loss_history) <= patience:
             return False
-        recent_best = min(val_loss_history[-(patience + 1):-1])
-        return val_loss_history[-1] >= recent_best
+
+        best_before_patience_window = min(val_loss_history[:-patience])
+        best_in_patience_window = min(val_loss_history[-patience:])
+        return best_in_patience_window >= best_before_patience_window
 
     # ------------------------------------------------------------------
     # 4) Post-training: sinh nhiều tập luật ứng viên rồi chọn tập tốt nhất
