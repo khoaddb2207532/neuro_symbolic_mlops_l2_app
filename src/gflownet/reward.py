@@ -5,164 +5,172 @@ import torch
 
 class RuleSetReward:
     def __init__(self, cover: torch.Tensor, correct: torch.Tensor,
-                 rule_len: torch.Tensor, max_rules: int, targets: torch.Tensor,
-                 sample_weight: Optional[torch.Tensor] = None,
-                 w_acc=1.0, w_cov=0.5, w_conflict=0.5, beta=3.0):
+                 rule_len: torch.Tensor, max_rules: int,
+                 alpha: float = 1.0, lambda_1: float = 1.0, lambda_2: float = 1.0,
+                 lambda_3: float = 1.0, K: int = 10, gamma: float = 3.0,
+                 sample_weight: Optional[torch.Tensor] = None):
         """
-        cover:    (n_rules, n_val) bool - luật i có match mẫu j không
-        correct:  (n_rules, n_val) bool - luật i match VÀ dự đoán đúng nhãn mẫu j
-        rule_len: (n_rules,) - số điều kiện trong luật (giữ lại để dùng ngoài
-                  reward, ví dụ đo độ phức tạp mô tả cho phần diễn giải, không
-                  còn là 1 số hạng trong score() nữa — xem ghi chú bên dưới)
-        targets:  (n_rules,) long - target_class của từng luật, dùng để tách
-                  "trùng lặp vô hại" (2 luật cùng phủ 1 vùng, CÙNG target) khỏi
-                  "xung đột thật sự" (2 luật cùng phủ 1 vùng, KHÁC target).
-        sample_weight: (n_val,) float, optional - trọng số THEO MẪU dùng để
-                  reweight `coverage` (KHÔNG dùng cho accuracy/conflict_ratio,
-                  xem giải thích trong components()). Mặc định None -> mọi
-                  mẫu có trọng số bằng nhau (hành vi CŨ, coverage = tỉ lệ mẫu
-                  phủ thô trên n_val).
+        Bản torch, có batch, của công thức R(S) mô tả trong bản tham chiếu
+        numpy `calculate_reward`. Khác với bản `calculate_reward` (nhận
+        `candidate_pool` là dict + `S` là list[int] rời rạc, xử lý TỪNG tập
+        luật một), lớp này giữ nguyên cách biểu diễn cũ của file — mọi luật
+        được mã hoá sẵn thành ma trận (n_rules, n_val), và một tập luật S
+        được biểu diễn bằng vector nhị phân s (n_rules,) — để có thể tính
+        reward cho CẢ MỘT BATCH tập luật (B, n_rules) cùng lúc trên GPU,
+        thay vì lặp for như bản numpy.
 
-                  Ý NGHĨA THIẾT KẾ: cho phép biến `coverage` từ "tỉ lệ mẫu
-                  được phủ" thành "tỉ lệ TRỌNG SỐ được phủ" — ví dụ dùng độ
-                  không chắc chắn/lỗi hiện tại của CNN (biến thể D: u_error +
-                  lam*(1-u_error)*u_entropy, xem src/gflownet/uncertainty.py)
-                  để luật phủ đúng vùng CNN đang yếu được thưởng coverage cao
-                  hơn luật chỉ phủ vùng CNN vốn đã tự tin/đúng. QUAN TRỌNG:
-                  `sample_weight` phải cùng THỨ TỰ HÀNG với `cover`/`correct`
-                  (cùng tập validation, cùng permutation mẫu) — nếu không sẽ
-                  trọng số nhầm sang mẫu khác.
+        cover:    (n_rules, n_val) bool - luật i có match mẫu j không.
+        correct:  (n_rules, n_val) bool - luật i match VÀ dự đoán đúng nhãn
+                  mẫu j. Dùng để suy ra `err` (tỉ lệ sai số) của từng luật,
+                  tương đương trường `err` trong `candidate_pool[r]`.
+        rule_len: (n_rules,) - số điều kiện (mệnh đề AND) trong luật, tương
+                  đương trường `len` trong `candidate_pool[r]`.
+        max_rules: giữ lại như cũ (không dùng trực tiếp trong công thức, chỉ
+                  để tham chiếu/ràng buộc bên ngoài nếu cần).
 
-        THIẾT KẾ (đã đổi so với bản đầu): reward này dùng để CHỌN luật phục vụ
-        MỘT mục đích duy nhất — làm regularizer tốt cho CNN ở stage5, không
-        phải để tối ưu tính "gọn/dễ đọc" của tập luật (đó là việc của thống kê
-        mô tả ở bước phân tích luật riêng, không phải của GFlowNet). Vì vậy:
-          - ĐÃ BỎ complexity (phạt số lượng luật): nhiều luật đúng, không xung
-            đột không hề xấu cho regularization — ngược lại còn cho nhiều
-            sample hơn nhận được tín hiệu phụ hữu ích.
-          - ĐÃ BỎ phần "trùng lặp cùng target" khỏi phạt: 2 luật cùng đúng,
-            cùng phủ 1 vùng không gây hại cho CNN (giống hiệu ứng đồng thuận
-            trong ensemble) — chỉ giữ lại phạt cho phần THỰC SỰ gây hại:
-            2 luật cùng phủ 1 vùng nhưng khác target (xung đột), đúng vấn đề
-            đã xử lý ở RulePenaltyLoss (soft-target per-sample).
+        alpha, lambda_1, lambda_2, lambda_3, K, gamma: đúng như mô tả trong
+        `params` của bản numpy:
+          - alpha:    phạt độ dài của TỪNG luật đơn lẻ (trong f_quality).
+          - lambda_1: trọng số cho f_cover (khuyến khích tổng độ phủ).
+          - lambda_2: trọng số phạt f_overlap (trùng lặp biên quyết định).
+          - lambda_3: trọng số phạt f_size (kích thước tập luật).
+          - K:        số lượng luật tối đa kỳ vọng (dùng trong f_size).
+          - gamma:    nhiệt độ nghịch đảo, kiểm soát mode-matching khi
+                      exponentiate U(S) -> R(S).
 
-        SỬA LẦN 2 — conflict đo THEO MẪU, không đo THEO CẶP LUẬT: bản trước
-        tính `redundancy_conflict` bằng trung bình Jaccard trên các CẶP luật
-        xung đột, chia cho `n_pairs = n_selected*(n_selected-1)`. Vấn đề: số
-        hạng này bị PHA LOÃNG khi ruleset lớn dần (n_pairs tăng bậc hai theo
-        số luật), nên GFlowNet có thể "nhồi" thêm luật rác để pha loãng phạt
-        xung đột mà gần như không tốn gì — đây chính là lý do reward không
-        thể giảm sâu cho ruleset thực sự tệ (xem phân tích trong hội thoại).
+        sample_weight: (n_val,) float, optional — trọng số uncertainty/độ
+                  khó của TỪNG mẫu validation (xem `uncertainty.py`,
+                  `compute_sample_weight*`). KHÔNG cần chuẩn hoá tổng trước
+                  khi truyền vào — `f_cover` tự chia cho tổng trọng số bên
+                  dưới. Nếu None (mặc định), tương đương mọi mẫu có trọng số
+                  1.0, tức `f_cover` quay lại đúng tỉ lệ union-coverage
+                  KHÔNG trọng số như trước (tương thích ngược hoàn toàn).
+                  LƯU Ý THỨ TỰ HÀNG: `sample_weight[j]` phải cùng permutation
+                  mẫu với cột j của `cover`/`correct` — nếu `cover`/`correct`
+                  bị hoán vị (vd permute theo luật ở pipeline.py) thì đó là
+                  permutation theo LUẬT (chiều 0, n_rules), không ảnh hưởng
+                  chiều mẫu (chiều 1, n_val) nên `sample_weight` không cần
+                  hoán vị lại theo permutation đó.
 
-        Cách sửa dựa theo cách đo overlap trong các nghiên cứu về rule-set
-        learning (vd Lakkaraju et al., "Interpretable Decision Sets", KDD
-        2016; và "Learning Interpretable Decision Rule Sets: A Submodular
-        Optimization Approach", NeurIPS 2021): đo overlap là TỈ LỆ MẪU bị
-        phủ bởi nhiều hơn 1 luật, không phải trung bình theo cặp luật. Ở đây
-        cụ thể hoá thành: `conflict_ratio` = tỉ lệ mẫu (trên tổng n_val) bị
-        phủ đồng thời bởi các luật ĐƯỢC CHỌN thuộc >= 2 target khác nhau.
-        Số hạng này chia cho `n_val` (CỐ ĐỊNH, không đổi theo ruleset), nên
-        KHÔNG bị pha loãng khi thêm luật — ngược lại, thêm luật xung đột
-        thực sự sẽ làm `conflict_ratio` tăng lên đúng theo số mẫu bị ảnh
-        hưởng, phản ánh đúng mức độ "hỏng" của ruleset.
+        Chỉ `f_cover` được tính theo trọng số (đúng mục đích nêu trong
+        `uncertainty.py`: "chuyển coverage ... thành tỉ lệ TRỌNG SỐ LỖI/
+        UNCERTAINTY được phủ"). `f_quality` (freq_r/err_r/q_r của từng luật)
+        và `f_overlap` (đo trùng lặp biên quyết định, không phải độ khó của
+        mẫu) vẫn tính KHÔNG trọng số như thiết kế gốc của bản này.
 
-        SỬA LẦN 3 — thêm `sample_weight` cho coverage (không đổi accuracy/
-        conflict_ratio): `accuracy` đo độ tin cậy NỘI TẠI của luật (đúng hay
-        sai trong phần được phủ) — không liên quan tới việc mẫu đó dễ hay
-        khó với CNN, nên KHÔNG reweight. `conflict_ratio` đo mức độ gây hại
-        của xung đột — xung đột gây hại BẤT KỂ mẫu dễ hay khó (thậm chí trên
-        mẫu dễ, nơi CNN vốn đã đúng, một tín hiệu mâu thuẫn còn có nguy cơ
-        PHÁ một dự đoán đang đúng), nên cũng KHÔNG reweight. Chỉ `coverage`
-        được reweight, vì đây đúng là đại lượng cần trả lời câu hỏi "luật có
-        đang phủ ĐÚNG CHỖ cần hay không", khác với "phủ bao nhiêu" thuần túy.
+        LƯU Ý THAY ĐỔI SO VỚI BẢN TRƯỚC CỦA FILE NÀY: bản trước tách riêng
+        `accuracy` (đo trên phần được phủ CHUNG của cả tập luật) và
+        `conflict_ratio` (chỉ tính xung đột GIỮA CÁC TARGET khác nhau, coi
+        2 luật cùng target phủ cùng vùng là vô hại). Theo mô tả mới, `err`
+        được tính RIÊNG CHO TỪNG LUẬT (không phụ thuộc luật nào khác được
+        chọn cùng) và gộp vào `f_quality` per-rule, còn `f_overlap` đếm MỌI
+        mẫu bị phủ bởi > 1 luật trong S — không phân biệt luật đó có cùng
+        target hay không. Đây là lựa chọn thiết kế của mô tả mới (giống bản
+        `calculate_reward` numpy), không phải lỗi — nếu vẫn muốn phân biệt
+        theo target, cần truyền lại `targets` và khôi phục logic
+        `class_masks` như bản trước.
         """
         self.cover = cover.float()
         self.correct = correct.float()
         self.rule_len = rule_len.float()
         self.n_val = cover.shape[1]
+        self.n_rules = cover.shape[0]
         self.max_rules = max_rules
-        self.w_acc, self.w_cov, self.w_conflict = w_acc, w_cov, w_conflict
-        self.beta = beta
 
-        if sample_weight is not None:
-            assert sample_weight.shape[0] == self.n_val, (
-                f"sample_weight có {sample_weight.shape[0]} phần tử, "
-                f"nhưng n_val = {self.n_val} — phải cùng thứ tự hàng với "
-                "cover/correct."
-            )
-            self.sample_weight = sample_weight.to(cover.device).float()
+        self.alpha = alpha
+        self.lambda_1 = lambda_1
+        self.lambda_2 = lambda_2
+        self.lambda_3 = lambda_3
+        self.K = K
+        self.gamma = gamma
+
+        # sample_weight (n_val,): trọng số uncertainty theo mẫu, dùng để
+        # weighted-coverage trong f_cover. Mặc định None -> toàn 1.0, khớp
+        # hành vi union-coverage không trọng số của bản trước.
+        if sample_weight is None:
+            self.sample_weight = torch.ones(self.n_val, device=self.cover.device)
         else:
-            # Fallback: mọi mẫu trọng số bằng nhau -> coverage weighted quy
-            # về đúng công thức coverage thô cũ (mean trên n_val).
-            self.sample_weight = torch.ones(self.n_val, device=cover.device)
+            self.sample_weight = sample_weight.to(self.cover.device).float()
+            assert self.sample_weight.shape == (self.n_val,), (
+                "sample_weight phải có shape (n_val,) khớp số cột của cover/correct"
+            )
+        self._weight_sum = self.sample_weight.sum().clamp(min=1e-8)
 
-        # ma trận overlap giữa các luật (Jaccard) — CHỈ dùng cho thống kê mô
-        # tả bên ngoài (evaluate_run báo cáo độ trùng lặp tổng quát, không
-        # phải component GFlowNet đang tối ưu) — không còn dùng bên trong
-        # score() nữa (xem conflict_ratio ở components()/score() bên dưới).
-        inter = cover.float() @ cover.float().T
-        card = cover.float().sum(-1, keepdim=True)
-        union = card + card.T - inter
-        self.jaccard = inter / union.clamp(min=1e-8)   # (n_rules, n_rules) — toàn bộ overlap
+        # --- Thống kê TĨNH theo từng luật (không đổi theo S được chọn) ---
+        # freq_r: tần suất phủ của luật r (tương đương candidate_pool[r]['freq'])
+        self.freq = self.cover.sum(-1) / self.n_val                        # (n_rules,)
 
-        targets = targets.to(cover.device)
-        self.targets = targets
-        self.num_classes = int(targets.max().item()) + 1 if targets.numel() > 0 else 0
-        # class_masks[c, i] = 1 nếu luật i có target = c — dùng để gộp các
-        # luật ĐƯỢC CHỌN theo từng target riêng biệt (xem components()).
-        self.class_masks = torch.zeros(self.num_classes, cover.shape[0], device=cover.device)
-        if self.num_classes > 0:
-            self.class_masks.scatter_(0, targets.unsqueeze(0), 1.0)
+        # err_r: tỉ lệ sai số của luật r TRÊN PHẦN NÓ PHỦ, tức
+        # err_r = 1 - accuracy_r (tương đương candidate_pool[r]['err']).
+        cover_count = self.cover.sum(-1).clamp(min=1)
+        self.err = 1.0 - (self.correct.sum(-1) / cover_count)              # (n_rules,)
+
+        # q_r = freq_r * (1 - err_r) * exp(-alpha * len_r): điểm chất lượng
+        # nội tại của luật r, giống hệt công thức q_r trong bản numpy.
+        self.q = self.freq * (1.0 - self.err) * torch.exp(-self.alpha * self.rule_len)  # (n_rules,)
 
     def components(self, s: torch.Tensor) -> dict:
-        """Tách riêng từng thành phần của reward — dùng chung bởi `score()`
-        VÀ bởi `evaluation.py::evaluate_run()` để tránh 2 nơi tính công thức
-        khác nhau (trước đây evaluation.py tự tính lại `redundancy_conflict`
-        một cách độc lập, dễ lệch khỏi công thức thật trong score()).
+        """Tách riêng từng thành phần của U(S), dùng chung bởi `score()`.
 
-        s: (B, n_rules) nhị phân. Trả về dict các tensor (B,).
+        s: (B, n_rules) nhị phân (0/1) — mỗi hàng là một tập luật S.
+        Trả về dict các tensor (B,):
+          - n_selected: |S|
+          - f_quality:  sum_{r in S} q_r
+          - f_cover:    tỉ lệ TRỌNG SỐ (sample_weight) của các mẫu được phủ
+                        bởi >=1 luật trong S, chia cho tổng trọng số mọi
+                        mẫu. Khi sample_weight=None (mặc định toàn 1.0),
+                        đây chính là |union cov(r), r in S| / n_val như cũ.
+          - f_overlap:  tỉ lệ mẫu (không trọng số) bị phủ bởi > 1 luật trong S
+          - f_size:     max(0, |S| - K)
         """
-        covered = (s @ self.cover) > 0                       # (B, n_val)
-        correct_covered = (s @ self.correct) > 0
-        # accuracy chỉ tính trên phần được phủ - KHÔNG reweight theo
-        # sample_weight (đo độ tin cậy nội tại của luật, không phụ thuộc
-        # mẫu đó dễ/khó với CNN - xem docstring __init__ SỬA LẦN 3).
-        accuracy = (correct_covered.float().sum(-1)) / covered.float().sum(-1).clamp(min=1)
+        n_selected = s.sum(-1)                                      # (B,)
 
-        # coverage: TỈ LỆ TRỌNG SỐ mẫu được phủ, không phải tỉ lệ SỐ LƯỢNG
-        # mẫu thô. Nếu sample_weight = ones (mặc định), công thức này quy
-        # về đúng coverage.mean(-1) như bản gốc (không đổi hành vi cũ).
-        w = self.sample_weight
-        coverage = (covered.float() * w).sum(-1) / w.sum().clamp(min=1e-8)
+        # f_quality(S) = sum q_r trên các luật được chọn = s @ q
+        f_quality = s @ self.q                                       # (B,)
 
-        # conflict_ratio: với mỗi target c, gộp (OR) coverage của các luật
-        # ĐƯỢC CHỌN thuộc target đó -> covered_by_class (B, C, n_val). Một
-        # mẫu bị "xung đột" nếu nó được phủ bởi >= 2 target khác nhau trong
-        # số các luật đã chọn. Đo theo TỈ LỆ MẪU (chia n_val cố định), không
-        # theo trung bình cặp luật -> không bị pha loãng khi ruleset lớn dần.
-        # KHÔNG reweight theo sample_weight - xung đột gây hại bất kể mẫu
-        # dễ/khó (xem docstring __init__ SỬA LẦN 3).
-        if self.num_classes > 0:
-            s_by_class = s.unsqueeze(1) * self.class_masks.unsqueeze(0)      # (B, C, R)
-            covered_by_class = torch.einsum("bcr,rj->bcj", s_by_class, self.cover) > 0  # (B, C, n_val)
-            n_classes_covering = covered_by_class.float().sum(dim=1)         # (B, n_val)
-            conflict_ratio = (n_classes_covering >= 2).float().mean(-1)      # (B,)
-        else:
-            conflict_ratio = torch.zeros(s.shape[0], device=s.device)
+        # counts[b, j] = số luật (trong tập S của batch b) phủ mẫu j
+        counts = s @ self.cover                                      # (B, n_val)
+
+        # f_cover: tỉ lệ TRỌNG SỐ của mẫu được phủ bởi ÍT NHẤT 1 luật
+        # (weighted union coverage) — nhân mask covered với sample_weight
+        # trước khi chia cho tổng trọng số, thay vì chia đều cho n_val.
+        covered = (counts > 0).float()                                # (B, n_val)
+        f_cover = (covered * self.sample_weight).sum(-1) / self._weight_sum  # (B,)
+
+        # f_overlap: tỉ lệ mẫu bị phủ bởi NHIỀU HƠN 1 luật (trùng biên quyết định)
+        f_overlap = (counts > 1).float().sum(-1) / self.n_val         # (B,)
+
+        # f_size: phạt tuyến tính nếu số luật chọn vượt quá K kỳ vọng
+        f_size = (n_selected - self.K).clamp(min=0)                   # (B,)
 
         return {
-            "n_selected": s.sum(-1),
-            "coverage": coverage,
-            "accuracy": accuracy,
-            "conflict_ratio": conflict_ratio,
+            "n_selected": n_selected,
+            "f_quality": f_quality,
+            "f_cover": f_cover,
+            "f_overlap": f_overlap,
+            "f_size": f_size,
         }
 
     def score(self, s: torch.Tensor) -> torch.Tensor:
-        # s: (B, n_rules) nhị phân
+        """U(S) = f_quality + lambda_1*f_cover - lambda_2*f_overlap - lambda_3*f_size"""
         c = self.components(s)
-        return (self.w_acc * c["accuracy"] + self.w_cov * c["coverage"]
-                - self.w_conflict * c["conflict_ratio"])
+        return (c["f_quality"]
+                + self.lambda_1 * c["f_cover"]
+                - self.lambda_2 * c["f_overlap"]
+                - self.lambda_3 * c["f_size"])
 
     def __call__(self, s: torch.Tensor) -> torch.Tensor:
-        raw = self.score(s)                       # có thể âm
-        return torch.exp(self.beta * raw)          # đảm bảo R > 0
+        """R(S) = exp(gamma * U(S)) -- đảm bảo phần thưởng dương.
+
+        LƯU Ý về tập rỗng: khi |S| = 0, mọi thành phần trong `components()`
+        đều bằng 0 -> U(S) = 0 -> exp(gamma*0) = 1. Bản numpy tham chiếu
+        trả về hẳn 0.0 cho tập rỗng (return 0.0 sớm trước khi tính U(S)).
+        Nếu muốn giữ đúng hành vi đó (thay vì reward = 1 cho tập rỗng),
+        dùng đoạn ép về 0 bên dưới.
+        """
+        raw = self.score(s)
+        reward = torch.exp(self.gamma * raw)
+        # Ép reward = 0 cho các hàng s rỗng (|S| = 0), khớp hành vi
+        # "return 0.0" của bản numpy tham chiếu:
+        reward = torch.where(s.sum(-1) > 0, reward, torch.zeros_like(reward))
+        return reward

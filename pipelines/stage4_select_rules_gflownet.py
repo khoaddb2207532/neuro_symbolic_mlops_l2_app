@@ -29,8 +29,8 @@ def main(params_path: str) -> None:
     with open(os.path.join(rules_dir, "raw_rules.pkl"), "rb") as f:
         raw_rules = pickle.load(f)
 
-    # train_features = torch.load(f"{features_dir}/train_features.pt").to(device)
-    # train_labels = torch.load(f"{features_dir}/train_labels.pt").to(device)
+    train_features = torch.load(f"{features_dir}/train_features.pt").to(device)
+    train_labels = torch.load(f"{features_dir}/train_labels.pt").to(device)
     val_features = torch.load(f"{features_dir}/val_features.pt").to(device)
     val_labels = torch.load(f"{features_dir}/val_labels.pt").to(device)
 
@@ -39,22 +39,25 @@ def main(params_path: str) -> None:
     # val set lần hai trong pipeline.
     validator = RuleValidator(
         min_supp=params["rules"]["min_support"],
-        min_conf=params["rules"]["min_confidence"],
     )
     valid_rule_set, cover, correct, rule_len = validator.validate_and_build_tensors(
-        raw_rules, val_features, val_labels, store_device=device
+        raw_rules,
+        train_features,
+        train_labels,
+        store_device=device,
+        num_classes=params["num_classes"],
     )
     with open(os.path.join(output_dir, "valid_rules.pkl"), "wb") as f:
         pickle.dump(valid_rule_set, f)
 
     valid_rules = list(valid_rule_set.rules)
-    logger.info("Số luật hợp lệ sau khi lọc bằng val set: %d", len(valid_rules))
+    logger.info("Số luật hợp lệ sau khi lọc trên training_data: %d", len(valid_rules))
 
     # ------------------------------------------------------------------
     # sample_weight (u) — độ không chắc chắn/lỗi của CNN trên ĐÚNG
     # val_features/val_labels đã dùng để build cover/correct ở trên.
     #
-    # KHÔNG forward lại CNN: nạp thẳng `val_logits.pt` đã được stage2 lưu
+    # KHÔNG forward lại CNN: nạp thẳng `train_logits.pt` đã được stage2 lưu
     # sẵn cùng lúc với val_features.pt (xem features.py::extract_and_save_
     # features) — cùng một lần forward, cùng checkpoint, cùng thứ tự mẫu,
     # loại bỏ hoàn toàn rủi ro lệch checkpoint hoặc lệch kiến trúc so với
@@ -62,26 +65,27 @@ def main(params_path: str) -> None:
     #
     # Biến thể D:  u = u_error + lam * (1 - u_error) * u_entropy_normalized
     # Xem src/gflownet/uncertainty.py và src/gflownet/reward.py để biết
-    # cách u chỉ tác động tới `coverage`, không đụng accuracy/conflict_ratio.
+    # cách u chỉ tác động tới `f_cover` (coverage weighted), không đụng
+    # `f_quality`/`f_overlap`.
     # ------------------------------------------------------------------
     uc_cfg = params.get("uncertainty", {})
     sample_weight = None
     if uc_cfg.get("enabled", False):
         num_classes = params["num_classes"]
-        val_logits = torch.load(f"{features_dir}/val_logits.pt").to(device)
-        assert val_logits.shape[0] == val_labels.shape[0], (
-            f"val_logits ({val_logits.shape[0]} hàng) không khớp val_labels "
-            f"({val_labels.shape[0]} hàng) — kiểm tra lại stage2 đã lưu logits "
+        train_logits = torch.load(f"{features_dir}/train_logits.pt").to(device)
+        assert train_logits.shape[0] == train_labels.shape[0], (
+            f"train_logits ({train_logits.shape[0]} hàng) không khớp train_labels "
+            f"({train_labels.shape[0]} hàng) — kiểm tra lại stage2 đã lưu logits "
             "đúng cùng lần forward với features/labels chưa."
         )
 
         pred, entropy_norm = compute_prediction_stats_from_logits(
-            logits=val_logits, num_classes=num_classes,
+            logits=train_logits, num_classes=num_classes,
         )
         sample_weight = compute_sample_weight(
             pred=pred,
             entropy_norm=entropy_norm,
-            y_true=val_labels.cpu(),
+            y_true=train_labels.cpu(),
             lam=uc_cfg.get("lam", 0.3),
             clip_max=uc_cfg.get("clip_max", None),
         )
@@ -99,10 +103,12 @@ def main(params_path: str) -> None:
     gfn_cfg = params["gflownet"]
     pipeline = RuleExtractionPipeline(
         device=device,
-        w_acc=gfn_cfg.get("w_acc", 1.0),
-        w_cov=gfn_cfg.get("w_cov", 0.5),
-        w_conflict=gfn_cfg.get("w_conflict", 0.5),
-        beta=gfn_cfg.get("beta", 3.0),
+        alpha=gfn_cfg.get("alpha", 1.0),
+        lambda_1=gfn_cfg.get("lambda_1", 1.0),
+        lambda_2=gfn_cfg.get("lambda_2", 1.0),
+        lambda_3=gfn_cfg.get("lambda_3", 1.0),
+        K=gfn_cfg.get("K", gfn_cfg.get("max_rules", 10)),
+        gamma=gfn_cfg.get("gamma", 3.0),
         grad_clip_max_norm=gfn_cfg.get("grad_clip_max_norm", 5.0),
     )
     selected_rules = pipeline.run(
@@ -123,6 +129,14 @@ def main(params_path: str) -> None:
         logZ_warmup_steps=gfn_cfg["logZ_warmup_steps"],
         val_samples=gfn_cfg["val_samples"],
         sample_weight=sample_weight,
+        replay_capacity=gfn_cfg.get("replay_capacity", 10000),
+        num_candidates=gfn_cfg.get("num_candidates", 100),
+        # cover_test/correct_test: chưa nối vào đây vì stage4 hiện chỉ nạp
+        # train_features/val_features (không có tensor test cùng trục LUẬT
+        # với valid_rules) — nếu muốn giai đoạn 4 (post-training) của pipeline
+        # chọn tập luật theo holdout TEST thay vì tạm dùng val, cần build
+        # thêm cover_test/correct_test (cùng valid_rule_set, KHÔNG re-filter)
+        # từ test_features/test_labels rồi truyền vào đây.
     )
 
     with open(os.path.join(output_dir, "selected_rules.pkl"), "wb") as f:

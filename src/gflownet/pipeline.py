@@ -1,26 +1,26 @@
 """Pipeline huấn luyện GFlowNet để chọn tập luật con tối ưu.
 
-Refactor: tách vòng lặp train thành 3 mối quan tâm độc lập, để dễ đọc/test
-và để phần "train step thuần" match 1-1 với baseline trong intro_discrete.ipynb:
+Cấu trúc 4 giai đoạn (tối giản, bỏ các cơ chế theo dõi trùng lặp của bản cũ):
 
-  1. _train_step        — đúng 5 dòng lõi của torchgfn (sample -> loss -> step).
-  2. _EliteTracker       — theo dõi rule-set có log-reward cao nhất TỪNG THẤY,
-                           độc lập với trọng số model (đây là phần "tìm kiếm
-                           tổ hợp tốt nhất", không phải density estimation).
-  3. _CheckpointTracker  — EMA hoá log-reward validation để feed scheduler +
-                           lưu/khôi phục checkpoint model tốt nhất theo EMA.
+  1. Khởi tạo model/optimizer/replay buffer         (`run`, trước khi gọi `_train_gflownet`)
+  2. Vòng lặp train off-policy qua replay buffer     (`_train_step`, `gfn.containers.ReplayBuffer`)
+  3. Validate định kỳ + early-stop khi mất diversity  (`_evaluate_during_training`,
+                                                        `_check_early_stopping`, `_CheckpointTracker`)
+  4. Sinh nhiều tập luật ứng viên rồi CHỌN THEO HOLDOUT
+     (test set riêng nếu có, không thì cảnh báo dùng tạm val) (`_select_best_on_holdout`)
 
-_train_gflownet giờ chỉ còn orchestrate 3 phần trên theo đúng thứ tự cũ,
-không thay đổi bất kỳ hành vi/số liệu nào so với bản gốc.
+Đã BỎ so với bản trước: `_EliteTracker` (theo dõi rule-set tốt nhất qua mọi lần
+validate — nay thay bằng bước sinh + chọn tường minh ở giai đoạn 4),
+`_SamplerCheckpointTracker` + các chỉ số diversity phụ (entropy_norm/top1_share/
+calib_corr — chỉ còn giữ `mode_diversity` dùng cho early-stopping).
 """
 import abc
 import os
 import pickle
-import random
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import numpy as np
 import torch
+from gfn.containers.replay_buffer import ReplayBuffer
 from gfn.estimators import DiscretePolicyEstimator, ScalarEstimator
 from gfn.gflownet import DBGFlowNet, FMGFlowNet, TBGFlowNet
 from gfn.utils.modules import MLP
@@ -28,7 +28,7 @@ from tqdm import tqdm
 
 from src.gflownet.env import RuleSelectionEnv
 from src.gflownet.reward import RuleSetReward
-from src.gflownet.evaluation import debug_breakdown
+from src.gflownet.evaluation import debug_breakdown, evaluate_run
 from src.rules.io import save_rules_excel
 from src.rules.rule_types import Rule, RuleSet
 from src.utils.logging_utils import get_logger
@@ -39,108 +39,34 @@ from dvclive import Live
 logger = get_logger(__name__)
 
 
-class _EliteTracker:
-    """Giữ lại rule-set tốt nhất TỪNG THẤY qua mọi lần validate, bất kể model
-    hiện tại có tốt hơn hay không. Đây là phần biến GFlowNet thành một công
-    cụ tìm kiếm tổ hợp (elitist), tách biệt khỏi việc train sampler."""
-
-    def __init__(self) -> None:
-        self.best_log_reward = float("-inf")
-        self.best_selected: List[Rule] = []
-
-    def update(self, val_trajectories: list, valid_rules: List[Rule]) -> None:
-        for vt in val_trajectories:
-            r = vt.log_rewards
-            idx = r.argmax().item()
-            if r[idx].item() > self.best_log_reward:
-                self.best_log_reward = r[idx].item()
-                mask = vt.terminating_states.tensor[idx].bool().cpu()
-                self.best_selected = [valid_rules[i] for i in torch.where(mask)[0].tolist()]
-
-
 class _CheckpointTracker:
-    """EMA-hoá log-reward validation (để scheduler ổn định hơn) và lưu/khôi
-    phục checkpoint của model ứng với EMA tốt nhất."""
+    """Lưu/khôi phục checkpoint model tại điểm val_loss THẤP NHẤT từng thấy
+    (không còn EMA hoá — val_loss ở đây đã là trung bình trên `val_samples`
+    quỹ đạo mỗi lần validate nên đủ ổn định để so sánh trực tiếp)."""
 
-    def __init__(self, ckpt_path: str, ema_alpha: float = 0.3) -> None:
+    def __init__(self, ckpt_path: str) -> None:
         self.ckpt_path = ckpt_path
-        self.ema_alpha = ema_alpha
-        self.ema_val: Optional[float] = None
-        self.best_ema = float("-inf")
+        self.best_val_loss = float("inf")
 
-    def update(
-        self,
-        avg_val: float,
-        gflownet,
-        iteration: int,
-        n_valid: int,
-        max_rules: int,
-        early_stop_delta: float,
-    ) -> Tuple[float, bool]:
-        """Cập nhật EMA, lưu checkpoint nếu cải thiện. Trả về (ema_val, improved)."""
-        self.ema_val = (
-            avg_val if self.ema_val is None
-            else (1 - self.ema_alpha) * self.ema_val + self.ema_alpha * avg_val
-        )
-        improved = self.ema_val > self.best_ema + early_stop_delta
+    def update(self, val_loss: float, gflownet, iteration: int) -> bool:
+        improved = val_loss < self.best_val_loss
         if improved:
-            self.best_ema = self.ema_val
+            self.best_val_loss = val_loss
             state_dict = {k: v.cpu().clone() for k, v in gflownet.state_dict().items()}
             torch.save(
-                {
-                    "iteration": iteration,
-                    "model": state_dict,
-                    "best_log_reward": self.best_ema,
-                    "n_rules": n_valid,
-                    "max_rules": max_rules,
-                },
+                {"iteration": iteration, "model": state_dict, "best_val_loss": self.best_val_loss},
                 self.ckpt_path,
             )
-        return self.ema_val, improved
+        return improved
 
     def restore_best(self, gflownet, device: torch.device) -> float:
-        """Load checkpoint tốt nhất vào gflownet (in-place). Trả về best_log_reward
-        đã lưu (0.0 nếu không có checkpoint nào, giữ đúng hành vi gốc: trong
-        trường hợp đó self.best_ema vẫn ở -inf và không được dùng ở nơi khác)."""
+        """Load checkpoint tốt nhất vào gflownet (in-place). Trả về best_val_loss
+        đã lưu (giữ nguyên self.best_val_loss nếu chưa từng lưu checkpoint nào)."""
         if os.path.exists(self.ckpt_path):
             ckpt = torch.load(self.ckpt_path, map_location=device)
             gflownet.load_state_dict(ckpt["model"])
-            return ckpt["best_log_reward"]
-        return self.best_ema
-    
-# --- Thêm trong pipeline.py, cạnh _CheckpointTracker ---
-
-
-
-
-class _SamplerCheckpointTracker:
-    """Checkpoint RIÊNG cho vai trò frozen sampler (BayesianRuleMarginalization,
-    stage4b ranking) — khác _CheckpointTracker vốn chỉ tối ưu avg-reward.
-    Chỉ chấp nhận 'improved' nếu diversity KHÔNG dưới ngưỡng tối thiểu."""
-
-    def __init__(self, ckpt_path: str, ema_alpha: float = 0.3,
-                 min_unique_ratio: float = 0.2, min_entropy_norm: float = 0.4):
-        self.ckpt_path = ckpt_path
-        self.ema_alpha = ema_alpha
-        self.min_unique_ratio = min_unique_ratio
-        self.min_entropy_norm = min_entropy_norm
-        self.ema_val: Optional[float] = None
-        self.best_ema = float("-inf")
-
-    def update(self, avg_val, dist_metrics, gflownet, iteration, n_valid, max_rules, early_stop_delta):
-        self.ema_val = (avg_val if self.ema_val is None
-                        else (1 - self.ema_alpha) * self.ema_val + self.ema_alpha * avg_val)
-        diversity_ok = (dist_metrics["unique_ratio"] >= self.min_unique_ratio
-                        and dist_metrics["entropy_norm"] >= self.min_entropy_norm)
-        improved = diversity_ok and (self.ema_val > self.best_ema + early_stop_delta)
-        if improved:
-            self.best_ema = self.ema_val
-            state_dict = {k: v.cpu().clone() for k, v in gflownet.state_dict().items()}
-            torch.save({"iteration": iteration, "model": state_dict, "best_log_reward": self.best_ema,
-                        "n_rules": n_valid, "max_rules": max_rules, "dist_metrics": dist_metrics},
-                       self.ckpt_path)
-            logger.info("Update ema_val! Save checkpoint!")
-        return self.ema_val, improved
+            return ckpt["best_val_loss"]
+        return self.best_val_loss
 
 
 class BaseGFlowNetPipeline(abc.ABC):
@@ -166,7 +92,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         ...
 
     def _reward_params(self) -> Dict[str, Any]:
-        """Các hyperparameter riêng của reward function (vd w_acc, w_cov...)
+        """Các hyperparameter riêng của reward function (vd alpha, lambda_1...)
         để DVC log lại cùng params huấn luyện chung. Mặc định rỗng; subclass
         override nếu muốn track thêm."""
         return {}
@@ -182,20 +108,29 @@ class BaseGFlowNetPipeline(abc.ABC):
         gflownet,
         optimizer,
         env: RuleSelectionEnv,
+        replay_buffer: ReplayBuffer,
         batch_size: int,
         in_warmup: bool,
     ):
         for p in gflownet.pf_pb_parameters():
             p.requires_grad_(not in_warmup)
 
+        # Sample quỹ đạo mới -> nạp vào buffer thư viện (`gfn.containers.
+        # ReplayBuffer`) -> rút ngẫu nhiên `batch_size` quỹ đạo từ TOÀN BỘ
+        # buffer (không nhất thiết là đúng batch vừa thêm) để tính loss.
         trajectories = gflownet.sample_trajectories(env, n=batch_size, save_logprobs=True)
-        samples = gflownet.to_training_samples(trajectories)
+        replay_buffer.add(trajectories)
+        batch = replay_buffer.sample(batch_size)
+        samples = gflownet.to_training_samples(batch)
 
         optimizer.zero_grad()
         if self.loss_type == "fm":
             loss = gflownet.loss(env, samples)
         else:
-            loss = gflownet.loss(env, samples, recalculate_all_logprobs = False)
+            # recalculate_all_logprobs=True: batch có thể chứa quỹ đạo CŨ lấy từ
+            # buffer (off-policy) — log-prob lưu sẵn không còn khớp tham số
+            # hiện tại nên phải tính lại để gradient đúng.
+            loss = gflownet.loss(env, samples, recalculate_all_logprobs=True)
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(
             gflownet.parameters(), max_norm=self.grad_clip_max_norm
@@ -205,61 +140,58 @@ class BaseGFlowNetPipeline(abc.ABC):
         return loss, trajectories, grad_norm
 
     # ------------------------------------------------------------------
-    # 2) Validation — sample nhiều lần để ước lượng log-reward ổn định hơn.
+    # 2) Validation — 1 batch quỹ đạo mới: val_loss (để scheduler + checkpoint)
+    #    + mode_diversity (tỉ lệ tập luật KHÔNG trùng nhau, để phát hiện
+    #    mode-collapse và early-stop).
     # ------------------------------------------------------------------
     @staticmethod
-    # def _run_validation(gflownet, env: RuleSelectionEnv, val_samples: int, n_repeats: int = 3):
-    #     all_vt, raw_vals = [], []
-    #     with torch.no_grad():
-    #         for _ in range(n_repeats):
-    #             vt = gflownet.sample_trajectories(env, n=val_samples, save_logprobs=True)
-    #             all_vt.append(vt)
-    #             raw_vals.append(vt.log_rewards.mean().item())
-    #     return all_vt, float(np.mean(raw_vals))
-    def _run_validation(gflownet, env: RuleSelectionEnv, val_samples: int, n_repeats: int = 3):
-        """1 vòng validate: sample trajectories MỘT LẦN, dùng lại đúng batch đó
-        để tính cả avg reward lẫn TB residual — không sample 2 lần, không tách
-        rời logic khiến phải duyệt all_vt thêm một vòng riêng."""
-        all_vt, raw_vals, residuals = [], [], []
+    def _evaluate_during_training(gflownet, env: RuleSelectionEnv, val_samples: int) -> Dict[str, float]:
         with torch.no_grad():
-            for _ in range(n_repeats):
-                vt = gflownet.sample_trajectories(env, n=val_samples, save_logprobs=True)
-                all_vt.append(vt)
-                raw_vals.append(vt.log_rewards.mean().item())
-                residuals.append(gflownet.loss(env, gflownet.to_training_samples(vt)).item())
-        return all_vt, float(np.mean(raw_vals)), float(np.mean(residuals))
-    
+            vt = gflownet.sample_trajectories(env, n=val_samples, save_logprobs=True)
+            val_loss = gflownet.loss(env, gflownet.to_training_samples(vt)).item()
+
+            states = vt.terminating_states.tensor.bool().cpu()
+            n_unique = torch.unique(states, dim=0).shape[0]
+            mode_diversity = n_unique / states.shape[0]
+
+        return {"val_loss": val_loss, "mode_diversity": mode_diversity}
+
     @staticmethod
-    def _distribution_metrics(all_vt: list) -> Dict[str, float]:
-        """Đo diversity/calibration của các rule-set được sample trong MỘT vòng
-        validate. avg_val/ema KHÔNG phát hiện được mode-collapse — reward trung
-        bình vẫn có thể tăng dù policy đang co cụm vào vài rule-set tốt nhất
-        (tốt cho _EliteTracker, XẤU cho vai trò frozen sampler của
-        BayesianRuleMarginalization, vốn cần K mẫu/bước THỰC SỰ đa dạng)."""
-        states = torch.cat([vt.terminating_states.tensor.bool().cpu() for vt in all_vt], dim=0)
-        log_rs = torch.cat([vt.log_rewards.cpu() for vt in all_vt], dim=0)
-        n = states.shape[0]
+    def _check_early_stopping(
+        val_loss_history: List[float], mode_diversity: float,
+        patience: int = 3, min_diversity: float = 0.2,
+    ) -> bool:
+        """Dừng sớm nếu diversity sụp đổ (mode collapse) HOẶC val_loss không
+        cải thiện so với min trong `patience` lần validate liền trước."""
+        if mode_diversity < min_diversity:
+            return True
+        if len(val_loss_history) <= patience:
+            return False
+        recent_best = min(val_loss_history[-(patience + 1):-1])
+        return val_loss_history[-1] >= recent_best
 
-        uniq, inverse, counts = torch.unique(states, dim=0, return_inverse=True, return_counts=True)
-        n_unique = uniq.shape[0]
-        unique_ratio = n_unique / n
+    # ------------------------------------------------------------------
+    # 4) Post-training: sinh nhiều tập luật ứng viên rồi chọn tập tốt nhất
+    #    theo một RuleSetReward ĐỘC LẬP (nên xây từ tập test/holdout, khác
+    #    dữ liệu đã dùng để train reward, tránh chọn theo đúng dữ liệu đã tối ưu).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _select_best_on_holdout(
+        gflownet, env: RuleSelectionEnv, valid_rules: List[Rule],
+        num_candidates: int, reward_module_holdout,
+    ) -> Tuple[List[Rule], Dict[str, float]]:
+        with torch.no_grad():
+            trajs = gflownet.sample_trajectories(env, n=num_candidates, save_logprobs=False)
+        states = trajs.terminating_states.tensor.bool().cpu()
+        unique_states = torch.unique(states, dim=0)
 
-        probs = counts.float() / n
-        entropy = -(probs * probs.clamp(min=1e-12).log()).sum().item()
-        entropy_norm = entropy / max(float(np.log(n_unique)), 1e-8) if n_unique > 1 else 0.0
-        top1_share = counts.max().item() / n
+        s = unique_states.float().to(reward_module_holdout.cover.device)
+        scores = reward_module_holdout.score(s)
+        best_idx = scores.argmax().item()
 
-        if n_unique >= 3:
-            mean_log_r = torch.zeros(n_unique).scatter_reduce_(0, inverse, log_rs, reduce="mean", include_self=False)
-            fr = counts.float().argsort().argsort().float()
-            rr = mean_log_r.argsort().argsort().float()
-            fr, rr = fr - fr.mean(), rr - rr.mean()
-            calib_corr = (fr * rr).sum().item() / (fr.norm() * rr.norm()).clamp(min=1e-8).item()
-        else:
-            calib_corr = 0.0
-
-        return {"unique_ratio": unique_ratio, "entropy_norm": entropy_norm,
-                "top1_share": top1_share, "calib_corr": calib_corr}
+        best_selected = [valid_rules[i] for i in torch.where(unique_states[best_idx])[0].tolist()]
+        report = evaluate_run(best_selected, valid_rules, reward_module_holdout)
+        return best_selected, report
 
     def _train_gflownet(
         self,
@@ -268,30 +200,36 @@ class BaseGFlowNetPipeline(abc.ABC):
         scheduler,
         env: RuleSelectionEnv,
         valid_rules: List[Rule],
-        n_valid: int,
-        max_rules: int,
         num_iterations: int,
         batch_size: int,
         validation_interval: int,
         logZ_warmup_steps: int,
         val_samples: int,
-        early_stop_delta: float,
         loss_type: str,
         output_dir: str,
-        live: Optional["Live"] = None, # type: ignore
+        live: Optional["Live"] = None,  # type: ignore
+        replay_capacity: int = 10000,
+        num_candidates: int = 100,
+        reward_module_holdout=None,
     ) -> List[Rule]:
-        
+
         self.loss_type = loss_type
 
-        elite = _EliteTracker()
+        # capacity ở đây là SỐ QUỸ ĐẠO thật (không cần quy đổi qua batch như
+        # bản tự viết trước) — mặc định uniform sampling (prioritized_capacity/
+        # prioritized_sampling=False), có thể bật lại nếu muốn ưu tiên theo reward.
+        replay_buffer = ReplayBuffer(env, capacity=replay_capacity)
         ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best.pth"))
-        sampler_ckpt = _SamplerCheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler.pth"))
+        val_loss_history: List[float] = []
 
+        logger.info("Bắt đầu huấn luyện GFlowNet...")
         pbar = tqdm(range(num_iterations), desc="GFlowNet (torchgfn)")
         for it in pbar:
             in_warmup = it < logZ_warmup_steps
 
-            loss, trajectories, grad_norm = self._train_step(gflownet, optimizer, env, batch_size, in_warmup)
+            loss, trajectories, grad_norm = self._train_step(
+                gflownet, optimizer, env, replay_buffer, batch_size, in_warmup
+            )
 
             avg_log_r = trajectories.log_rewards.mean().item() if hasattr(trajectories, "log_rewards") else 0.0
             logZ_val = gflownet.logZ.item() if loss_type == "tb" else 0.0
@@ -311,73 +249,54 @@ class BaseGFlowNetPipeline(abc.ABC):
                     live.log_metric("train/logZ", logZ_val)
 
             if not in_warmup and (it + 1) % validation_interval == 0:
-                all_vt, avg_val, tb_residual  = self._run_validation(gflownet, env, val_samples)
-                dist_metrics = self._distribution_metrics(all_vt)
+                val_metrics = self._evaluate_during_training(gflownet, env, val_samples)
+                val_loss_history.append(val_metrics["val_loss"])
 
-                ema_val, _ = ckpt.update(
-                    -tb_residual, gflownet, it + 1, n_valid, max_rules, early_stop_delta
-                )
-                scheduler.step(tb_residual)
-
-                sampler_ckpt.update(avg_val, dist_metrics, gflownet, it + 1, n_valid, max_rules, early_stop_delta)
-                elite.update(all_vt, valid_rules)
-
+                scheduler.step(val_metrics["val_loss"])
+                ckpt.update(val_metrics["val_loss"], gflownet, it + 1)
 
                 if live is not None:
-                    live.log_metric("val/avg_log_reward", avg_val)
-                    live.log_metric("val/ema_log_reward", ema_val)
-                    live.log_metric("val/best_ema", ckpt.best_ema)
-                    live.log_metric("val/best_log_reward_ever", elite.best_log_reward)
-                    
-                    live.log_metric("val/unique_ratio", dist_metrics["unique_ratio"])
-                    live.log_metric("val/entropy_norm", dist_metrics["entropy_norm"])
-                    live.log_metric("val/calib_corr", dist_metrics["calib_corr"])
-                    live.log_metric("val/sampler_best_ema", sampler_ckpt.best_ema)
+                    live.log_metric("val/loss", val_metrics["val_loss"])
+                    live.log_metric("val/mode_diversity", val_metrics["mode_diversity"])
+                    live.log_metric("val/best_loss", ckpt.best_val_loss)
 
-                    live.log_metric("val/tb_residual", tb_residual)
-
-                logger.info("Iter %d: ema=%.4f best (%d rules), tb_residual=%.4f \n", it + 1, ema_val, len(elite.best_selected), tb_residual)
                 logger.info(
-                    "Loss= %.4f : avg_log_r= %.4f : logZ= %.4f : grad_norm= %.4f : lr= %.6g",
-                    loss.item(), avg_log_r, logZ_val,
-                    grad_norm.item(), optimizer.param_groups[0]["lr"],
+                    "Epoch %d | Train Loss: %.4f | Val Loss: %.4f | Val Diversity Ratio: %.1f%%",
+                    it + 1, loss.item(), val_metrics["val_loss"], val_metrics["mode_diversity"] * 100,
                 )
+
+                if self._check_early_stopping(val_loss_history, val_metrics["mode_diversity"]):
+                    logger.info("Dừng huấn luyện sớm để bảo toàn độ đa dạng / tránh overfit.")
+                    if live is not None:
+                        live.next_step()
+                    break
 
             if live is not None:
                 live.next_step()
 
         ckpt.restore_best(gflownet, self.device)
 
-        final_trajs = gflownet.sample_trajectories(env, n=20, save_logprobs=True)
-        term_states = final_trajs.terminating_states.tensor.bool().cpu()
-        log_rs = final_trajs.log_rewards.cpu()
-        best_idx = log_rs.argmax().item()
+        logger.info("Huấn luyện hoàn tất. Đang chuyển sang chế độ Suy diễn và Đánh giá cuối cùng...")
 
-        reward_module = env.reward_module
-        debug_breakdown(elite.best_selected, valid_rules, reward_module, logger, label="best_selected_ever")
+        holdout_reward = reward_module_holdout if reward_module_holdout is not None else env.reward_module
+        if reward_module_holdout is None:
+            logger.warning(
+                "Không có reward_module_holdout (test set) riêng — chọn tập luật tốt "
+                "nhất trên CHÍNH tập val đã dùng để train (kết quả có thể lạc quan hơn thực tế)."
+            )
 
-        if log_rs[best_idx].item() > elite.best_log_reward:
-            # nếu 20 mẫu cuối tình cờ tốt hơn cả lịch sử -> cập nhật
-            final_selected = [valid_rules[i] for i in torch.where(term_states[best_idx])[0].tolist()]
-        else:
-            final_selected = elite.best_selected
-
-        debug_breakdown(final_selected, valid_rules, reward_module, logger, label="final_selected (returned)")
-
-        final_best_log_reward = max(elite.best_log_reward, log_rs[best_idx].item())
-        logger.info("Final: %d rules, best=%.4f", len(final_selected), final_best_log_reward)
+        final_selected, final_report = self._select_best_on_holdout(
+            gflownet, env, valid_rules, num_candidates, holdout_reward
+        )
+        debug_breakdown(final_selected, valid_rules, env.reward_module, logger, label="final_selected (returned)")
+        logger.info("Final: %d rules, holdout score=%.4f, reward=%.4f",
+                    len(final_selected), final_report["score"], final_report["reward"])
 
         if live is not None:
-            live.summary["best_log_reward"] = final_best_log_reward
+            live.summary["best_val_loss"] = ckpt.best_val_loss
             live.summary["n_rules_selected"] = len(final_selected)
+            live.summary.update({f"holdout/{k}": v for k, v in final_report.items()})
             live.end()
-
-        if not os.path.exists(sampler_ckpt.ckpt_path):
-            logger.warning("Không checkpoint nào đạt ngưỡng diversity — lưu tạm trọng số cuối làm sampler.")
-            torch.save({"iteration": num_iterations,
-                        "model": {k: v.cpu().clone() for k, v in gflownet.state_dict().items()},
-                        "best_log_reward": None, "n_rules": n_valid, "max_rules": max_rules},
-                    sampler_ckpt.ckpt_path)
 
         return final_selected
 
@@ -399,22 +318,50 @@ class BaseGFlowNetPipeline(abc.ABC):
         loss_type: str = "tb",
         logZ_warmup_steps: int = 50,
         val_samples: int = 10,
-        early_stop_delta: float = 0.001,
         use_dvc: bool = True,
         dvc_dir: Optional[str] = None,
         sample_weight: Optional[torch.Tensor] = None,
+        cover_test: Optional[torch.Tensor] = None,
+        correct_test: Optional[torch.Tensor] = None,
+        replay_capacity: int = 10000,
+        num_candidates: int = 100,
     ) -> List[Rule]:
         """`valid_rules`/`cover`/`correct`/`rule_len` phải đến từ MỘT lần gọi
         duy nhất `RuleValidator.validate_and_build_tensors()` ở ngoài (stage4)
         — pipeline này KHÔNG tự tính lại cover/correct, tránh quét val set
         lần thứ hai (xem README.md, mục "Reward").
 
+        `sample_weight`: (n_val,) float, optional — trọng số uncertainty
+        theo mẫu (xem `uncertainty.py`, `compute_sample_weight*`), dùng để
+        weighted `f_cover` trong `RuleSetReward` (luật phủ đúng mẫu CNN
+        đang yếu sẽ đóng góp coverage cao hơn). PHẢI cùng thứ tự hàng/
+        permutation MẪU với `cover`/`correct` gốc TRƯỚC KHI hàm này permute
+        lại theo LUẬT bên dưới — permutation đó chỉ hoán vị chiều luật
+        (chiều 0), không đụng tới chiều mẫu (chiều 1), nên `sample_weight`
+        không cần permute lại theo `perm`.
+
+        `cover_test`/`correct_test`: (n_valid, n_test) bool, optional — cùng
+        chiều LUẬT (chiều 0) với `cover`/`correct` nhưng trên tập TEST hoàn
+        toàn tách biệt khỏi val. Nếu cung cấp, GIAI ĐOẠN 4 (post-training)
+        sẽ chọn tập luật tốt nhất trong `num_candidates` ứng viên sinh ra
+        theo reward tính trên tập TEST này (đánh giá khách quan, không lạc
+        quan hoá do đã dùng chính val để train). Nếu để None, sẽ dùng tạm
+        lại reward trên val kèm cảnh báo log. Không cần truyền `rule_len`
+        riêng cho test vì độ dài luật không đổi theo tập dữ liệu.
+
+        `replay_capacity`: dung lượng replay buffer (`gfn.containers.
+        ReplayBuffer`, tính theo SỐ QUỸ ĐẠO thật) dùng để huấn luyện
+        off-policy ổn định hơn.
+
+        `num_candidates`: số tập luật ứng viên GFlowNet sinh ra ở GIAI ĐOẠN 4
+        trước khi chọn tập tốt nhất theo holdout reward.
+
         `use_dvc`: bật/tắt tracking bằng DVCLive (loss, avg_log_reward,
-        grad_norm, lr, logZ mỗi bước train; avg/ema/best log-reward mỗi lần
-        validate; best_log_reward + n_rules_selected làm summary cuối cùng).
-        Cần cài `dvclive` (`pip install dvclive`); nếu thiếu, tự động bỏ qua
-        và chỉ log qua logger như trước. `dvc_dir` mặc định là
-        `<output_dir>/dvclive`.
+        grad_norm, lr, logZ mỗi bước train; val loss/mode_diversity mỗi lần
+        validate; best_val_loss + n_rules_selected + báo cáo holdout làm
+        summary cuối cùng). Cần cài `dvclive` (`pip install dvclive`); nếu
+        thiếu, tự động bỏ qua và chỉ log qua logger như trước. `dvc_dir`
+        mặc định là `<output_dir>/dvclive`.
         """
         self.device = torch.device(device)
 
@@ -437,8 +384,23 @@ class BaseGFlowNetPipeline(abc.ABC):
         os.makedirs(output_dir, exist_ok=True)
         save_rules_excel(valid_rules, os.path.join(output_dir, "valid_rules.xlsx"))
 
+        if sample_weight is not None:
+            sample_weight = sample_weight.to(self.device)
         reward_fn = self._create_reward_function(valid_rules, cover, correct, rule_len, max_rules, sample_weight)
         env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=self.device)
+
+        # Reward ĐỘC LẬP trên tập test (nếu có) — chỉ hoán vị theo `perm` ở
+        # chiều LUẬT (chiều 0) để khớp cover/correct/rule_len, KHÔNG đụng tới
+        # chiều mẫu test (chiều 1). Không truyền sample_weight (uncertainty
+        # đó chỉ có nghĩa trên mẫu val dùng để train).
+        reward_module_holdout = None
+        if cover_test is not None and correct_test is not None:
+            cover_test = cover_test[perm].to(self.device)
+            correct_test = correct_test[perm].to(self.device)
+            reward_module_holdout = self._create_reward_function(
+                valid_rules, cover_test, correct_test, rule_len, max_rules
+            )
+            self._last_reward_module = reward_fn  # giữ nguyên tham chiếu reward TRAIN, không bị ghi đè bởi reward TEST
 
         # Lưu lại NGUYÊN VẸN thứ tự valid_rules SAU permutation + cover/correct/
         # rule_len tương ứng, kèm cấu hình kiến trúc (loss_type/hidden_dim) và
@@ -462,10 +424,12 @@ class BaseGFlowNetPipeline(abc.ABC):
                     "max_rules": max_rules,
                     "loss_type": loss_type,
                     "gfnet_hidden_dim": gfnet_hidden_dim,
-                    "w_acc": getattr(self, "w_acc", 1.0),
-                    "w_cov": getattr(self, "w_cov", 0.5),
-                    "w_conflict": getattr(self, "w_conflict", 0.5),
-                    "beta": getattr(self, "beta", 3.0),
+                    "alpha": getattr(self, "alpha", 1.0),
+                    "lambda_1": getattr(self, "lambda_1", 1.0),
+                    "lambda_2": getattr(self, "lambda_2", 1.0),
+                    "lambda_3": getattr(self, "lambda_3", 1.0),
+                    "K": getattr(self, "K", 10),
+                    "gamma": getattr(self, "gamma", 3.0),
                 },
                 f,
             )
@@ -525,7 +489,8 @@ class BaseGFlowNetPipeline(abc.ABC):
                         "validation_interval": validation_interval,
                         "logZ_warmup_steps": logZ_warmup_steps,
                         "val_samples": val_samples,
-                        "early_stop_delta": early_stop_delta,
+                        "replay_capacity": replay_capacity,
+                        "num_candidates": num_candidates,
                         "grad_clip_max_norm": self.grad_clip_max_norm,
                         **self._reward_params(),
                     }
@@ -538,17 +503,17 @@ class BaseGFlowNetPipeline(abc.ABC):
                 scheduler=scheduler,
                 env=env,
                 valid_rules=valid_rules,
-                n_valid=n_valid,
-                max_rules=max_rules,
                 num_iterations=num_iterations,
                 batch_size=batch_size,
                 validation_interval=validation_interval,
                 logZ_warmup_steps=logZ_warmup_steps,
                 val_samples=val_samples,
-                early_stop_delta=early_stop_delta,
                 loss_type=loss_type,
                 output_dir=output_dir,
                 live=live,
+                replay_capacity=replay_capacity,
+                num_candidates=num_candidates,
+                reward_module_holdout=reward_module_holdout,
             )
         except Exception:
             if live is not None:
@@ -557,33 +522,46 @@ class BaseGFlowNetPipeline(abc.ABC):
 
 
 class RuleExtractionPipeline(BaseGFlowNetPipeline):
-    """Reward = accuracy + coverage - conflict_redundancy, tính hoàn toàn
-    bằng tensor cover/correct/rule_len/targets đã được build sẵn từ bên ngoài.
-    Không sklearn, không proxy net trong training loop.
+    """U(S) = f_quality + lambda_1*f_cover - lambda_2*f_overlap - lambda_3*f_size,
+    R(S) = exp(gamma*U(S)), tính hoàn toàn bằng tensor cover/correct/rule_len
+    đã được build sẵn từ bên ngoài. Không sklearn, không proxy net trong
+    training loop.
 
-    Đã bỏ w_red (trùng lặp cùng target) và w_comp (số lượng luật) khỏi công
-    thức — reward này phục vụ MỤC ĐÍCH DUY NHẤT là chọn luật tốt cho
-    regularization ở stage5, không phải để tối ưu tính gọn/dễ đọc của tập
-    luật (xem docstring chi tiết trong src/gflownet/reward.py)."""
+    Khớp với `RuleSetReward` mới trong reward.py:
+      - `f_quality` giờ là tổng điểm chất lượng NỘI TẠI mỗi luật
+        (q_r = freq_r*(1-err_r)*exp(-alpha*len_r)), không còn accuracy
+        chung của cả tập được chọn.
+      - `f_overlap` đếm MỌI mẫu bị phủ bởi >1 luật trong S, không phân biệt
+        target — nên không còn cần `targets` khi khởi tạo RuleSetReward.
+      - `f_size` phạt khi |S| vượt quá `K` luật kỳ vọng.
+      - `sample_weight` (tuỳ chọn, từ `uncertainty.py`) làm weighted
+        `f_cover` — luật phủ đúng mẫu CNN đang yếu đóng góp coverage cao
+        hơn luật chỉ phủ mẫu CNN vốn đã tự tin/đúng.
+    """
 
     def __init__(
         self,
         device: str = "cuda",
-        w_acc: float = 1.0,
-        w_cov: float = 0.5,
-        w_conflict: float = 0.5,
-        beta: float = 3.0,
-        grad_clip_max_norm : Optional[float] = 5.0, 
+        alpha: float = 1.0,
+        lambda_1: float = 1.0,
+        lambda_2: float = 1.0,
+        lambda_3: float = 1.0,
+        K: int = 10,
+        gamma: float = 3.0,
+        grad_clip_max_norm: Optional[float] = 5.0,
     ):
-        super().__init__(device, grad_clip_max_norm )
-        self.w_acc, self.w_cov, self.w_conflict, self.beta = w_acc, w_cov, w_conflict, beta
+        super().__init__(device, grad_clip_max_norm)
+        self.alpha, self.lambda_1, self.lambda_2 = alpha, lambda_1, lambda_2
+        self.lambda_3, self.K, self.gamma = lambda_3, K, gamma
 
     def _reward_params(self) -> Dict[str, Any]:
         return {
-            "w_acc": self.w_acc,
-            "w_cov": self.w_cov,
-            "w_conflict": self.w_conflict,
-            "beta": self.beta,
+            "alpha": self.alpha,
+            "lambda_1": self.lambda_1,
+            "lambda_2": self.lambda_2,
+            "lambda_3": self.lambda_3,
+            "K": self.K,
+            "gamma": self.gamma,
         }
 
     def _create_reward_function(
@@ -593,20 +571,19 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         correct: torch.Tensor,
         rule_len: torch.Tensor,
         max_rules: int,
-        sample_weight : Optional[torch.Tensor] = None,
-
+        sample_weight: Optional[torch.Tensor] = None,
     ) -> Callable:
-        targets = torch.tensor([r.target_class for r in valid_rules], device=cover.device)
         reward_module = RuleSetReward(
             cover=cover,
             correct=correct,
             rule_len=rule_len,
             max_rules=max_rules,
-            targets=targets,
-            w_acc=self.w_acc,
-            w_cov=self.w_cov,
-            w_conflict=self.w_conflict,
-            beta=self.beta,
+            alpha=self.alpha,
+            lambda_1=self.lambda_1,
+            lambda_2=self.lambda_2,
+            lambda_3=self.lambda_3,
+            K=self.K,
+            gamma=self.gamma,
             sample_weight=sample_weight,
         )
         self._last_reward_module = reward_module

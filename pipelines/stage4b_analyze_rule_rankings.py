@@ -53,7 +53,7 @@ def main(params_path: str = "params.yaml", K: int = None) -> None:
     ckpt_path = os.path.join(output_dir, "gflownet_best.pth")
 
     rule_order = load_rule_order(output_dir)
-    gflownet, env, valid_rules, reward_module = rebuild_gflownet(rule_order, ckpt_path, device)
+    gflownet, env, valid_rules, reward_module = rebuild_gflownet(rule_order, ckpt_path, device, output_dir=output_dir)
     n_rules = len(valid_rules)
     logger.info("Nạp lại policy đã train: %d luật, loss_type=%s", n_rules, rule_order["loss_type"])
 

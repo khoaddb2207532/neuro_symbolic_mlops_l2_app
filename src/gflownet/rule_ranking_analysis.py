@@ -57,10 +57,15 @@ def load_rule_order(output_dir: str) -> Dict:
         return pickle.load(f)
 
 
-def rebuild_gflownet(rule_order: Dict, ckpt_path: str, device: torch.device):
+def rebuild_gflownet(rule_order: Dict, ckpt_path: str, device: torch.device, output_dir: str = None):
     """Dựng lại ĐÚNG kiến trúc gflownet (pf/pb + logZ hoặc logF, tuỳ loss_type)
     khớp với checkpoint đã lưu, rồi `load_state_dict` — KHÔNG khởi tạo lại
-    ngẫu nhiên xong train, chỉ nạp trọng số cũ để sample."""
+    ngẫu nhiên xong train, chỉ nạp trọng số cũ để sample.
+
+    `output_dir`: tuỳ chọn — nếu truyền vào và tồn tại `sample_weight.pkl`
+    tại đó (do stage4 lưu khi `uncertainty.enabled=True`), sẽ nạp lại đúng
+    sample_weight đã dùng lúc train để `reward_module` tái tạo khớp hệt
+    reward thật (weighted f_cover) thay vì coverage KHÔNG trọng số."""
     n_valid = rule_order["n_valid"]
     max_rules = rule_order["max_rules"]
     loss_type = rule_order["loss_type"]
@@ -70,23 +75,32 @@ def rebuild_gflownet(rule_order: Dict, ckpt_path: str, device: torch.device):
     correct = rule_order["correct"].to(device)
     rule_len = rule_order["rule_len"].to(device)
     valid_rules: List[Rule] = rule_order["valid_rules"]
-    targets = torch.tensor([r.target_class for r in valid_rules], device=device)
 
+    sample_weight = None
+    if output_dir is not None:
+        sw_path = os.path.join(output_dir, "sample_weight.pkl")
+        if os.path.exists(sw_path):
+            with open(sw_path, "rb") as f:
+                sample_weight = pickle.load(f).to(device)
+
+    # Khớp với RuleSetReward mới trong reward.py: alpha/lambda_1-3/K/gamma
+    # thay cho w_acc/w_cov/w_conflict/beta cũ; không còn `targets` (f_overlap
+    # không phân biệt target nữa).
     reward_module = RuleSetReward(
         cover=cover, correct=correct, rule_len=rule_len, max_rules=max_rules,
-        targets=targets,
-        w_acc=rule_order.get("w_acc", 1.0), w_cov=rule_order.get("w_cov", 0.5),
-        w_conflict=rule_order.get("w_conflict", 0.5), beta=rule_order.get("beta", 3.0),
+        alpha=rule_order.get("alpha", 1.0),
+        lambda_1=rule_order.get("lambda_1", 1.0),
+        lambda_2=rule_order.get("lambda_2", 1.0),
+        lambda_3=rule_order.get("lambda_3", 1.0),
+        K=rule_order.get("K", 10),
+        gamma=rule_order.get("gamma", 3.0),
+        sample_weight=sample_weight,
     )
 
-    def reward_fn(states: torch.Tensor) -> torch.Tensor:
-        if states.dim() == 1:
-            states = states.unsqueeze(0)
-        return reward_module(states.to(device))
-
-    reward_fn.reward_module = reward_module
-
-    env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=device)
+    # env.py mới nhận thẳng reward_module (RuleSetReward), không cần bọc
+    # thành callable + gắn `.reward_module` như bản cũ (pattern đó đã được
+    # bỏ — xem docstring RuleSelectionEnv trong env.py).
+    env = RuleSelectionEnv(n_valid, max_rules, reward_module, device=device)
 
     pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=hidden_dim, n_hidden_layers=2, add_layer_norm = True)
     pb_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions - 1, hidden_dim=hidden_dim, n_hidden_layers=2, add_layer_norm = True)
@@ -100,7 +114,7 @@ def rebuild_gflownet(rule_order: Dict, ckpt_path: str, device: torch.device):
         logF_estimator = ScalarEstimator(module=logF_module, preprocessor=env.preprocessor)
         gflownet = DBGFlowNet(pf=pf_estimator, pb=pb_estimator, logF=logF_estimator)
     elif loss_type == "fm":
-        gflownet = FMGFlowNet(estimator=pf_estimator)
+        gflownet = FMGFlowNet(logF=pf_estimator)
     else:
         raise ValueError(f"loss_type phải là 'tb'/'db'/'fm', nhận '{loss_type}'")
 

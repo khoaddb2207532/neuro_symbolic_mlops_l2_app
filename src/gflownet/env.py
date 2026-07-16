@@ -83,5 +83,8 @@ class RuleSelectionEnv(DiscreteEnv):
         return self.reward_module(final_states.tensor)
 
     def log_reward(self, final_states: DiscreteStates) -> torch.Tensor:
-        raw = self.reward_module.score(final_states.tensor)  # đã ở thang cố định (trước khi exp)
-        return self.reward_module.beta * raw
+        """log R(S) = gamma * U(S), khớp với R(S) = exp(gamma * U(S)) trong
+        reward.py mới (trước đây dùng `beta` — RuleSetReward bản mới không
+        còn attribute này, chỉ còn `gamma`)."""
+        raw = self.reward_module.score(final_states.tensor)  # U(S), trước khi exp
+        return self.reward_module.gamma * raw

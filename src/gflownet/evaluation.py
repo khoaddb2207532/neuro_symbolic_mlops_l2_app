@@ -9,28 +9,33 @@ def evaluate_run(
     valid_rules: List[Rule],
     reward_module,
 ) -> Dict[str, float]:
-    """Tính accuracy/coverage/redundancy/complexity cho MỘT tập luật cụ thể,
-    dùng để so sánh khách quan giữa các cấu hình hyperparameter.
+    """Tính các thành phần của U(S)/R(S) + vài thống kê mô tả cho MỘT tập
+    luật cụ thể, dùng để so sánh khách quan giữa các cấu hình hyperparameter.
 
-    LƯU Ý: `redundancy`/`complexity` ở đây là THỐNG KÊ MÔ TẢ (để báo cáo,
-    theo dõi tính gọn/dễ đọc của tập luật) — KHÔNG còn là thành phần của hàm
-    reward mà GFlowNet tối ưu (xem reward.py: score() giờ chỉ còn
-    accuracy + coverage - w_conflict * conflict_ratio).
-      - `redundancy` (tính trên self.jaccard đầy đủ, trung bình theo CẶP
-        luật) đo TOÀN BỘ trùng lặp bất kể target — thuần thống kê mô tả.
-      - `redundancy_conflict` giờ lấy TRỰC TIẾP từ
-        `reward_module.components(s)["conflict_ratio"]` — đúng con số thật
-        mà GFlowNet đang bị phạt (tỉ lệ MẪU bị phủ bởi >=2 target khác nhau
-        trong số luật đã chọn, KHÔNG chia theo số cặp luật — xem docstring
-        trong reward.py để biết vì sao đổi cách đo này). Dùng chung 1 hàm
-        `components()` với `score()` để tránh 2 nơi tính công thức khác
-        nhau (rủi ro cũ: evaluation.py tự tính lại bằng công thức pairwise
-        đã lỗi thời, gây lệch số liệu báo cáo so với reward thật).
+    ĐÃ CẬP NHẬT theo `reward.py` mới (per-rule `q_r = freq_r*(1-err_r)*
+    exp(-alpha*len_r)`, U(S) = f_quality + lambda_1*f_cover - lambda_2*
+    f_overlap - lambda_3*f_size, R(S) = exp(gamma*U(S))):
+      - Không còn khái niệm `accuracy`/`coverage`/`conflict_ratio` ở mức
+        CẢ TẬP luật (bản cũ tách accuracy trên phần phủ chung + conflict
+        chỉ giữa khác target). Thay bằng đúng 4 thành phần mà
+        `reward_module.components(s)` trả về: `f_quality` (tổng q_r của
+        các luật được chọn), `f_cover` (tỉ lệ union coverage), `f_overlap`
+        (tỉ lệ mẫu bị phủ bởi >1 luật, không phân biệt target), `f_size`
+        (phần vượt quá K). Dùng chung `components()`/`score()`/`__call__`
+        với reward_module để tránh 2 nơi tính công thức khác nhau.
+      - `redundancy` (thuần thống kê mô tả, KHÔNG phải thành phần reward):
+        trung bình Jaccard theo CẶP luật đã chọn, tính trực tiếp từ
+        `reward_module.cover` — bản cũ dùng `reward_module.jaccard` đã
+        cache sẵn, nhưng `RuleSetReward` mới không còn giữ ma trận này nên
+        phải tính lại tại chỗ (rẻ vì chỉ chạy trên số luật ĐÃ CHỌN, không
+        phải toàn bộ n_rules).
+      - `score`/`reward`: giá trị U(S) và R(S) thật của tập luật này, tiện
+        để so sánh trực tiếp với log/reward quan sát được trong training.
     """
     if not final_selected_rules:
-        return {"n_rules": 0, "accuracy": 0.0, "coverage": 0.0,
-                "redundancy": 0.0, "redundancy_conflict": 0.0,
-                "complexity": 0.0, "f1_like": 0.0}
+        return {"n_rules": 0, "f_quality": 0.0, "f_cover": 0.0,
+                "f_overlap": 0.0, "f_size": 0.0, "redundancy": 0.0,
+                "complexity": 0.0, "score": 0.0, "reward": 0.0}
 
     rule_to_idx = {id(r): i for i, r in enumerate(valid_rules)}
     idx = [rule_to_idx[id(r)] for r in final_selected_rules if id(r) in rule_to_idx]
@@ -43,29 +48,41 @@ def evaluate_run(
     n_sel = s.sum(-1)
 
     comp = reward_module.components(s)
-    accuracy = comp["accuracy"].item()
-    coverage = comp["coverage"].item()
-    redundancy_conflict = comp["conflict_ratio"].item()
+    f_quality = comp["f_quality"].item()
+    f_cover = comp["f_cover"].item()
+    f_overlap = comp["f_overlap"].item()
+    f_size = comp["f_size"].item()
 
-    # `redundancy` (toàn bộ overlap, không tách theo target) vẫn tính riêng
-    # từ self.jaccard đầy đủ — thuần mô tả, không liên quan tới việc
-    # GFlowNet có bị phạt vì nó hay không.
-    n_pairs = (n_sel * (n_sel - 1)).clamp(min=1)
-    pair_red = (s.unsqueeze(1) * s.unsqueeze(2) * reward_module.jaccard).sum((-1, -2))
-    redundancy = (pair_red / n_pairs).item()
+    # `redundancy`: Jaccard trung bình theo CẶP luật đã chọn (toàn bộ overlap,
+    # không tách theo target) — thuần mô tả, tính trực tiếp từ cover vì
+    # RuleSetReward không còn cache sẵn ma trận jaccard.
+    sel_cover = reward_module.cover[idx]                       # (n_sel, n_val)
+    n = sel_cover.shape[0]
+    if n > 1:
+        inter = sel_cover @ sel_cover.T                        # (n_sel, n_sel)
+        row_sum = sel_cover.sum(-1, keepdim=True)
+        union = (row_sum + row_sum.T - inter).clamp(min=1e-8)
+        jaccard = inter / union
+        off_diag_sum = jaccard.sum() - jaccard.diagonal().sum()
+        redundancy = (off_diag_sum / (n * (n - 1))).item()
+    else:
+        redundancy = 0.0
 
     complexity = (n_sel / reward_module.max_rules).item()
 
-    f1_like = 2 * accuracy * coverage / (accuracy + coverage + 1e-8)
+    score = reward_module.score(s).item()
+    reward = reward_module(s).item()
 
     return {
         "n_rules": int(n_sel.item()),
-        "accuracy": accuracy,
-        "coverage": coverage,
+        "f_quality": f_quality,
+        "f_cover": f_cover,
+        "f_overlap": f_overlap,
+        "f_size": f_size,
         "redundancy": redundancy,
-        "redundancy_conflict": redundancy_conflict,
         "complexity": complexity,
-        "f1_like": f1_like,
+        "score": score,
+        "reward": reward,
     }
 
 
@@ -74,8 +91,9 @@ def debug_breakdown(rule_subset: List[Rule], valid_rules: List[Rule],
     """In log breakdown cho một tập luật — dùng trong training loop để theo dõi."""
     metric = evaluate_run(rule_subset, valid_rules, reward_module)
     logger.info(
-        "DEBUG %s: n_selected=%d, accuracy=%.4f, coverage=%.4f, "
-        "redundancy=%.4f, redundancy_conflict=%.4f, complexity=%.4f, f1_like=%.4f",
-        label, metric["n_rules"], metric["accuracy"], metric["coverage"],
-        metric["redundancy"], metric["redundancy_conflict"], metric["complexity"], metric["f1_like"],
+        "DEBUG %s: n_selected=%d, f_quality=%.4f, f_cover=%.4f, f_overlap=%.4f, "
+        "f_size=%.4f, redundancy=%.4f, complexity=%.4f, score=%.4f, reward=%.4f",
+        label, metric["n_rules"], metric["f_quality"], metric["f_cover"],
+        metric["f_overlap"], metric["f_size"], metric["redundancy"],
+        metric["complexity"], metric["score"], metric["reward"],
     )

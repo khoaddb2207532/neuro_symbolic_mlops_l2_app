@@ -43,14 +43,18 @@ def main(params_path: str) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     filtered_dir = os.path.join(params["output_dir"], "04_filtered_rules")
-    ckpt_path = os.path.join(filtered_dir, "gflownet_best_sampler.pth")
-    if not os.path.exists(ckpt_path):
-        logger.warning("Chưa có gflownet_best_sampler.pth — fallback gflownet_best.pth "
-                        "(checkpoint tối ưu avg reward, có thể kém đa dạng hơn cho marginalization).")
-        ckpt_path = os.path.join(filtered_dir, "gflownet_best.pth")
 
     # ---- 1) Nạp lại policy GFlowNet đã train làm FROZEN SAMPLER (không
     # train lại bất kỳ tham số nào của nó) ----
+    # LƯU Ý: pipeline huấn luyện mới (src/gflownet/pipeline.py) đã bỏ
+    # `_SamplerCheckpointTracker`/checkpoint riêng `gflownet_best_sampler.pth`
+    # (vốn chỉ lưu khi diversity không dưới ngưỡng tối thiểu). Giờ chỉ còn
+    # DUY NHẤT `gflownet_best.pth` — lưu tại điểm val_loss thấp nhất, với
+    # mode-collapse đã được early-stopping chặn ngay trong lúc train (xem
+    # `_check_early_stopping`) — nên dùng thẳng checkpoint này làm sampler,
+    # không cần fallback nữa.
+    ckpt_path = os.path.join(filtered_dir, "gflownet_best.pth")
+
     rule_order = load_rule_order(filtered_dir)
     gflownet, env, valid_rules, _reward_module = rebuild_gflownet(rule_order, ckpt_path, device)
     logger.info(
