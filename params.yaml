@@ -63,22 +63,22 @@ gflownet:
   hidden_dim: 256
   num_iterations: 5000
   batch_size: 256
-  lr: !!float 1e-3
-  logZ_lr: 0.1
+  lr: !!float 5e-4
+  logZ_lr: 0.05
   validation_interval: 100
   loss_type: "tb"          # "tb" | "db" | "fm"
   logZ_warmup_steps: 50
-  val_samples: 140
+  val_samples: 512
   grad_clip_max_norm: 5.0
   # ---- reward hyperparams (RuleSetReward, xem pipeline.py::RuleExtractionPipeline) ----
   # U(S) = f_quality + lambda_1*f_cover - lambda_2*f_overlap - lambda_3*f_size
   # R(S) = exp(gamma*U(S))
-  alpha: 1.0          # trọng số phạt độ dài luật trong f_quality (q_r = freq_r*(1-err_r)*exp(-alpha*len_r))
-  lambda_1: 1.0        # trọng số f_cover
+  alpha: 0.3          # trọng số phạt độ dài luật trong f_quality (q_r = freq_r*(1-err_r)*exp(-alpha*len_r))
+  lambda_1: 0.7        # trọng số f_cover
   lambda_2: 1.0        # trọng số f_overlap
   lambda_3: 1.0        # trọng số f_size
   K: 120                # số luật kỳ vọng dùng trong f_size (mặc định = max_rules nếu bỏ trống)
-  gamma: 3.0            # nhiệt độ reward exp(gamma*U(S))
+  gamma: 2.0            # nhiệt độ reward exp(gamma*U(S))
   # ---- replay buffer + chọn ứng viên cuối (giai đoạn 4 của pipeline) ----
   replay_capacity: 1000
   num_candidates: 100
