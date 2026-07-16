@@ -39,8 +39,6 @@ rf:
   max_depth: 13
 rules:
   min_support: 0.01
-  min_confidence: 0.7
-
 
 rule_penalty:
   weight: 0.1
@@ -71,11 +69,19 @@ gflownet:
   loss_type: "tb"          # "tb" | "db" | "fm"
   logZ_warmup_steps: 50
   val_samples: 140
-  w_acc: 0.5
-  w_cov: 1.0
-  w_conflict: 0.5
-  beta: 1.0
-  grad_clip_max_norm : 5.0
+  grad_clip_max_norm: 5.0
+  # ---- reward hyperparams (RuleSetReward, xem pipeline.py::RuleExtractionPipeline) ----
+  # U(S) = f_quality + lambda_1*f_cover - lambda_2*f_overlap - lambda_3*f_size
+  # R(S) = exp(gamma*U(S))
+  alpha: 1.0          # trọng số phạt độ dài luật trong f_quality (q_r = freq_r*(1-err_r)*exp(-alpha*len_r))
+  lambda_1: 1.0        # trọng số f_cover
+  lambda_2: 1.0        # trọng số f_overlap
+  lambda_3: 1.0        # trọng số f_size
+  K: 120                # số luật kỳ vọng dùng trong f_size (mặc định = max_rules nếu bỏ trống)
+  gamma: 3.0            # nhiệt độ reward exp(gamma*U(S))
+  # ---- replay buffer + chọn ứng viên cuối (giai đoạn 4 của pipeline) ----
+  replay_capacity: 10000
+  num_candidates: 100
 
 uncertainty:
   enabled: true
