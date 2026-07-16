@@ -80,7 +80,7 @@ gflownet:
   K: 120                # số luật kỳ vọng dùng trong f_size (mặc định = max_rules nếu bỏ trống)
   gamma: 3.0            # nhiệt độ reward exp(gamma*U(S))
   # ---- replay buffer + chọn ứng viên cuối (giai đoạn 4 của pipeline) ----
-  replay_capacity: 10000
+  replay_capacity: 1000
   num_candidates: 100
 
 uncertainty:

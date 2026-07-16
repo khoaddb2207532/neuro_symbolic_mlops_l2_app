@@ -159,7 +159,7 @@ class BaseGFlowNetPipeline(abc.ABC):
     @staticmethod
     def _check_early_stopping(
         val_loss_history: List[float], mode_diversity: float,
-        patience: int = 3, min_diversity: float = 0.2,
+        patience: int = 10, min_diversity: float = 0.2,
     ) -> bool:
         """Dừng sớm nếu diversity sụp đổ (mode collapse) HOẶC val_loss không
         cải thiện so với min trong `patience` lần validate liền trước."""
