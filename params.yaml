@@ -10,7 +10,7 @@ output_dir: "outputs"
 num_classes: 12
 batch_size: 64
 num_workers: 4
-num_epochs: 5
+num_epochs: 100
 patience: 5
 weight_decay: !!float 1e-4
 monitor_metric: "val_loss"
