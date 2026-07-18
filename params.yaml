@@ -21,8 +21,8 @@ monitor_metric: "val_loss"
 #   "Progressive Unfreezing" .
 # --------------------------------------------------------------
 transfer_learning:
-  lr_head: !!float 1e-4          # classifier học nhanh
-  lr_backbone: !!float 1e-5       # backbone (khi mở) học chậm hơn 10x
+  lr_head: !!float 1e-3          # classifier học nhanh
+  lr_backbone: !!float 1e-4       # backbone (khi mở) học chậm hơn 10x
   freeze_bn: true          # BatchNorm luôn đóng băng cho tới stage "full"
   # Stage 1 (baseline, cell gốc "01_baseline"): warm-up head, sau đó mở dần.
   freeze_schedule:
