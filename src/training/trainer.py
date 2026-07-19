@@ -191,7 +191,12 @@ def train_one_epoch(
         logits, features = outputs if isinstance(outputs, (tuple, list)) and len(outputs) == 2 else (outputs, None)
 
         ce_loss = criterion(logits, labels)
-        penalty = penalty_module(features, logits) if penalty_module is not None else torch.tensor(0.0, device=device)
+        if penalty_module is None:
+            penalty = torch.tensor(0.0, device=device)
+        elif getattr(penalty_module, "requires_labels", False):
+            penalty = penalty_module(features, logits, labels)
+        else:
+            penalty = penalty_module(features, logits)
 
         if resolve_conflict and penalty_module is not None:
             had_conflict, _cos_sim = _resolve_loss_conflict(ce_loss, penalty, trainable_params)

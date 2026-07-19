@@ -74,7 +74,8 @@ class NeuroSymbolicDataset(Dataset):
         )
 
 
-def create_dataloaders(data_dir: str, batch_size: int = 32, num_workers: int = 4, seed: int = 42):
+def create_dataloaders(data_dir: str, batch_size: int = 32, num_workers: int = 4,
+                       seed: int = 42, drop_last_train: bool = True):
     """Tạo dataloaders cho train/val/test với seeding đầy đủ (reproducibility)."""
     dataloaders = {}
     for split in ["train", "val", "test"]:
@@ -87,7 +88,7 @@ def create_dataloaders(data_dir: str, batch_size: int = 32, num_workers: int = 4
             dataset,
             batch_size=batch_size,
             shuffle=(split == "train"),
-            drop_last=(split == "train"),
+            drop_last=(split == "train" and drop_last_train),
             num_workers=num_workers,
             pin_memory=True,
             generator=g,

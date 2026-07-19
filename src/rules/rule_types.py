@@ -18,6 +18,10 @@ class Rule:
     conditions: List[Condition]
     target_class: int
     confidence: float = 1.0
+    # Stable RF provenance is required by the leaf-path GFlowNet. Defaults keep
+    # older pickles and hand-written tests compatible.
+    tree_id: int = -1
+    leaf_node_id: int = -1
 
     def __str__(self) -> str:
         return " AND ".join(str(c) for c in self.conditions) + f" => Class {self.target_class}"

@@ -29,6 +29,7 @@ from src.gflownet.rule_ranking_analysis import load_rule_order, rebuild_gflownet
 from src.models.cnn import CNNBaseline
 from src.rules.bayesian_penalty import BayesianRuleMarginalization
 from src.training.trainer import train_model
+from src.utils.checkpoint import load_model_weights
 from src.utils.config import load_params
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
@@ -64,6 +65,10 @@ def main(params_path: str) -> None:
     bayes_cfg = params.get("rule_penalty_bayesian", {})
     K = bayes_cfg.get("K", 32)
 
+    features_dir = os.path.join(params["output_dir"], "02_features")
+    val_features = torch.load(os.path.join(features_dir, "val_features.pt"), map_location="cpu")
+    val_labels = torch.load(os.path.join(features_dir, "val_labels.pt"), map_location="cpu")
+
     penalty_module = BayesianRuleMarginalization(
         valid_rules=valid_rules,
         gflownet=gflownet,
@@ -75,6 +80,19 @@ def main(params_path: str) -> None:
         num_classes=params["num_classes"],
         initial_temp=params["rule_penalty"]["initial_temp"],
         final_temp=params["rule_penalty"]["final_temp"],
+        validation_features=val_features,
+        validation_labels=val_labels,
+        min_rule_confidence=bayes_cfg.get("min_rule_confidence", 0.7),
+        min_val_support=bayes_cfg.get("min_val_support", 0.01),
+        min_val_precision=bayes_cfg.get("min_val_precision", 0.7),
+        cnn_uncertainty_threshold=bayes_cfg.get("cnn_uncertainty_threshold", 0.75),
+    )
+    logger.info(
+        "Rule validation gate: giữ %d/%d luật (confidence>=%.2f, val_support>=%.3f, val_precision>=%.2f).",
+        penalty_module.num_eligible_rules, len(valid_rules),
+        bayes_cfg.get("min_rule_confidence", 0.7),
+        bayes_cfg.get("min_val_support", 0.01),
+        bayes_cfg.get("min_val_precision", 0.7),
     )
 
     dataloaders, train_loader, val_loader, test_loader = create_dataloaders(
@@ -87,17 +105,18 @@ def main(params_path: str) -> None:
     save_dir = os.path.join(params["output_dir"], "05b_rules_model_bayesian")
     os.makedirs(save_dir, exist_ok=True)
 
-    # Train một CNN mới từ pretrained ImageNet để đo tác động của luật ngay từ
-    # đầu. Baseline phía trước chỉ đóng vai trò teacher để sinh feature/RF/rule.
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="head_only")
+    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
 
-    # Không nạp baseline_best.pth: đây là thí nghiệm CE + rule từ cùng điểm
-    # khởi tạo ImageNet với baseline, không phải fine-tune tiếp baseline.
+    # Giống stage5 gốc: tiếp tục từ baseline đã hội tụ (stage1), không phải
+    # từ ImageNet.
+    baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    load_model_weights(model, baseline_ckpt, device, required=True)
 
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule"].items()}
+    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule_stage2"].items()}
+    fine_tune_lr_backbone = bayes_cfg.get("fine_tune_lr_backbone", 1e-6)
     train_cfg = {
-        "lr_backbone": params["transfer_learning"]["lr_backbone"],
-        "lr_backbone_full": params["transfer_learning"]["lr_backbone_full"],
+        "lr_backbone": fine_tune_lr_backbone,
+        "lr_backbone_full": fine_tune_lr_backbone,
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
         "freeze_bn": params["transfer_learning"]["freeze_bn"],

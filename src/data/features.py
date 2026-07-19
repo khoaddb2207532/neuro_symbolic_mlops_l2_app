@@ -12,6 +12,7 @@ import os
 import pickle
 
 import joblib
+import numpy as np
 import torch
 from sklearn.ensemble import RandomForestClassifier
 from tqdm import tqdm
@@ -23,7 +24,8 @@ from src.utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
-def extract_and_save_features(model, dataloaders: dict, output_dir: str, device="cuda") -> None:
+def extract_and_save_features(model, dataloaders: dict, output_dir: str, device="cuda",
+                              contract_dir: str = "data") -> None:
     """Trích và lưu CẢ features 1280-d LẪN logits (num_classes-d), cùng một
     lần forward — không forward lại CNN ở stage4 để tính uncertainty nữa.
 
@@ -34,6 +36,7 @@ def extract_and_save_features(model, dataloaders: dict, output_dir: str, device=
     chỉ để lấy features (vd stage3 trích luật)."""
     model = model.to(device).eval()
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(contract_dir, exist_ok=True)
     valid_splits = [s for s in ["train", "val", "test"] if s in dataloaders and dataloaders[s] is not None]
     with torch.no_grad():
         for split in valid_splits:
@@ -43,9 +46,27 @@ def extract_and_save_features(model, dataloaders: dict, output_dir: str, device=
                 all_features.append(feats.cpu())
                 all_logits.append(logits.cpu())
                 all_labels.append(labels.cpu())
-            torch.save(torch.cat(all_features, 0), os.path.join(output_dir, f"{split}_features.pt"))
-            torch.save(torch.cat(all_logits, 0), os.path.join(output_dir, f"{split}_logits.pt"))
-            torch.save(torch.cat(all_labels, 0), os.path.join(output_dir, f"{split}_labels.pt"))
+            features = torch.cat(all_features, 0)
+            logits = torch.cat(all_logits, 0)
+            labels = torch.cat(all_labels, 0)
+            if features.shape[0] != labels.shape[0]:
+                raise ValueError(f"{split}: feature/label count mismatch")
+            expected_count = len(dataloaders[split].dataset)
+            if features.shape[0] != expected_count:
+                raise ValueError(
+                    f"{split}: extracted {features.shape[0]} features for {expected_count} dataset samples"
+                )
+            if not torch.isfinite(features).all():
+                raise ValueError(f"{split}: penultimate features contain NaN or infinity")
+            torch.save(features, os.path.join(output_dir, f"{split}_features.pt"))
+            torch.save(logits, os.path.join(output_dir, f"{split}_logits.pt"))
+            torch.save(labels, os.path.join(output_dir, f"{split}_labels.pt"))
+            if split in ("train", "val"):
+                np.save(os.path.join(contract_dir, f"features_{split}.npy"), features.numpy())
+                np.save(os.path.join(contract_dir, f"labels_{split}.npy"), labels.numpy())
+            if split == "val":
+                np.save(os.path.join(contract_dir, "cnn_predictions_val.npy"),
+                        logits.argmax(dim=1).numpy())
             logger.info(
                 "Saved %s: %d-dim features, %d-class logits",
                 split, all_features[0].shape[-1], all_logits[0].shape[-1],

@@ -7,6 +7,7 @@
 seed: 42
 data_dir: "D:/32526_LV/vietnamese_cultural_dataset"
 output_dir: "outputs"
+logs_dir: "logs"
 num_classes: 12
 batch_size: 64
 num_workers: 4
@@ -14,6 +15,16 @@ num_epochs: 100
 patience: 5
 weight_decay: !!float 1e-4
 monitor_metric: "val_loss"
+
+data_validation:
+  # Validation is reused by RF/filter/GFlowNet/regularization tuning.
+  min_val_fraction: 0.15
+  min_val_samples_per_class: 20
+  fail_on_near_duplicate_leakage: true
+
+feature_extraction:
+  # Change this to the latest regularized CNN checkpoint before a drift-triggered RF refit.
+  checkpoint_path: "checkpoints/cnn_baseline.pt"
 
 # --------------------------------------------------------------
 # CHIẾN LƯỢC TRANSFER LEARNING ĐÃ CHỌN:
@@ -38,10 +49,46 @@ transfer_learning:
 
   scheduler_patience: 3
 rf:
-  n_estimators: 150
-  max_depth: 13
+  default_config:
+    n_estimators: 100
+    max_depth: null
+    min_samples_leaf: 1
+    max_features: "sqrt"
+  elbow_tolerance: 0.002
+  min_fidelity_improvement: 0.002
+  search_space:
+    initial_max_depth: null
+    initial_n_estimators: 100
+    initial_min_samples_leaf: 20
+    initial_max_features: "sqrt"
+    max_depth: [4, 6, 8, 10, 12, null]
+    n_estimators: [50, 100, 200, 500]
+    min_samples_leaf: [10, 20, 30, 50]
+    min_samples_leaf_trials: 4
+    max_features: ["sqrt", 8]
 rules:
   min_support: 0.01
+
+# Wilson-bound filtering is tuned only after the RF configuration is fixed.
+rule_filter:
+  fidelity_thresholds: [0.6, 0.7, 0.8, 0.9]
+  min_coverages: [10, 20, 30, 50]
+  significance: 0.05
+  histogram_bins: 20
+  random_floor_multiplier: 1.5
+  min_good_class_fraction: 0.6
+
+drift:
+  minimum_relative_drop: 0.10
+  maximum_relative_drop: 0.15
+  check_every_epochs: 5
+
+centroid_baseline:
+  epochs: 5
+  learning_rate: !!float 1e-5
+  weight: 0.01
+  margin: 1.0
+  scope: "last_two_layers"
 
 rule_penalty:
   weight: 0.03
@@ -53,12 +100,34 @@ rule_penalty:
   temperature_end_epoch: 60
   smoothing: 0.1
 
+regularize:
+  # Accuracy budget is fixed before search: at most one percentage point.
+  max_accuracy_drop: 0.01
+  input_checkpoint: "checkpoints/cnn_baseline.pt"
+  alpha_values: [0.01, 0.1, 1.0, 5.0]
+  beta_values: [0.01, 0.1, 1.0, 5.0]
+  alpha_beta_lr_ratio: 0.1
+  alpha_beta_scope: "last_layer"
+  lr_ratios: [0.1, 0.2, 0.5]
+  scopes: ["last_layer", "last_two_layers", "full_backbone"]
+  base_lr: !!float 1e-4
+  search_epochs: 3
+  max_epochs: 30
+  bad_patience: 3
+  accuracy_patience: 2
+  routing_temperature: 10.0
+
 # Dùng bởi pipelines/stage5_train_rule_bayesian.py — regularization kiểu
 # Bayesian marginalization (frozen GFlowNet sampler, resample K tập luật MỚI
 # mỗi bước train CNN, xem src/rules/bayesian_penalty.py).
 rule_penalty_bayesian:
   K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
   resolve_loss_conflict: true  # bật PCGrad giữa CE loss và rule-penalty loss
+  fine_tune_lr_backbone: !!float 1e-6
+  min_rule_confidence: 0.70
+  min_val_support: 0.01
+  min_val_precision: 0.70
+  cnn_uncertainty_threshold: 0.75
 
 # Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
 # GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.
@@ -66,17 +135,28 @@ rule_ranking_analysis:
   K: 300                       # số trajectory sample từ policy đã train
 
 gflownet:
-  max_rules: 120
-  hidden_dim: 256
+  # Leaf-path TB-GFlowNet: state is an RF split prefix; terminal is filtered leaf.
+  hidden_dim: 128
+  n_layers: 2
   num_iterations: 5000
-  batch_size: 256
-  lr: !!float 5e-4
-  logZ_lr: 0.05
-  validation_interval: 100
-  loss_type: "tb"          # "tb" | "db" | "fm"
-  logZ_warmup_steps: 50
-  val_samples: 512
-  grad_clip_max_norm: 5.0
+  batch_size: 64
+  lr: !!float 3e-4
+  logz_lr: 0.05
+  exploration_rate: 0.1
+  reward_beta: 1.0
+  coverage_power: 0.5
+  kl_patience: 8
+  kl_tolerance: !!float 1e-4
+  loss_stability_weight: 0.05
+  max_tb_loss_relative_std: 2.0
+  search:
+    enabled: true
+    n_trials: 20
+    hidden_dims: [64, 128, 256]
+    n_layers: [2, 3]
+    learning_rates: [!!float 1e-4, !!float 3e-4, !!float 1e-3, !!float 3e-3]
+    exploration_rates: [0.0, 0.05, 0.1, 0.2]
+    reward_betas: [0.5, 1.0, 2.0]
   # ---- reward hyperparams (RuleSetReward, xem pipeline.py::RuleExtractionPipeline) ----
   # U(S) = f_quality + lambda_1*f_cover - lambda_2*f_overlap - lambda_3*f_size
   # R(S) = exp(gamma*U(S))

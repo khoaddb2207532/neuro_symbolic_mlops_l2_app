@@ -7,12 +7,28 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 from torch.utils.data import DataLoader
 
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def evaluate_classification_metrics(model, dataloader, device) -> Dict[str, Any]:
+    """Return accuracy/macro-F1 for an evaluation split without presentation side effects."""
+    model = model.to(device).eval()
+    predictions, labels = [], []
+    with torch.no_grad():
+        for images, targets in dataloader:
+            logits, _ = model(images.to(device))
+            predictions.extend(logits.argmax(dim=1).cpu().tolist())
+            labels.extend(targets.tolist())
+    if not labels:
+        raise ValueError("cannot evaluate an empty split")
+    return {"accuracy": float(accuracy_score(labels, predictions)),
+            "f1_macro": float(f1_score(labels, predictions, average="macro", zero_division=0)),
+            "n_samples": len(labels)}
 
 
 def evaluate_model_performance(

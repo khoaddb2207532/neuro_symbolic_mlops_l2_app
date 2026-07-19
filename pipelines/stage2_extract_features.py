@@ -1,6 +1,9 @@
 """DVC Stage 2 — Trích đặc trưng 1280-d từ CNN đã fine-tune."""
 import argparse
+import hashlib
+import json
 import os
+from datetime import datetime, timezone
 
 import torch
 
@@ -20,14 +23,30 @@ def main(params_path: str) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     dataloaders, _, _, _ = create_dataloaders(
-        params["data_dir"], batch_size=params["batch_size"], num_workers=params["num_workers"], seed=params["seed"]
+        params["data_dir"], batch_size=params["batch_size"], num_workers=params["num_workers"],
+        seed=params["seed"], drop_last_train=False,
     )
-    trained_model_path = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    trained_model_path = params.get("feature_extraction", {}).get(
+        "checkpoint_path", os.path.join("checkpoints", "cnn_baseline.pt")
+    )
+    if not os.path.exists(trained_model_path):
+        raise FileNotFoundError(f"CNN checkpoint for feature extraction is missing: {trained_model_path}")
     feature_extractor = FeatureExtractor(
         num_classes=params["num_classes"], trained_model_path=trained_model_path, device=device
     )
     output_dir = os.path.join(params["output_dir"], "02_features")
-    extract_and_save_features(feature_extractor, dataloaders, output_dir=output_dir, device=device)
+    extract_and_save_features(feature_extractor, dataloaders, output_dir=output_dir,
+                              device=device, contract_dir="data")
+    digest = hashlib.sha256()
+    with open(trained_model_path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    with open(os.path.join("data", "features_metadata.json"), "w", encoding="utf-8") as stream:
+        json.dump({"cnn_checkpoint": os.path.abspath(trained_model_path),
+                   "cnn_checkpoint_sha256": digest.hexdigest(),
+                   "generated_at": datetime.now(timezone.utc).isoformat(),
+                   "train_samples": len(dataloaders["train"].dataset),
+                   "val_samples": len(dataloaders["val"].dataset)}, stream, indent=2)
     logger.info("Stage 2 hoàn thành. Đặc trưng lưu tại %s", output_dir)
 
 

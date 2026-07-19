@@ -1,5 +1,75 @@
 # Neuro-Symbolic Vietnamese Cultural Classifier — Refactored (MLOps Level 2)
 
+> Chuỗi stage được cố định: baseline CNN → feature → search RF theo fidelity →
+> lọc leaf bằng Wilson bound → GFlowNet → regularize → drift-check → ablation.
+
+Artifact theo đặc tả mới gồm `outputs/03_rules/rf_best_config.json`,
+`outputs/03b_filtered_leaves/leaf_stats.csv`, `G_c_leaves.json`,
+`B_c_leaves.json` và `outputs/06_drift/drift_status.json`. Mọi trial được nối thêm
+(không ghi đè) vào JSONL có timestamp trong `logs/`; `reports/ablation/` chỉ chuyển
+các log đã có thành bảng, không chạy lại search. Thay đổi cấu hình ở `params.yaml`
+sẽ để DVC chạy lại đúng các stage phụ thuộc.
+
+GĐ4 không còn chọn một tập con bằng state nhị phân. Nó dựng đúng các đường
+`tree → split → leaf` từ RF, huấn luyện TB-GFlowNet riêng cho `good/bad` của từng
+lớp và dừng theo KL với reward chuẩn hóa. Reward chỉ đọc từ `leaf_stats.csv`;
+không forward CNN và không tạo nhánh mới. Kết quả chuẩn là
+`checkpoints/gfn_good.pt`, `checkpoints/gfn_bad.pt` và
+`reports/leaf_probs.json`. Đây là đúng hai model vật lý; bảng xác suất được chuẩn
+hóa trong từng lớp để thu được `p_good(leaf|c)`/`p_bad(leaf|c)`. Search kiến
+trúc/LR/exploration/reward temperature dùng Optuna và ghi mọi trial vào
+`logs/gflownet_search.jsonl`; `log Z` luôn được học cùng TB loss, không search.
+Engine huấn luyện dùng trực tiếp `torchgfn==2.4.1`: `DiscreteEnv`,
+`DiscretePolicyEstimator`, `Sampler` và `TBGFlowNet`. Project chỉ định nghĩa môi
+trường RF leaf-path; không tự triển khai sampler hoặc Trajectory Balance loss.
+Với source local đã tải, cài editable bằng
+`python -m pip install -e D:\32526_LV\torchgfn`.
+Torchgfn 2.4.1 yêu cầu Python `>=3.10` và NumPy `<2`; môi trường Python 3.10
+hiện có trên máy đã được cài/test thành công. Không dùng Anaconda Python 3.13
+cho stage này vì NumPy 1.26 không cung cấp wheel tương thích Python 3.13.
+
+## Hợp đồng Giai đoạn 1
+
+Stage `audit_data` phải hoàn thành trước baseline. `train_baseline` kiểm tra đủ
+`train/val/test`, validation tối thiểu 15% và tối thiểu 20 mẫu mỗi lớp; ảnh lỗi,
+class mismatch hoặc duplicate xuyên split sẽ chặn huấn luyện. Baseline tạo đúng
+`checkpoints/cnn_baseline.pt` và `reports/baseline_metrics.json` (accuracy +
+macro-F1 trên val/test). File metrics là mốc bất biến và không được stage sau ghi
+đè. Stage `extract_features` ghi đủ `data/features_train.npy`,
+`data/labels_train.npy`, `data/features_val.npy`, `data/labels_val.npy`, đồng thời
+kiểm tra số hàng và NaN/Inf trước khi cho RF chạy.
+
+## Hợp đồng Giai đoạn 2
+
+RF chỉ đọc các artifact `.npy` của GĐ1 và xác minh
+`data/features_metadata.json` vẫn khớp SHA-256 checkpoint CNN nguồn. Search diễn
+ra tuần tự theo `max_depth` → elbow `n_estimators` → random
+`min_samples_leaf` → `max_features`/OOB; lựa chọn cuối dựa trên fidelity có trọng
+số coverage, không dựa trên accuracy RF. Output chuẩn là
+`checkpoints/rf_model.pkl`, `configs/rf_hyperparams.yaml`, một file mới
+`logs/search_rf_<timestamp>.csv` cho mỗi lần chạy, và `reports/leaf_stats.csv`.
+
+## Hợp đồng Giai đoạn 3
+
+Stage `filter_rules` xác minh schema `leaf_stats.csv`, vẽ
+`reports/fidelity_histogram.png`, tìm valley hai cụm và quét đủ 16 tổ hợp
+`tau_fidelity × n_min`. Ngưỡng phải cao hơn sàn `1/K`; lựa chọn elbow cân bằng
+số leaf bị loại với coverage assignment còn lại. Leaf chỉ được xét G/B sau khi
+qua Wilson lower bound. Z-test so precision leaf với precision toàn cục của đúng
+lớp `c`, rồi xuất `configs/filter_thresholds.yaml`, log CSV timestamp và hai file
+chuẩn `reports/G_c_leaves.json`, `reports/B_c_leaves.json`.
+
+## Hợp đồng Giai đoạn 5
+
+Stage `train_rule_regularized` dùng hard RF routing ở forward và straight-through
+soft split membership ở backward để công thức phân phối GFlowNet thực sự truyền
+gradient về feature CNN. Search cố định α/β trước trên lưới 4×4, dựng Pareto giữa
+tổng `|B_c|` active và validation accuracy với budget giảm tối đa 0.01; sau đó
+mới quét ba LR ratio và ba phạm vi layer. Fine-tune cuối dừng khi `|B_c|` không
+giảm hoặc accuracy bắt đầu giảm. Output chuẩn là `checkpoints/cnn_regularized.pt`,
+`configs/regularize_hyperparams.yaml`, log CSV timestamp,
+`reports/regularize_pareto.png` và `reports/regularize_metrics.json`.
+
 Repo này là bản tổ chức lại của notebook `lv_gfn.ipynb`: CNN (MobileNetV3-Large)
 → trích đặc trưng → Random Forest → trích/lọc luật → GFlowNet chọn luật →
 fine-tune CNN với rule-penalty.

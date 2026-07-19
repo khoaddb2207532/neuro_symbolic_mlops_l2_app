@@ -63,6 +63,12 @@ class BayesianRuleMarginalization(nn.Module):
         num_classes: int = 12,
         initial_temp: float = 2.0,
         final_temp: float = 15.0,
+        validation_features: Optional[torch.Tensor] = None,
+        validation_labels: Optional[torch.Tensor] = None,
+        min_rule_confidence: float = 0.7,
+        min_val_support: float = 0.01,
+        min_val_precision: float = 0.7,
+        cnn_uncertainty_threshold: float = 0.75,
     ):
         super().__init__()
         if len(valid_rules) != env.n_rules:
@@ -82,6 +88,8 @@ class BayesianRuleMarginalization(nn.Module):
         self.num_classes = num_classes
         self.initial_temp = initial_temp
         self.final_temp = final_temp
+        self.cnn_uncertainty_threshold = cnn_uncertainty_threshold
+        self.requires_labels = True
 
         # ---- Frozen sampler: KHÔNG BAO GIỜ cập nhật gradient của GFlowNet
         # trong lúc train CNN — chỉ dùng để sample. ----
@@ -112,10 +120,63 @@ class BayesianRuleMarginalization(nn.Module):
         self.register_buffer("valid_m", valid_m)
         self.register_buffer("targets", targets)
         self.register_buffer("confs", confs)
+        val_support, val_precision = self._measure_on_validation(
+            validation_features, validation_labels,
+            feat_idx, thresholds, ops, valid_m, targets,
+        )
+        eligible = (
+            (confs >= min_rule_confidence)
+            & (val_support >= min_val_support)
+            & (val_precision >= min_val_precision)
+        )
+        max_support = val_support[eligible].max() if eligible.any() else torch.tensor(1.0)
+        support_weight = torch.sqrt(
+            (val_support / max_support.clamp(min=1e-9)).clamp(0.0, 1.0)
+        )
+        rule_quality = confs * val_precision * support_weight * eligible.float()
+        self.register_buffer("val_support", val_support)
+        self.register_buffer("val_precision", val_precision)
+        self.register_buffer("eligible", eligible)
+        self.register_buffer("rule_quality", rule_quality)
         self.register_buffer("_temperature", torch.tensor(float(initial_temp)))
+
+        self.num_eligible_rules = int(eligible.sum().item())
 
         self._last_rule_sat: Optional[torch.Tensor] = None
         self._last_masks: Optional[torch.Tensor] = None
+
+    @staticmethod
+    @torch.no_grad()
+    def _measure_on_validation(
+        features, labels, feat_idx, thresholds, ops, valid_m, targets,
+        rule_chunk_size: int = 256,
+    ):
+        """Đo hard support/precision trên validation, giữ nguyên thứ tự GFlowNet."""
+        R = feat_idx.size(0)
+        if features is None or labels is None:
+            return torch.zeros(R), torch.zeros(R)
+        features = features.detach().cpu()
+        labels = labels.detach().view(-1).long().cpu()
+        support = torch.zeros(R)
+        precision = torch.zeros(R)
+        n_samples = max(features.size(0), 1)
+        for start in range(0, R, rule_chunk_size):
+            end = min(start + rule_chunk_size, R)
+            selected = features[:, feat_idx[start:end]]
+            cond_ok = torch.where(
+                ops[start:end].unsqueeze(0),
+                selected > thresholds[start:end].unsqueeze(0),
+                selected <= thresholds[start:end].unsqueeze(0),
+            )
+            cond_ok = torch.where(
+                valid_m[start:end].unsqueeze(0), cond_ok, torch.ones_like(cond_ok)
+            )
+            covered = cond_ok.all(dim=-1)
+            counts = covered.sum(dim=0)
+            correct = covered & (labels.unsqueeze(1) == targets[start:end].unsqueeze(0))
+            support[start:end] = counts.float() / n_samples
+            precision[start:end] = correct.sum(dim=0).float() / counts.clamp(min=1).float()
+        return support, precision
 
     def update_temperature(self, epoch: int, total_epochs: int) -> None:
         """Cùng lịch trình ủ nhiệt độ với `VectorizedRulePenalty` — mềm lúc
@@ -135,7 +196,10 @@ class BayesianRuleMarginalization(nn.Module):
         masks = traj.terminating_states.tensor.bool().to(device)  # (K, R)
         return masks
 
-    def forward(self, features: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, features: torch.Tensor, logits: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         R = len(self.valid_rules)
         if R == 0:
             self._last_rule_sat = None
@@ -155,7 +219,21 @@ class BayesianRuleMarginalization(nn.Module):
         cond_sat = torch.where(self.ops, sat_gt, sat_le)
         cond_sat = torch.where(self.valid_m, cond_sat, torch.ones_like(cond_sat))
         rule_sat = cond_sat.prod(dim=-1)  # (batch, R)
-        self._last_rule_sat = rule_sat.detach()
+        if labels is None:
+            raise ValueError("BayesianRuleMarginalization cần labels để gate penalty")
+
+        # Chỉ hỗ trợ CNN ở nơi rule đúng nhãn thật, còn CNN dự đoán sai hoặc
+        # confidence thấp. Quyết định gate không tham gia backprop.
+        probabilities = torch.softmax(logits.detach(), dim=1)
+        cnn_confidence, cnn_prediction = probabilities.max(dim=1)
+        cnn_needs_help = (
+            (cnn_prediction != labels)
+            | (cnn_confidence < self.cnn_uncertainty_threshold)
+        ).unsqueeze(1)
+        rule_is_correct = labels.unsqueeze(1) == self.targets.unsqueeze(0)
+        supervision_gate = (cnn_needs_help & rule_is_correct).float()
+        effective_sat = rule_sat * supervision_gate * self.eligible.float().unsqueeze(0)
+        self._last_rule_sat = effective_sat.detach()
 
         log_probs = torch.log_softmax(logits, dim=1)
         tgt_log_probs = log_probs.gather(1, self.targets.unsqueeze(0).expand(batch_size, -1))
@@ -164,15 +242,17 @@ class BayesianRuleMarginalization(nn.Module):
             (1.0 - self.smoothing) * tgt_log_probs + (self.smoothing / self.num_classes) * sum_log_probs
         )  # (batch, R)
 
-        weighted = log_loss * rule_sat
-        n_matched = rule_sat.sum(dim=0) + 1e-9  # (R,)
+        weighted = log_loss * effective_sat
+        n_matched = effective_sat.sum(dim=0) + 1e-9  # (R,)
         avg_loss_full = weighted.sum(dim=0) / n_matched  # (R,) — per-rule, KHÔNG phụ thuộc ruleset nào
         if self.use_confidence:
-            avg_loss_full = avg_loss_full * self.confs
+            avg_loss_full = avg_loss_full * self.rule_quality
+        else:
+            avg_loss_full = avg_loss_full * self.eligible.float()
 
         # ---- Resample K tập luật MỚI từ frozen sampler (MỖI bước) rồi ước
         # lượng MC không chệch của E_{s~pi}[L_rule_penalty(s)]. ----
-        masks = self._sample_masks(device).float()  # (K, R)
+        masks = self._sample_masks(device).float() * self.eligible.float().unsqueeze(0)  # (K, R)
         self._last_masks = masks.detach()
         mask_count = masks.sum(dim=1).clamp(min=1.0)  # (K,) — ruleset rỗng (nếu có) không gây NaN nhờ clamp
         masked_sum = (masks * avg_loss_full.unsqueeze(0)).sum(dim=1)  # (K,)
@@ -187,7 +267,7 @@ class BayesianRuleMarginalization(nn.Module):
         1 ruleset cố định), cộng thêm `mean_ruleset_size` — kích thước trung
         bình của K ruleset resample gần nhất, để theo dõi xem posterior của
         GFlowNet có ổn định theo thời gian train CNN hay không."""
-        n_rules_total = len(self.valid_rules)
+        n_rules_total = self.num_eligible_rules
         if self._last_rule_sat is None:
             return {
                 "n_rules_total": n_rules_total,
@@ -198,7 +278,10 @@ class BayesianRuleMarginalization(nn.Module):
         rule_sat = self._last_rule_sat
         per_rule_sum = rule_sat.sum(dim=0)
         n_active = int((per_rule_sum >= 1.0).sum().item())
-        mean_sat = float(rule_sat.mean().item())
+        mean_sat = (
+            float(rule_sat[:, self.eligible].mean().item())
+            if self.num_eligible_rules > 0 else 0.0
+        )
         mean_size = float(self._last_masks.sum(dim=1).mean().item()) if self._last_masks is not None else 0.0
         return {
             "n_rules_total": n_rules_total,
