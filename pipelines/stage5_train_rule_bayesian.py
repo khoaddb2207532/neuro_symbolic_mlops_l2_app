@@ -29,7 +29,6 @@ from src.gflownet.rule_ranking_analysis import load_rule_order, rebuild_gflownet
 from src.models.cnn import CNNBaseline
 from src.rules.bayesian_penalty import BayesianRuleMarginalization
 from src.training.trainer import train_model
-from src.utils.checkpoint import load_model_weights
 from src.utils.config import load_params
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
@@ -88,16 +87,17 @@ def main(params_path: str) -> None:
     save_dir = os.path.join(params["output_dir"], "05b_rules_model_bayesian")
     os.makedirs(save_dir, exist_ok=True)
 
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
+    # Train một CNN mới từ pretrained ImageNet để đo tác động của luật ngay từ
+    # đầu. Baseline phía trước chỉ đóng vai trò teacher để sinh feature/RF/rule.
+    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="head_only")
 
-    # Giống stage5 gốc: tiếp tục từ baseline đã hội tụ (stage1), không phải
-    # từ ImageNet.
-    # baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
-    # load_model_weights(model, baseline_ckpt, device, required=True)
+    # Không nạp baseline_best.pth: đây là thí nghiệm CE + rule từ cùng điểm
+    # khởi tạo ImageNet với baseline, không phải fine-tune tiếp baseline.
 
     freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule"].items()}
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],
+        "lr_backbone_full": params["transfer_learning"]["lr_backbone_full"],
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
         "freeze_bn": params["transfer_learning"]["freeze_bn"],
@@ -110,6 +110,14 @@ def main(params_path: str) -> None:
         "save_dir": save_dir,
         # ---- Task 3: xử lý xung đột gradient CE vs rule-penalty (PCGrad) ----
         "resolve_loss_conflict": bayes_cfg.get("resolve_loss_conflict", True),
+        "penalty_warmup_start_epoch":
+            params["rule_penalty"]["warmup_start_epoch"],
+        "penalty_warmup_end_epoch":
+            params["rule_penalty"]["warmup_end_epoch"],
+        "temperature_end_epoch":
+            params["rule_penalty"]["temperature_end_epoch"],
+        "intermediate_temp":
+            params["rule_penalty"].get("intermediate_temp"),
     }
 
     model, history = train_model(

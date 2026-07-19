@@ -325,6 +325,19 @@ def train_model(
     if resolve_conflict:
         logger.info("Bật xử lý xung đột gradient (PCGrad) giữa CE loss và rule-penalty loss.")
 
+    penalty_warmup_start = int(cfg.get("penalty_warmup_start_epoch", 0))
+    penalty_warmup_end = int(cfg.get("penalty_warmup_end_epoch", penalty_warmup_start))
+    temperature_end_epoch = int(cfg.get("temperature_end_epoch", num_epochs - 1))
+    intermediate_temp = cfg.get("intermediate_temp")
+    full_stage_epoch = next(
+        (int(epoch) for epoch, stage in sorted(freeze_schedule.items()) if stage == "full"),
+        temperature_end_epoch,
+    )
+    if penalty_warmup_end < penalty_warmup_start:
+        raise ValueError("penalty_warmup_end_epoch phải >= penalty_warmup_start_epoch")
+    if temperature_end_epoch < full_stage_epoch:
+        raise ValueError("temperature_end_epoch phải >= epoch bắt đầu stage 'full'")
+
     history = {
         "train_loss": [], "train_ce": [], "train_penalty": [], "train_acc": [],
         "val_loss": [], "val_acc": [],
@@ -343,6 +356,10 @@ def train_model(
                 "total_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
                 "initial_temp": initial_temp, 
                 "final_temp": final_temp,
+                "intermediate_temp": intermediate_temp,
+                "penalty_warmup_start_epoch": penalty_warmup_start,
+                "penalty_warmup_end_epoch": penalty_warmup_end,
+                "temperature_end_epoch": temperature_end_epoch,
                 "resolve_loss_conflict": resolve_conflict,
             }
         )
@@ -364,9 +381,38 @@ def train_model(
                     logger.info("Đồng thời hạ nhẹ lr_head xuống %.2e", cfg["lr_head"])
                 optimizer, scheduler = rebuild_optimizer()
 
-            # ---- Ủ nhiệt độ khớp luật: mềm ở epoch đầu -> cứng dần về cuối ----
+            # ---- Warm-up penalty: ưu tiên CE khi representation còn chưa ổn
+            # định, rồi tăng lambda tuyến tính tới penalty_weight cấu hình. ----
             if penalty_module is not None:
-                penalty_module.update_temperature(epoch, num_epochs)
+                if epoch < penalty_warmup_start:
+                    current_penalty_weight = 0.0
+                elif penalty_warmup_end == penalty_warmup_start or epoch >= penalty_warmup_end:
+                    current_penalty_weight = penalty_weight
+                else:
+                    warmup_progress = (
+                        (epoch - penalty_warmup_start)
+                        / (penalty_warmup_end - penalty_warmup_start)
+                    )
+                    current_penalty_weight = penalty_weight * warmup_progress
+                penalty_module.penalty_weight = current_penalty_weight
+
+                # Hai pha ủ T nếu có intermediate_temp: initial -> intermediate
+                # trước stage full, rồi intermediate -> final tới mốc cấu hình.
+                if intermediate_temp is not None and epoch <= full_stage_epoch:
+                    progress = epoch / max(full_stage_epoch, 1)
+                    current_temp = initial_temp + (float(intermediate_temp) - initial_temp) * progress
+                elif intermediate_temp is not None:
+                    progress = min(
+                        (epoch - full_stage_epoch) / max(temperature_end_epoch - full_stage_epoch, 1),
+                        1.0,
+                    )
+                    current_temp = float(intermediate_temp) + (final_temp - float(intermediate_temp)) * progress
+                else:
+                    progress = min(epoch / max(temperature_end_epoch, 1), 1.0)
+                    current_temp = initial_temp + (final_temp - initial_temp) * progress
+                penalty_module._temperature.fill_(current_temp)
+
+                live.log_metric("rules/penalty_weight", current_penalty_weight)
                 live.log_metric("rules/temperature", penalty_module._temperature.item())
 
             train_loss, train_ce, train_penalty, train_acc, coverage_stats = train_one_epoch(
@@ -417,11 +463,12 @@ def train_model(
                 if "conflict_ratio" in coverage_stats:
                     live.log_metric("rules/grad_conflict_ratio", coverage_stats["conflict_ratio"])
                 logger.info(
-                    "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | T=%.2f%s",
+                    "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | lambda=%.4f | T=%.2f%s",
                     round(coverage_stats["coverage_ratio"] * coverage_stats["n_rules_total"]),
                     coverage_stats["n_rules_total"],
                     coverage_stats["coverage_ratio"] * 100,
                     coverage_stats["mean_rule_sat"],
+                    penalty_module.penalty_weight,
                     penalty_module._temperature.item(),
                     f" | grad_conflict_ratio={coverage_stats['conflict_ratio']:.2f}" if "conflict_ratio" in coverage_stats else "",
                 )    
