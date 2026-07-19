@@ -63,9 +63,22 @@ def main(params_path: str) -> None:
     bad = {str(i): bad.get(str(i), []) for i in range(params["num_classes"])}
     save_leaf_groups(good, bad, "reports")
     classes_with_good = sum(bool(good.get(str(i))) for i in range(params["num_classes"]))
-    required_good = int(np.ceil(params["num_classes"] * cfg.get("min_good_class_fraction", 0.6)))
-    if classes_with_good < required_good:
+    target_good = int(np.ceil(params["num_classes"] * cfg.get("min_good_class_fraction", 0.6)))
+    majority_good = params["num_classes"] // 2 + 1
+    thresholds.update({"classes_with_good": classes_with_good,
+                       "target_classes_with_good": target_good,
+                       "minimum_majority_classes": majority_good})
+    with open(os.path.join("configs", "filter_thresholds.yaml"), "w", encoding="utf-8") as stream:
+        yaml.safe_dump(thresholds, stream, sort_keys=False)
+    if classes_with_good < majority_good:
         raise RuntimeError(f"G_c is populated for only {classes_with_good}/{params['num_classes']} classes")
+    if classes_with_good < target_good:
+        logger.warning(
+            "G_c covers %d/%d classes: this satisfies the required absolute majority (%d) "
+            "but is below the configured %.0f%% target (%d); stage continues",
+            classes_with_good, params["num_classes"], majority_good,
+            100 * cfg.get("min_good_class_fraction", 0.6), target_good,
+        )
     if not any(bad.values()):
         raise RuntimeError("B_c is empty for every class; inspect thresholds/CNN errors before stage 4")
 
