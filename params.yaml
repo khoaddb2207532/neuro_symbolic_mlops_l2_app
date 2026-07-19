@@ -23,6 +23,7 @@ monitor_metric: "val_loss"
 transfer_learning:
   lr_head: !!float 1e-3          # classifier học nhanh
   lr_backbone: !!float 1e-4       # backbone (khi mở) học chậm hơn 10x
+  lr_backbone_full: !!float 1e-5
   freeze_bn: true          # BatchNorm luôn đóng băng cho tới stage "full"
   # Stage 1 (baseline, cell gốc "01_baseline"): warm-up head, sau đó mở dần.
   freeze_schedule:
@@ -34,6 +35,8 @@ transfer_learning:
   freeze_schedule_stage2:
     0: "last_block"
     10: "full"
+
+  scheduler_patience: 3
 rf:
   n_estimators: 150
   max_depth: 13

@@ -353,6 +353,15 @@ def train_model(
                 stage = freeze_schedule[epoch]
                 logger.info("Epoch %d: chuyển freeze_stage -> '%s'", epoch, stage)
                 model.set_freeze_stage(stage)
+                if stage == "full":
+                    # Lấy lr_backbone_full (1e-5) hạ bệ mức 1e-4 cũ để bảo vệ backbone
+                    if "lr_backbone_full" in cfg:
+                        cfg["lr_backbone"] = cfg["lr_backbone_full"]
+                        logger.info("Stage 'full' được kích hoạt: Hạ lr_backbone xuống %.2e", cfg["lr_backbone"])
+                    
+                    # Tùy chọn: Giảm nhẹ cả lr_head xuống một nửa (5e-4) để tránh overfit
+                    cfg["lr_head"] = cfg.get("lr_head", 1e-3) * 0.5
+                    logger.info("Đồng thời hạ nhẹ lr_head xuống %.2e", cfg["lr_head"])
                 optimizer, scheduler = rebuild_optimizer()
 
             # ---- Ủ nhiệt độ khớp luật: mềm ở epoch đầu -> cứng dần về cuối ----
@@ -379,7 +388,7 @@ def train_model(
             history["val_loss"].append(val_loss)
 
             if scheduler is not None:
-                scheduler.step(val_loss)
+                scheduler.step(monitor_metric)
 
             logger.info(
                 "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LRs %s ",
