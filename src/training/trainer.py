@@ -388,7 +388,7 @@ def train_model(
             history["val_loss"].append(val_loss)
 
             if scheduler is not None:
-                scheduler.step(monitor_metric)
+                scheduler.step(val_loss)
 
             logger.info(
                 "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LRs %s ",

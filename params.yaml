@@ -29,7 +29,7 @@ transfer_learning:
   freeze_schedule:
     0: "head_only"    # epoch 0-4: chỉ train classifier
     5: "last_block"   # epoch 5-14: mở 3 block cuối của backbone
-    15: "full"         # epoch 15+: mở toàn bộ (nếu dataset đủ lớn)
+    12: "full"         # epoch 15+: mở toàn bộ (nếu dataset đủ lớn)
   # Stage 2 (rule-regularized fine-tuning, "05_rules_model"): tiếp tục từ
   # baseline đã hội tụ nên có thể mở sớm hơn, không cần warm-up dài.
   freeze_schedule_stage2:
