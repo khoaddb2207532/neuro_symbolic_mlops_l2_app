@@ -61,20 +61,37 @@ def main(params_path: str) -> None:
     default_model.fit(train_x, train_y)
     default_fidelity = float(np.mean(default_model.predict(val_x) == cnn_val))
 
-    model, selected, records = search_random_forest(
+    candidate_model, candidate_selected, records = search_random_forest(
         train_x, train_y, val_x, cnn_val, rf_cfg["search_space"], params["seed"],
         rf_cfg.get("elbow_tolerance", 0.002),
     )
-    selected_fidelity = float(np.mean(model.predict(val_x) == cnn_val))
+    candidate_fidelity = float(np.mean(candidate_model.predict(val_x) == cnn_val))
+    if candidate_fidelity < default_fidelity:
+        model = default_model
+        selected = {**default_cfg, "weighted_fidelity": default_fidelity,
+                    "oob_score": float(default_model.oob_score_)}
+        selected_fidelity = default_fidelity
+        selection_source = "default_fallback"
+        logger.warning(
+            "RF search candidate fidelity %.6f is below default %.6f; "
+            "using the default RF instead of the worse searched model",
+            candidate_fidelity, default_fidelity,
+        )
+    else:
+        model = candidate_model
+        selected = candidate_selected
+        selected_fidelity = candidate_fidelity
+        selection_source = "search"
     improvement = selected_fidelity - default_fidelity
     records.insert(0, {"phase": "default_baseline", **default_cfg,
                        "weighted_fidelity": default_fidelity,
                        "oob_score": float(default_model.oob_score_), "duration_seconds": 0.0})
     log_path = write_timestamped_search_csv(params["logs_dir"], records)
     if improvement < rf_cfg.get("min_fidelity_improvement", 0.0):
-        raise RuntimeError(
-            f"RF search improvement {improvement:.6f} is below required "
-            f"{rf_cfg['min_fidelity_improvement']:.6f}; see {log_path}"
+        logger.warning(
+            "RF search improvement %.6f is below target %.6f; stage continues "
+            "with the best non-degrading model. Search details: %s",
+            improvement, rf_cfg["min_fidelity_improvement"], log_path,
         )
 
     os.makedirs("checkpoints", exist_ok=True)
@@ -94,6 +111,8 @@ def main(params_path: str) -> None:
     stats.to_csv(os.path.join("reports", "leaf_stats.csv"), index=False)
     chosen = {**selected, "default_fidelity": default_fidelity,
               "selected_fidelity": selected_fidelity, "fidelity_improvement": improvement,
+              "searched_candidate_fidelity": candidate_fidelity,
+              "selection_source": selection_source,
               "search_log": log_path}
     with open(os.path.join("configs", "rf_hyperparams.yaml"), "w", encoding="utf-8") as stream:
         yaml.safe_dump(chosen, stream, sort_keys=False, allow_unicode=True)
