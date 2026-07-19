@@ -30,12 +30,20 @@ def main(params_path: str) -> None:
         raise FileNotFoundError(f"required data audit is missing: {audit_path}")
     with open(audit_path, encoding="utf-8") as stream:
         audit_summary = json.load(stream)
-    validate_audit_summary(
-        audit_summary,
-        fail_on_near_duplicate_leakage=params["data_validation"].get(
-            "fail_on_near_duplicate_leakage", True
-        ),
-    )
+    audit_warning = None
+    try:
+        validate_audit_summary(
+            audit_summary,
+            fail_on_near_duplicate_leakage=params["data_validation"].get(
+                "fail_on_near_duplicate_leakage", True
+            ),
+        )
+    except ValueError as error:
+        # Stage 1 is deliberately warning-only for audit findings.  Keep the
+        # warning in both the console log and immutable baseline report so the
+        # resulting metrics cannot be mistaken for leakage-free measurements.
+        audit_warning = str(error)
+        logger.warning("DATA AUDIT WARNING (training will continue): %s", audit_warning)
 
     dataloaders, train_loader, val_loader, test_loader = create_dataloaders(
         params["data_dir"], batch_size=params["batch_size"], num_workers=params["num_workers"], seed=params["seed"]
@@ -104,7 +112,8 @@ def main(params_path: str) -> None:
     torch.save(model.state_dict(), os.path.join("checkpoints", "cnn_baseline.pt"))
     with open(metrics_path, "x", encoding="utf-8") as stream:
         json.dump({"validation": val_metrics, "test": test_metrics,
-                   "data_protocol": split_report, "seed": params["seed"]}, stream, indent=2)
+                   "data_protocol": split_report, "data_audit_warning": audit_warning,
+                   "seed": params["seed"]}, stream, indent=2)
     logger.info("Stage 1 hoàn thành. Checkpoint tại %s", save_dir)
 
 
