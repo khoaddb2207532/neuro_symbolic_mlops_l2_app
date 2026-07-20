@@ -112,15 +112,12 @@ def main(params_path: str) -> None:
     baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
     load_model_weights(model, baseline_ckpt, device, required=True)
 
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule_stage2"].items()}
     fine_tune_lr_backbone = bayes_cfg.get("fine_tune_lr_backbone", 1e-6)
     train_cfg = {
-        "lr_backbone": fine_tune_lr_backbone,
-        "lr_backbone_full": fine_tune_lr_backbone,
-        "lr_head": params["transfer_learning"]["lr_head"],
+        # Trainer hiện dùng một LR cho toàn bộ CNN; Bayesian giữ mức fine-tune
+        # nhỏ đã cấu hình thay vì vô tình rơi về mặc định 1e-3.
+        "lr": fine_tune_lr_backbone,
         "weight_decay": params["weight_decay"],
-        "freeze_bn": params["transfer_learning"]["freeze_bn"],
-        "freeze_schedule": freeze_schedule,
         "monitor_metric": params.get("monitor_metric", "val_acc"),
         "use_scheduler": True,
         "scheduler_factor": 0.1,

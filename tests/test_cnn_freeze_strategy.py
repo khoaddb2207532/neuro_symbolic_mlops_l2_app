@@ -18,7 +18,30 @@ def test_head_only_freezes_backbone():
 
 def test_full_unfreezes_everything():
     model = CNNBaseline(num_classes=3, freeze_stage="full")
-    assert all(p.requires_grad for p in model.backbone.parameters())
+    batch_norm_params = {
+        id(p)
+        for module in model.modules()
+        if isinstance(module, torch.nn.BatchNorm2d)
+        for p in module.parameters()
+    }
+    assert all(
+        p.requires_grad for p in model.backbone.parameters()
+        if id(p) not in batch_norm_params
+    )
+    assert all(
+        not p.requires_grad for p in model.backbone.parameters()
+        if id(p) in batch_norm_params
+    )
+
+
+def test_batchnorm_stays_frozen_in_train_mode():
+    model = CNNBaseline(num_classes=3, freeze_stage="full")
+    model.train()
+    model.freeze_bn()
+    batch_norms = [m for m in model.modules() if isinstance(m, torch.nn.BatchNorm2d)]
+    assert batch_norms
+    assert all(not m.training for m in batch_norms)
+    assert all(not p.requires_grad for m in batch_norms for p in m.parameters())
 
 
 def test_invalid_stage_raises():

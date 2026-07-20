@@ -1,24 +1,9 @@
-"""Kiến trúc CNN + chiến lược transfer learning được chọn cho bài toán này.
+"""MobileNetV3-Large khởi tạo từ ImageNet để huấn luyện end-to-end.
 
-CHIẾN LƯỢC ĐÃ CHỌN (xem giải thích đầy đủ trong README.md, mục "Transfer Learning"):
-    "Freeze Backbone + Freeze BatchNorm"  ➜  "Differential / Layer-wise LR"
-    ➜  "Progressive Unfreezing" theo giai đoạn (staged fine-tuning).
-
-Lý do ngắn gọn: dataset ảnh văn hóa Việt Nam có domain lệch khá nhiều so với
-ImageNet, kích thước dataset vừa/nhỏ, và các đặc trưng (features) trích ra từ
-CNN này còn được downstream dùng để train Random Forest + GFlowNet — nên đặc
-trưng cần ổn định (không "trôi" quá mạnh ngay từ epoch đầu). Vì vậy:
-  Giai đoạn 1 (freeze_stage="head_only"): đóng băng toàn bộ backbone + BatchNorm,
-      chỉ train classifier head → ổn định nhanh, tránh phá vỡ pretrained features.
-  Giai đoạn 2 (freeze_stage="last_block"): mở block cuối của backbone với LR nhỏ
-      hơn nhiều so với head (differential LR) → thích nghi domain mà không
-      catastrophic forgetting.
-  Giai đoạn 3 (freeze_stage="full"): mở toàn bộ mạng với layer-wise LR decay,
-      dùng khi có đủ dữ liệu / cần accuracy tối đa.
-
-GHI CHÚ: CHỈ MỘT class CNN duy nhất (`CNNBaseline`) được dùng xuyên suốt toàn
-bộ pipeline (baseline training, rule-regularized fine-tuning, app serving).
-Trước đây có alias `CNNWithFeatures` trùng lặp không cần thiết — đã gộp lại.
+Trainer chính cập nhật toàn bộ backbone và classifier ngay từ epoch đầu tiên
+với một learning rate; riêng BatchNorm được khóa từ đầu đến cuối. Các
+``freeze_stage`` cũ vẫn được giữ để tương thích với checkpoint và các thí
+nghiệm ablation hiện có.
 """
 from typing import Optional, Tuple
 
@@ -48,7 +33,7 @@ class CNNBaseline(nn.Module):
     alias trùng tên.
     """
 
-    def __init__(self, num_classes: int = 12, freeze_stage: FreezeStage = "head_only"):
+    def __init__(self, num_classes: int = 12, freeze_stage: FreezeStage = "full"):
         super().__init__()
         self.backbone = _build_mobilenet_v3(num_classes)
         self.set_freeze_stage(freeze_stage)
@@ -85,28 +70,16 @@ class CNNBaseline(nn.Module):
                 p.requires_grad = True
         else:
             raise ValueError(f"freeze_stage phải là 'head_only'|'last_block'|'full', nhận '{stage}'")
-        self.freeze_bn()  # BatchNorm luôn được giữ đóng băng cho tới stage 'full'
         self._current_stage = stage
+        self.freeze_bn()
 
     def freeze_bn(self) -> None:
-        """Đóng băng running stats + affine params của mọi BatchNorm2d.
-
-        Quan trọng khi dataset/batch size nhỏ: BN dễ làm lệch running_mean/var
-        và gây training không ổn định.
-        """
-        freeze = getattr(self, "_current_stage", "head_only") != "full"
+        """Khóa running statistics và affine params của mọi BatchNorm2d."""
         for m in self.modules():
             if isinstance(m, nn.BatchNorm2d):
-                if freeze:
-                    m.eval()
-                    m.weight.requires_grad = False
-                    m.bias.requires_grad = False
-                else:
-                    # m.weight.requires_grad = True
-                    # m.bias.requires_grad = True
-                    m.eval()                        # tạm thời khóa BN tất cả stage
-                    m.weight.requires_grad = False 
-                    m.bias.requires_grad = False
+                m.eval()
+                m.weight.requires_grad = False
+                m.bias.requires_grad = False
 
     def trainable_param_groups(self, lr_head: float, lr_backbone: float):
         """Trả về param groups cho optimizer, áp dụng Differential Learning Rate."""

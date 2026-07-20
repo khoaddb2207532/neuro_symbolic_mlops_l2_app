@@ -3,10 +3,9 @@
     NHẤT `VectorizedRulePenalty` (xem src/rules/penalty.py để biết lý do đã
     gộp bỏ implementation loop trùng lặp trước đây).
   * DVCLive experiment tracking
-  * PROGRESSIVE UNFREEZING: chuyển freeze_stage của model theo epoch, theo
-    `config["freeze_schedule"]`, đúng chiến lược transfer learning đã chọn
-    (xem src/models/cnn.py). Optimizer được build lại mỗi khi stage đổi vì
-    param groups (và param nào requires_grad) thay đổi.
+  * huấn luyện end-to-end toàn bộ model ngay từ epoch đầu tiên. Model có thể
+    được khởi tạo bằng trọng số pretrained (ví dụ ImageNet), nhưng trainer
+    không đóng băng layer, progressive-unfreeze hay dùng differential LR.
 """
 import copy
 import os
@@ -46,8 +45,6 @@ DEFAULT_CONFIG = {
     "dvclive_path": "dvclive",
     "save_dir": "outputs",
     "monitor_metric": "val_acc",  # đổi thành "val_loss" nếu muốn early-stop/lưu checkpoint theo loss
-    # Chiến lược progressive unfreezing mặc định: epoch -> freeze_stage
-    "freeze_schedule": {0: "head_only"},
     # Nếu True: xử lý xung đột gradient (PCGrad) giữa CE loss và rule-penalty
     # loss thay vì backward trực tiếp trên tổng — xem _resolve_loss_conflict().
     # Mặc định False để KHÔNG đổi hành vi/số liệu của các pipeline hiện có.
@@ -295,15 +292,17 @@ def train_model(
     device = torch.device(device if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
+    # Normal end-to-end training: mọi tham số, kể cả backbone pretrained, đều
+    # được cập nhật ngay từ epoch đầu tiên.
+    if hasattr(model, "set_freeze_stage"):
+        model.set_freeze_stage("full")
+    else:
+        for parameter in model.parameters():
+            parameter.requires_grad = True
+
     criterion = nn.CrossEntropyLoss(label_smoothing=smoothing)
-    freeze_schedule = cfg["freeze_schedule"]
-
-    def rebuild_optimizer():
-        opt = build_optimizer(model, cfg)
-        sch = build_scheduler(opt, cfg)
-        return opt, sch
-
-    optimizer, scheduler = rebuild_optimizer()
+    optimizer = build_optimizer(model, cfg)
+    scheduler = build_scheduler(optimizer, cfg)
 
     is_rule_regularized_run = penalty_weight > 0 or penalty_module is not None
     ckpt_name = os.path.join(cfg["save_dir"], "rule_regularized_best.pth" if is_rule_regularized_run else "baseline_best.pth")
@@ -334,14 +333,9 @@ def train_model(
     penalty_warmup_end = int(cfg.get("penalty_warmup_end_epoch", penalty_warmup_start))
     temperature_end_epoch = int(cfg.get("temperature_end_epoch", num_epochs - 1))
     intermediate_temp = cfg.get("intermediate_temp")
-    full_stage_epoch = next(
-        (int(epoch) for epoch, stage in sorted(freeze_schedule.items()) if stage == "full"),
-        temperature_end_epoch,
-    )
+    full_stage_epoch = 0
     if penalty_warmup_end < penalty_warmup_start:
         raise ValueError("penalty_warmup_end_epoch phải >= penalty_warmup_start_epoch")
-    if temperature_end_epoch < full_stage_epoch:
-        raise ValueError("temperature_end_epoch phải >= epoch bắt đầu stage 'full'")
 
     history = {
         "train_loss": [], "train_ce": [], "train_penalty": [], "train_acc": [],
@@ -354,9 +348,9 @@ def train_model(
     with Live(dir=cfg["dvclive_path"]) as live:
         live.log_params(
             {
-                "num_epochs": num_epochs, "lr": lr, "patience": patience,
+                "num_epochs": num_epochs, "lr": cfg["lr"], "patience": patience,
                 "penalty_weight": penalty_weight, "smoothing": smoothing, "num_classes": num_classes,
-                "freeze_schedule": str(freeze_schedule),
+                "training_mode": "end_to_end",
                 "batch_size": train_loader.batch_size,
                 "total_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
                 "initial_temp": initial_temp, 
@@ -370,22 +364,6 @@ def train_model(
         )
 
         for epoch in range(num_epochs):
-            # ---- Progressive unfreezing: chuyển stage nếu epoch nằm trong schedule ----
-            if epoch in freeze_schedule and hasattr(model, "set_freeze_stage"):
-                stage = freeze_schedule[epoch]
-                logger.info("Epoch %d: chuyển freeze_stage -> '%s'", epoch, stage)
-                model.set_freeze_stage(stage)
-                if stage == "full":
-                    # Lấy lr_backbone_full (1e-5) hạ bệ mức 1e-4 cũ để bảo vệ backbone
-                    if "lr_backbone_full" in cfg:
-                        cfg["lr_backbone"] = cfg["lr_backbone_full"]
-                        logger.info("Stage 'full' được kích hoạt: Hạ lr_backbone xuống %.2e", cfg["lr_backbone"])
-                    
-                    # Tùy chọn: Giảm nhẹ cả lr_head xuống một nửa (5e-4) để tránh overfit
-                    cfg["lr_head"] = cfg.get("lr_head", 1e-3) * 0.5
-                    logger.info("Đồng thời hạ nhẹ lr_head xuống %.2e", cfg["lr_head"])
-                optimizer, scheduler = rebuild_optimizer()
-
             # ---- Warm-up penalty: ưu tiên CE khi representation còn chưa ổn
             # định, rồi tăng lambda tuyến tính tới penalty_weight cấu hình. ----
             if penalty_module is not None:
@@ -422,7 +400,7 @@ def train_model(
 
             train_loss, train_ce, train_penalty, train_acc, coverage_stats = train_one_epoch(
                 model, train_loader, criterion, optimizer, device,
-                penalty_module, freeze_bn=cfg.get("freeze_bn", True),
+                penalty_module, freeze_bn=True,
                 resolve_conflict=resolve_conflict,
             )
             val_acc, val_loss = validate(model, val_loader, criterion, device)

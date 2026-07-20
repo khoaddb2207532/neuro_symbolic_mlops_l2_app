@@ -200,13 +200,9 @@ def train_and_evaluate(
     # xuất phát khác nhau.
     load_model_weights(model, baseline_ckpt, device, required=True)
 
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule_stage2"].items()}
     train_cfg = {
-        "lr_backbone": params["transfer_learning"]["lr_backbone"],
-        "lr_head": params["transfer_learning"]["lr_head"],
+        "lr": params["learning_rate"],
         "weight_decay": params["weight_decay"],
-        "freeze_bn": params["transfer_learning"]["freeze_bn"],
-        "freeze_schedule": freeze_schedule,
         "monitor_metric": params.get("monitor_metric", "val_acc"),
         "use_scheduler": True,
         "scheduler_factor": 0.1,

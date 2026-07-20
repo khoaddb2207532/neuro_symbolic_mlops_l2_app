@@ -14,6 +14,7 @@ num_workers: 4
 num_epochs: 100
 patience: 5
 weight_decay: !!float 1e-4
+learning_rate: !!float 1e-4
 monitor_metric: "val_loss"
 
 data_validation:
@@ -26,11 +27,10 @@ feature_extraction:
   # Change this to the latest regularized CNN checkpoint before a drift-triggered RF refit.
   checkpoint_path: "checkpoints/cnn_baseline.pt"
 
-# --------------------------------------------------------------
-# CHIẾN LƯỢC TRANSFER LEARNING ĐÃ CHỌN:
-#   "Freeze Backbone + Freeze BatchNorm" -> "Differential LR" ->
-#   "Progressive Unfreezing" .
-# --------------------------------------------------------------
+# Cấu hình cũ bên dưới vẫn được giữ cho các thí nghiệm/regularization kế thừa.
+# Baseline trainer không còn dùng freeze schedule hay differential learning rate;
+# model được khởi tạo từ ImageNet và huấn luyện end-to-end với learning_rate,
+# riêng BatchNorm được freeze từ đầu đến cuối.
 transfer_learning:
   lr_head: !!float 1e-3          # classifier học nhanh
   lr_backbone: !!float 1e-4       # backbone (khi mở) học chậm hơn 10x

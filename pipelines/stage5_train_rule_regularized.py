@@ -1,10 +1,8 @@
 """DVC Stage 5 — Fine-tune lại CNN với rule penalty (vectorized) từ luật đã chọn.
 
-Ở stage này model tiếp tục theo cùng chiến lược transfer learning (progressive
-unfreezing + differential LR) nhưng khởi động lại từ baseline đã hội tụ
-(baseline_best.pth từ stage 1), KHÔNG khởi tạo lại từ ImageNet — vì mục tiêu
-bây giờ là tinh chỉnh sâu hơn có ràng buộc luật dựa trên những gì baseline đã
-học được, với freeze_schedule "tiến xa hơn" (được set trong params.yaml).
+Model bắt đầu từ ``baseline_best.pth``, mở toàn bộ layer trừ BatchNorm và dùng
+cùng learning rate end-to-end với baseline. Khác biệt huấn luyện chính là rule
+penalty được cộng vào cross-entropy.
 """
 import argparse
 import os
@@ -55,13 +53,9 @@ def main(params_path: str) -> None:
     baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
     load_model_weights(model, baseline_ckpt, device, required=True)
 
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule_stage2"].items()}
     train_cfg = {
-        "lr_backbone": params["transfer_learning"]["lr_backbone"],
-        "lr_head": params["transfer_learning"]["lr_head"],
+        "lr": params["learning_rate"],
         "weight_decay": params["weight_decay"],
-        "freeze_bn": params["transfer_learning"]["freeze_bn"],
-        "freeze_schedule": freeze_schedule,
         "monitor_metric": params.get("monitor_metric", "val_acc"),
         "use_scheduler": True,
         "scheduler_factor": 0.1,

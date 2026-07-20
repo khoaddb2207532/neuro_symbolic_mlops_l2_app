@@ -8,7 +8,7 @@ stages:
   train_baseline:
     cmd: python -m pipelines.stage1_train_baseline --config params.yaml
     deps: [pipelines/stage1_train_baseline.py, src/models/cnn.py, src/training/trainer.py, src/data/dataset.py, src/data/protocol.py, outputs/00_data_audit/summary.json]
-    params: [seed, data_dir, data_validation, num_classes, batch_size, num_epochs, patience, transfer_learning]
+    params: [seed, data_dir, data_validation, num_classes, batch_size, num_epochs, patience, learning_rate, weight_decay]
     outs: [checkpoints/cnn_baseline.pt, outputs/01_baseline/baseline_best.pth, outputs/01_baseline/final_model_weights.pth]
     metrics:
       - reports/baseline_metrics.json:
