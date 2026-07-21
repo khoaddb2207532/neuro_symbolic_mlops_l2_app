@@ -166,6 +166,11 @@ dvc repro
 
 # Hoặc chạy từng stage thủ công khi debug
 python -m pipelines.stage1_train_baseline --config params.yaml
+
+# Train tuần tự 6 baseline trong một lần chạy (cấu hình tại baselines.models)
+python -m pipelines.train_all_baselines --config params.yaml
+# Hoặc chọn/đổi thứ tự model trực tiếp
+python -m pipelines.train_all_baselines --models mobilenetv3_small resnet50 densenet121 efficientnet swint vit
 python -m pipelines.stage2_extract_features --config params.yaml
 python -m pipelines.stage3_extract_rules --config params.yaml
 python -m pipelines.stage4_select_rules_gflownet --config params.yaml

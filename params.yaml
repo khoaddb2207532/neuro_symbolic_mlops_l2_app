@@ -17,6 +17,15 @@ weight_decay: !!float 1e-4
 learning_rate: !!float 1e-4
 monitor_metric: "val_loss"
 
+# Chạy tuần tự bằng: python -m pipelines.train_all_baselines --config params.yaml
+# "efficientnet" = EfficientNet-B0, "vit" = ViT-B/16, "swint" = Swin-T.
+baselines:
+  models: [mobilenetv3_small, resnet50, densenet121, efficientnet, swint, vit]
+  pretrained: true
+  # Có thể override riêng cho benchmark; nếu bỏ sẽ dùng giá trị global phía trên.
+  num_epochs: 100
+  patience: 5
+
 data_validation:
   # Validation is reused by RF/filter/GFlowNet/regularization tuning.
   min_val_fraction: 0.15
