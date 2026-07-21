@@ -2,6 +2,8 @@ from typing import Optional
 
 import torch
 
+from src.gflownet.mogfn_pc import scalarize_objectives
+
 
 class RuleSetReward:
     def __init__(self, cover: torch.Tensor, correct: torch.Tensor,
@@ -162,6 +164,24 @@ class RuleSetReward:
         c = self.components(s)
         return (self.w_acc * c["accuracy"] + self.w_cov * c["coverage"]
                 - self.w_conflict * c["conflict_ratio"])
+
+    def objectives(self, s: torch.Tensor) -> torch.Tensor:
+        """Three maximization objectives used by MOGFN-PC.
+
+        Conflict is converted to ``1 - conflict_ratio`` so every coordinate is
+        positive and has the same "larger is better" convention.
+        """
+        c = self.components(s)
+        return torch.stack((c["accuracy"], c["coverage"], 1.0 - c["conflict_ratio"]), dim=-1)
+
+    def scalarized_reward(self, s: torch.Tensor, omega: torch.Tensor,
+                          method: str = "wl", ideal: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Preference-conditioned reward before applying the beta exponent."""
+        return scalarize_objectives(self.objectives(s), omega, method, ideal=ideal)
+
+    def conditional_log_reward(self, s: torch.Tensor, omega: torch.Tensor,
+                               method: str = "wl", ideal: Optional[torch.Tensor] = None) -> torch.Tensor:
+        return self.beta * self.scalarized_reward(s, omega, method, ideal=ideal).clamp_min(1e-8).log()
 
     def __call__(self, s: torch.Tensor) -> torch.Tensor:
         raw = self.score(s)                       # có thể âm

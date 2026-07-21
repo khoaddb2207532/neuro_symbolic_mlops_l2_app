@@ -61,6 +61,13 @@ rule_ranking_analysis:
   K: 300                       # số trajectory sample từ policy đã train
 
 gflownet:
+  # MOGFN-PC: một policy duy nhất được điều kiện hóa bởi omega ~ Dirichlet(alpha).
+  preference_conditional: true
+  scalarization: "wl"        # "ws" | "wt" | "wl"
+  dirichlet_alpha: 1.0
+  preference_encoding: "thermometer"  # "vanilla" | "thermometer"
+  thermometer_bins: 16
+  exploration_delta: 0.05
   max_rules: 120
   hidden_dim: 256
   num_iterations: 5000

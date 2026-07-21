@@ -29,6 +29,7 @@ from tqdm import tqdm
 from src.gflownet.env import RuleSelectionEnv
 from src.gflownet.reward import RuleSetReward
 from src.gflownet.evaluation import debug_breakdown
+from src.gflownet.mogfn_pc import MOGFNPC, conditional_tb_loss, pareto_mask, sample_rule_trajectories
 from src.rules.io import save_rules_excel
 from src.rules.rule_types import Rule, RuleSet
 from src.utils.logging_utils import get_logger
@@ -466,10 +467,57 @@ class BaseGFlowNetPipeline(abc.ABC):
                     "w_cov": getattr(self, "w_cov", 0.5),
                     "w_conflict": getattr(self, "w_conflict", 0.5),
                     "beta": getattr(self, "beta", 3.0),
+                    "preference_conditional": getattr(self, "preference_conditional", False),
+                    "scalarization": getattr(self, "scalarization", "wl"),
+                    "dirichlet_alpha": getattr(self, "dirichlet_alpha", 1.0),
+                    "preference_encoding": getattr(self, "preference_encoding", "thermometer"),
+                    "thermometer_bins": getattr(self, "thermometer_bins", 16),
+                    "exploration_delta": getattr(self, "exploration_delta", 0.05),
                 },
                 f,
             )
         logger.info("Đã lưu rule order + tensor (khớp index với gflownet_best.pth) tại %s", rule_order_path)
+
+        if getattr(self, "preference_conditional", False):
+            if loss_type != "tb":
+                raise ValueError("MOGFN-PC chỉ hỗ trợ loss_type='tb'.")
+            model = MOGFNPC(
+                n_valid, n_valid + 1, hidden_dim=gfnet_hidden_dim,
+                preference_encoding=self.preference_encoding,
+                thermometer_bins=self.thermometer_bins,
+            ).to(self.device)
+            optimizer = torch.optim.Adam([
+                {"params": list(model.pf.parameters()) + list(model.pb.parameters()), "lr": lr},
+                {"params": model.log_z.parameters(), "lr": logZ_lr},
+            ], weight_decay=1e-5)
+            best_loss = float("inf")
+            for it in tqdm(range(num_iterations), desc="MOGFN-PC"):
+                _, _, tb_batch = sample_rule_trajectories(
+                    model, reward_fn, batch_size, max_rules, self.dirichlet_alpha,
+                    self.scalarization, self.exploration_delta,
+                )
+                optimizer.zero_grad()
+                loss = conditional_tb_loss(model, tb_batch)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), self.grad_clip_max_norm)
+                optimizer.step()
+                if loss.item() < best_loss:
+                    best_loss = loss.item()
+                    payload = {"model": model.state_dict(), "architecture": "mogfn_pc",
+                               "iteration": it + 1, "tb_loss": best_loss}
+                    torch.save(payload, os.path.join(output_dir, "gflownet_best.pth"))
+                    torch.save(payload, os.path.join(output_dir, "gflownet_best_sampler.pth"))
+            checkpoint = torch.load(os.path.join(output_dir, "gflownet_best.pth"), map_location=self.device)
+            model.load_state_dict(checkpoint["model"])
+            with torch.no_grad():
+                states, _, _ = sample_rule_trajectories(
+                    model, reward_fn, max(val_samples, 256), max_rules,
+                    self.dirichlet_alpha, self.scalarization, 0.0,
+                )
+                objectives = reward_fn.objectives(states)
+                candidates = pareto_mask(objectives).nonzero(as_tuple=False).squeeze(-1)
+                best_idx = candidates[objectives[candidates].mean(-1).argmax()].item()
+            return [valid_rules[i] for i in states[best_idx].nonzero().squeeze(-1).tolist()]
 
         pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=gfnet_hidden_dim, n_hidden_layers=2, add_layer_norm = True)
         pb_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions - 1, hidden_dim=gfnet_hidden_dim, n_hidden_layers=2, add_layer_norm = True)
@@ -574,9 +622,21 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         w_conflict: float = 0.5,
         beta: float = 3.0,
         grad_clip_max_norm : Optional[float] = 5.0, 
+        preference_conditional: bool = False,
+        scalarization: str = "wl",
+        dirichlet_alpha: float = 1.0,
+        preference_encoding: str = "thermometer",
+        thermometer_bins: int = 16,
+        exploration_delta: float = 0.05,
     ):
         super().__init__(device, grad_clip_max_norm )
         self.w_acc, self.w_cov, self.w_conflict, self.beta = w_acc, w_cov, w_conflict, beta
+        self.preference_conditional = preference_conditional
+        self.scalarization = scalarization
+        self.dirichlet_alpha = dirichlet_alpha
+        self.preference_encoding = preference_encoding
+        self.thermometer_bins = thermometer_bins
+        self.exploration_delta = exploration_delta
 
     def _reward_params(self) -> Dict[str, Any]:
         return {
@@ -584,6 +644,12 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
             "w_cov": self.w_cov,
             "w_conflict": self.w_conflict,
             "beta": self.beta,
+            "preference_conditional": self.preference_conditional,
+            "scalarization": self.scalarization,
+            "dirichlet_alpha": self.dirichlet_alpha,
+            "preference_encoding": self.preference_encoding,
+            "thermometer_bins": self.thermometer_bins,
+            "exploration_delta": self.exploration_delta,
         }
 
     def _create_reward_function(

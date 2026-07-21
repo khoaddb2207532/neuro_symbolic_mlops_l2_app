@@ -104,6 +104,12 @@ def main(params_path: str) -> None:
         w_conflict=gfn_cfg.get("w_conflict", 0.5),
         beta=gfn_cfg.get("beta", 3.0),
         grad_clip_max_norm=gfn_cfg.get("grad_clip_max_norm", 5.0),
+        preference_conditional=gfn_cfg.get("preference_conditional", False),
+        scalarization=gfn_cfg.get("scalarization", "wl"),
+        dirichlet_alpha=gfn_cfg.get("dirichlet_alpha", 1.0),
+        preference_encoding=gfn_cfg.get("preference_encoding", "thermometer"),
+        thermometer_bins=gfn_cfg.get("thermometer_bins", 16),
+        exploration_delta=gfn_cfg.get("exploration_delta", 0.05),
     )
     selected_rules = pipeline.run(
         valid_rules=valid_rules,

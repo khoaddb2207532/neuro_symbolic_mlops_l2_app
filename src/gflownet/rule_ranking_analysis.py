@@ -24,6 +24,7 @@ bảo đúng ánh xạ action -> luật.
 """
 import os
 import pickle
+from types import SimpleNamespace
 from typing import Dict, List
 
 import numpy as np
@@ -34,6 +35,7 @@ from gfn.utils.modules import MLP
 
 from src.gflownet.env import RuleSelectionEnv
 from src.gflownet.reward import RuleSetReward
+from src.gflownet.mogfn_pc import MOGFNPC, sample_rule_trajectories
 from src.rules.rule_types import Rule
 from src.utils.logging_utils import get_logger
 
@@ -79,14 +81,36 @@ def rebuild_gflownet(rule_order: Dict, ckpt_path: str, device: torch.device):
         w_conflict=rule_order.get("w_conflict", 0.5), beta=rule_order.get("beta", 3.0),
     )
 
-    def reward_fn(states: torch.Tensor) -> torch.Tensor:
-        if states.dim() == 1:
-            states = states.unsqueeze(0)
-        return reward_module(states.to(device))
+    env = RuleSelectionEnv(n_valid, max_rules, reward_module, device=device)
 
-    reward_fn.reward_module = reward_module
+    if rule_order.get("preference_conditional", False):
+        conditional = MOGFNPC(
+            n_valid, n_valid + 1, hidden_dim=hidden_dim,
+            preference_encoding=rule_order.get("preference_encoding", "thermometer"),
+            thermometer_bins=rule_order.get("thermometer_bins", 16),
+        ).to(device)
+        ckpt = torch.load(ckpt_path, map_location=device)
+        conditional.load_state_dict(ckpt["model"])
 
-    env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=device)
+        class FrozenConditionalSampler(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = conditional
+
+            @torch.no_grad()
+            def sample_trajectories(self, _env, n, save_logprobs=False):
+                states, _, batch = sample_rule_trajectories(
+                    self.model, reward_module, n, max_rules,
+                    rule_order.get("dirichlet_alpha", 1.0),
+                    rule_order.get("scalarization", "wl"), 0.0,
+                )
+                terminating = SimpleNamespace(tensor=states)
+                return SimpleNamespace(terminating_states=terminating, log_rewards=batch.log_reward)
+
+        sampler = FrozenConditionalSampler().to(device).eval()
+        for parameter in sampler.parameters():
+            parameter.requires_grad_(False)
+        return sampler, env, valid_rules, reward_module
 
     pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=hidden_dim, n_hidden_layers=2, add_layer_norm = True)
     pb_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions - 1, hidden_dim=hidden_dim, n_hidden_layers=2, add_layer_norm = True)
