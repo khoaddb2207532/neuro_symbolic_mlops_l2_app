@@ -10,7 +10,7 @@ output_dir: "outputs"
 logs_dir: "logs"
 num_classes: 12
 batch_size: 64
-num_workers: 4
+num_workers: 2
 num_epochs: 100
 patience: 5
 weight_decay: !!float 1e-4
@@ -60,21 +60,21 @@ transfer_learning:
   scheduler_patience: 3
 rf:
   default_config:
-    n_estimators: 100
-    max_depth: null
-    min_samples_leaf: 1
+    n_estimators: 200
+    max_depth: 10
+    min_samples_leaf: 10
     max_features: "sqrt"
-  elbow_tolerance: 0.002
+  elbow_tolerance: 0.005
   min_fidelity_improvement: 0.002
   search_space:
-    initial_max_depth: null
-    initial_n_estimators: 100
-    initial_min_samples_leaf: 20
+    initial_max_depth: 10
+    initial_n_estimators: 200
+    initial_min_samples_leaf: 10
     initial_max_features: "sqrt"
-    max_depth: [4, 6, 8, 10, 12, null]
-    n_estimators: [50, 100, 200, 500]
-    min_samples_leaf: [10, 20, 30, 50]
-    min_samples_leaf_trials: 4
+    max_depth: [6, 8, 10, 12]
+    n_estimators: [100, 200, 500]
+    min_samples_leaf: [10, 20, 30]
+    min_samples_leaf_trials: 3
     max_features: ["sqrt", 8]
 rules:
   min_support: 0.01
