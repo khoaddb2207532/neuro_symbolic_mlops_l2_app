@@ -2,9 +2,9 @@
 greedy-coverage) thay cho GFlowNet, rồi fine-tune CNN với rule-penalty từ tập
 luật của TỪNG thuật toán, và tổng hợp bảng so sánh metric cuối cùng.
 
-GIẢ ĐỊNH: stage1 (train_baseline), stage2 (extract_features), stage3
-(extract_rules) ĐÃ CHẠY XONG — script này chỉ đọc lại artefact của 3 stage đó
-(outputs/01_baseline, outputs/02_features, outputs/03_rules), KHÔNG train lại
+GIẢ ĐỊNH: train_all_baselines, stage2 (extract_features), stage3
+(extract_rules) ĐÃ CHẠY XONG — script này chỉ đọc lại artefact của các stage đó
+(outputs/01_baselines, outputs/02_features, outputs/03_rules), KHÔNG train lại
 CNN baseline, KHÔNG trích luật lại từ RF.
 
 Mỗi thuật toán ghi output vào thư mục RIÊNG (không ghi đè lẫn nhau, không đụng
@@ -33,7 +33,7 @@ from sklearn.metrics import f1_score
 
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
-from src.models.cnn import CNNBaseline
+from src.models.cnn import build_selected_baseline, selected_baseline_checkpoint
 from src.rules.io import save_rules_excel
 from src.rules.rule_types import Rule, RuleSet
 from src.rules.validator import RuleValidator
@@ -194,7 +194,7 @@ def train_and_evaluate(
             "giống hệt baseline không có luật.", method_name,
         )
 
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
+    model = build_selected_baseline(params, pretrained=False)
     # Nạp lại đúng trọng số baseline (stage1) cho CẢ 3 phương pháp — đảm bảo
     # chênh lệch cuối cùng CHỈ đến từ cách chọn luật, không phải từ 3 baseline
     # xuất phát khác nhau.
@@ -268,7 +268,7 @@ def main(params_path: str, methods: List[str], random_seed: int) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- Kiểm tra điều kiện tiên quyết: stage1-3 phải đã chạy xong ---
-    baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    baseline_ckpt = selected_baseline_checkpoint(params)
     features_dir = os.path.join(params["output_dir"], "02_features")
     raw_rules_path = os.path.join(params["output_dir"], "03_rules", "raw_rules.pkl")
     required_paths = [

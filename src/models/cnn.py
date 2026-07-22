@@ -5,6 +5,7 @@ với một learning rate; riêng BatchNorm được khóa từ đầu đến cu
 ``freeze_stage`` cũ vẫn được giữ để tương thích với checkpoint và các thí
 nghiệm ablation hiện có.
 """
+import os
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -122,6 +123,50 @@ class VisionBaseline(nn.Module):
                 if module.affine:
                     module.weight.requires_grad = False
                     module.bias.requires_grad = False
+
+    def regularization_modules(self, scope: str):
+        """Return trainable modules for architecture-independent fine-tuning scopes."""
+        if self.architecture in {"mobilenetv3_small", "efficientnet_b0"}:
+            last = self.backbone.classifier[-1]
+            penultimate = self.backbone.classifier[0]
+        elif self.architecture == "resnet50":
+            last, penultimate = self.backbone.fc, self.backbone.layer4
+        elif self.architecture == "densenet121":
+            last, penultimate = self.backbone.classifier, self.backbone.features.denseblock4
+        elif self.architecture == "swin_t":
+            last, penultimate = self.backbone.head, self.backbone.features[-1]
+        else:
+            last, penultimate = self.backbone.heads, self.backbone.encoder.layers[-1]
+        if scope == "last_layer":
+            return [last]
+        if scope == "last_two_layers":
+            return [penultimate, last]
+        if scope == "full_backbone":
+            return [self.backbone]
+        raise ValueError(f"Unknown regularization scope: {scope}")
+
+
+def build_selected_baseline(params: dict, pretrained: bool = False) -> VisionBaseline:
+    """Build the baseline selected once in ``feature_extraction.architecture``."""
+    config = params.get("feature_extraction", {})
+    architecture = config.get("architecture", "mobilenetv3_small")
+    return VisionBaseline(architecture, params["num_classes"], pretrained=pretrained)
+
+
+def selected_baseline_checkpoint(params: dict) -> str:
+    config = params.get("feature_extraction", {})
+    architecture = canonical_baseline_name(config.get("architecture", "mobilenetv3_small"))
+    return config.get(
+        "checkpoint_path",
+        os.path.join(params.get("output_dir", "outputs"), "01_baselines", architecture, "model.pt"),
+    )
+
+
+def selected_baseline_metrics(params: dict) -> str:
+    architecture = canonical_baseline_name(
+        params.get("feature_extraction", {}).get("architecture", "mobilenetv3_small")
+    )
+    return os.path.join(params.get("output_dir", "outputs"), "01_baselines", architecture, "metrics.json")
 
 
 def _build_mobilenet_v3(num_classes: int) -> nn.Module:

@@ -26,14 +26,10 @@ logger = get_logger(__name__)
 
 def extract_and_save_features(model, dataloaders: dict, output_dir: str, device="cuda",
                               contract_dir: str = "data") -> None:
-    """Trích và lưu CẢ features 1280-d LẪN logits (num_classes-d), cùng một
-    lần forward — không forward lại CNN ở stage4 để tính uncertainty nữa.
+    """Trích và lưu cả penultimate features lẫn logits trong một lần forward.
 
-    `model` là `FeatureExtractor` (forward() chỉ trả features, dừng ở
-    classifier[0:3]) — logits được tính thêm bằng đúng lớp Linear cuối cùng
-    của CÙNG backbone (`model.backbone.classifier[3]`), không đổi
-    `FeatureExtractor.forward()` để tránh ảnh hưởng các nơi khác đang gọi nó
-    chỉ để lấy features (vd stage3 trích luật)."""
+    Kích thước feature phụ thuộc baseline được chọn và được ghi vào metadata.
+    """
     model = model.to(device).eval()
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(contract_dir, exist_ok=True)

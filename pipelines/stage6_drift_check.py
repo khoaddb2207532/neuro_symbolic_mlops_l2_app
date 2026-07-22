@@ -17,7 +17,11 @@ import yaml
 from src.data.dataset import create_dataloaders
 from src.evaluation.evaluate import evaluate_classification_metrics
 from src.evaluation.final_report import build_sensitivity_plots, sum_logged_duration
-from src.models.cnn import CNNBaseline
+from src.models.cnn import (
+    build_selected_baseline,
+    selected_baseline_checkpoint,
+    selected_baseline_metrics,
+)
 from src.rules.extractor import RuleExtractor
 from src.rules.gfn_distribution_penalty import GFlowNetDistributionPenalty
 from src.training.centroid import centroid_push_pull_loss, class_centroids
@@ -28,7 +32,7 @@ from src.utils.seed import set_seed
 
 
 def _load_model(path, params, device, scope="last_block"):
-    model = CNNBaseline(params["num_classes"], freeze_stage=scope).to(device)
+    model = build_selected_baseline(params, pretrained=False).to(device)
     load_model_weights(model, path, device, required=True)
     return model
 
@@ -68,10 +72,9 @@ def _bad_count(model, loader, penalty, device):
 
 def _train_centroid(params, train_loader, val_loader, centroids, device):
     cfg = params["centroid_baseline"]
-    model = _load_model("checkpoints/cnn_baseline.pt", params, device)
+    model = _load_model(selected_baseline_checkpoint(params), params, device)
     for parameter in model.parameters(): parameter.requires_grad = False
-    modules = [model.backbone.classifier[3]] if cfg["scope"] == "last_layer" else \
-              [model.backbone.classifier[0], model.backbone.classifier[3]]
+    modules = model.regularization_modules(cfg["scope"])
     for module in modules:
         for parameter in module.parameters(): parameter.requires_grad = True
     optimizer = torch.optim.AdamW(
@@ -125,9 +128,9 @@ def _metric(metrics, split, name):
     return values.get(name, values.get("f1_macro" if name == "f1" else name, ""))
 
 
-def _write_summary(rows, plots, refit_count):
+def _write_summary(rows, plots, refit_count, baseline_checkpoint):
     checks = {
-        "GD1": ["checkpoints/cnn_baseline.pt", "data/features_train.npy"],
+        "GD1": [baseline_checkpoint, "data/features_train.npy"],
         "GD2": ["checkpoints/rf_model.pkl", "reports/leaf_stats.csv"],
         "GD3": ["reports/G_c_leaves.json", "reports/B_c_leaves.json"],
         "GD4": ["checkpoints/gfn_good.pt", "checkpoints/gfn_bad.pt", "reports/leaf_probs.json"],
@@ -154,9 +157,11 @@ def _write_summary(rows, plots, refit_count):
 
 def main(params_path):
     params = load_params(params_path); set_seed(params["seed"])
+    baseline_checkpoint = selected_baseline_checkpoint(params)
+    baseline_metrics_path = selected_baseline_metrics(params)
     required = ["checkpoints/cnn_regularized.pt", "reports/regularize_metrics.json",
-                "checkpoints/cnn_baseline.pt", "checkpoints/rf_model.pkl",
-                "reports/leaf_probs.json", "reports/baseline_metrics.json",
+                baseline_checkpoint, "checkpoints/rf_model.pkl",
+                "reports/leaf_probs.json", baseline_metrics_path,
                 "data/features_train.npy", "data/labels_train.npy"]
     missing = [path for path in required if not os.path.exists(path)]
     if missing: raise FileNotFoundError(f"stage-6 inputs are missing: {missing}")
@@ -200,7 +205,7 @@ def main(params_path):
         raise RuntimeError("drift threshold exceeded: refit stages 2->3->4->5 with new features; old GFlowNet is forbidden")
 
     with open("reports/leaf_probs.json", encoding="utf-8") as stream: leaf_probs = json.load(stream)
-    with open("reports/baseline_metrics.json", encoding="utf-8") as stream: baseline = json.load(stream)
+    with open(baseline_metrics_path, encoding="utf-8") as stream: baseline = json.load(stream)
     with open("reports/regularize_metrics.json", encoding="utf-8") as stream: regularized_report = json.load(stream)
     rules = RuleExtractor().extract(rf)
     penalty = GFlowNetDistributionPenalty(rules, leaf_probs, params["num_classes"], 0, 0,
@@ -240,7 +245,7 @@ def main(params_path):
     os.makedirs("reports/ablation", exist_ok=True)
     _write_csv("reports/ablation/final_comparison.csv", rows)
     plots = build_sensitivity_plots(params["logs_dir"], "reports/ablation/hyperparam_sensitivity")
-    _write_summary(rows, plots, refit_count)
+    _write_summary(rows, plots, refit_count, baseline_checkpoint)
 
 
 if __name__ == "__main__":

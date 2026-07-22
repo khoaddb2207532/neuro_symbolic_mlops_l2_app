@@ -18,7 +18,7 @@ stages:
 
   extract_features:
     cmd: python -m pipelines.stage2_extract_features --config params.yaml
-    deps: [pipelines/stage2_extract_features.py, src/data/features.py, src/models/cnn.py, checkpoints/cnn_baseline.pt, reports/baseline_metrics.json]
+    deps: [pipelines/stage2_extract_features.py, src/data/features.py, src/models/cnn.py, outputs/01_baselines]
     params: [feature_extraction]
     outs: [outputs/02_features, data/features_train.npy, data/labels_train.npy, data/features_val.npy, data/labels_val.npy, data/cnn_predictions_val.npy, data/features_metadata.json]
 
@@ -42,12 +42,12 @@ stages:
 
   train_rule_regularized:
     cmd: python -m pipelines.stage5_regularize_distribution --config params.yaml
-    deps: [pipelines/stage5_regularize_distribution.py, src/rules/gfn_distribution_penalty.py, src/training/pareto.py, src/models/cnn.py, reports/leaf_probs.json, reports/baseline_metrics.json, checkpoints/cnn_baseline.pt, checkpoints/rf_model.pkl]
-    params: [seed, data_dir, batch_size, num_workers, num_classes, weight_decay, regularize, drift.check_every_epochs]
+    deps: [pipelines/stage5_regularize_distribution.py, src/rules/gfn_distribution_penalty.py, src/training/pareto.py, src/models/cnn.py, reports/leaf_probs.json, outputs/01_baselines, checkpoints/rf_model.pkl]
+    params: [seed, data_dir, batch_size, num_workers, num_classes, weight_decay, feature_extraction, regularize, drift.check_every_epochs]
     outs: [checkpoints/cnn_regularized.pt, checkpoints/regularized_history, configs/regularize_hyperparams.yaml, reports/regularize_metrics.json, reports/regularize_pareto.png]
 
   drift_check:
     cmd: python -m pipelines.stage6_drift_check --config params.yaml
-    deps: [pipelines/stage6_drift_check.py, src/training/drift.py, src/training/centroid.py, src/evaluation/final_report.py, checkpoints/cnn_regularized.pt, checkpoints/regularized_history, checkpoints/cnn_baseline.pt, checkpoints/rf_model.pkl, reports/regularize_metrics.json, reports/baseline_metrics.json, reports/leaf_probs.json, data/features_train.npy, data/labels_train.npy]
-    params: [seed, data_dir, batch_size, num_workers, num_classes, drift, centroid_baseline, regularize.routing_temperature, logs_dir]
+    deps: [pipelines/stage6_drift_check.py, src/training/drift.py, src/training/centroid.py, src/evaluation/final_report.py, checkpoints/cnn_regularized.pt, checkpoints/regularized_history, outputs/01_baselines, checkpoints/rf_model.pkl, reports/regularize_metrics.json, reports/leaf_probs.json, data/features_train.npy, data/labels_train.npy]
+    params: [seed, data_dir, batch_size, num_workers, num_classes, feature_extraction, drift, centroid_baseline, regularize.routing_temperature, logs_dir]
     outs: [configs/drift_thresholds.yaml, checkpoints/cnn_centroid.pt, reports/ablation]

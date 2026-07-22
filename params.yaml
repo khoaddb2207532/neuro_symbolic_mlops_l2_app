@@ -33,8 +33,9 @@ data_validation:
   fail_on_near_duplicate_leakage: true
 
 feature_extraction:
-  # Change this to the latest regularized CNN checkpoint before a drift-triggered RF refit.
-  checkpoint_path: "checkpoints/cnn_baseline.pt"
+  # Chọn một baseline đã train để chạy xuyên suốt Stage 2 trở đi.
+  architecture: "resnet50"
+  checkpoint_path: "outputs/01_baselines/resnet50/model.pt"
 
 # Cấu hình cũ bên dưới vẫn được giữ cho các thí nghiệm/regularization kế thừa.
 # Baseline trainer không còn dùng freeze schedule hay differential learning rate;
@@ -112,7 +113,7 @@ rule_penalty:
 regularize:
   # Accuracy budget is fixed before search: at most one percentage point.
   max_accuracy_drop: 0.01
-  input_checkpoint: "checkpoints/cnn_baseline.pt"
+  # Baseline input được lấy từ feature_extraction.checkpoint_path để tránh lệch kiến trúc.
   alpha_values: [0.01, 0.1, 1.0, 5.0]
   beta_values: [0.01, 0.1, 1.0, 5.0]
   alpha_beta_lr_ratio: 0.1

@@ -11,7 +11,7 @@ import torch
 
 from src.data.dataset import NeuroSymbolicDataset, create_dataloaders
 from src.evaluation.evaluate import evaluate_classification_metrics, evaluate_model_performance
-from src.models.cnn import CNNBaseline
+from src.models.cnn import build_selected_baseline
 from src.utils.checkpoint import load_model_weights
 from src.utils.config import load_params
 from src.utils.seed import set_seed
@@ -39,7 +39,7 @@ def main(config_path: str, checkpoint_path: str, output_dir: str) -> None:
             f"test split has {len(class_names)} classes, expected {params['num_classes']}"
         )
 
-    model = CNNBaseline(params["num_classes"], freeze_stage="last_block")
+    model = build_selected_baseline(params, pretrained=False)
     load_model_weights(model, checkpoint_path, device, required=True)
     model = model.to(device).eval()
     os.makedirs(output_dir, exist_ok=True)
@@ -57,6 +57,7 @@ def main(config_path: str, checkpoint_path: str, output_dir: str) -> None:
 
     result = {
         "checkpoint": checkpoint_path,
+        "architecture": model.architecture,
         "device": str(device),
         "validation": validation_metrics,
         "test": test_metrics,

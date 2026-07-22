@@ -171,6 +171,11 @@ python -m pipelines.stage1_train_baseline --config params.yaml
 python -m pipelines.train_all_baselines --config params.yaml
 # Hoặc chọn/đổi thứ tự model trực tiếp
 python -m pipelines.train_all_baselines --models mobilenetv3_small resnet50 densenet121 efficientnet swint vit
+
+# Chọn một baseline cho toàn bộ Stage 2 trở đi trong params.yaml:
+# feature_extraction.architecture: "resnet50"
+# feature_extraction.checkpoint_path: "outputs/01_baselines/resnet50/model.pt"
+python -m pipelines.stage2_extract_features --config params.yaml
 python -m pipelines.stage2_extract_features --config params.yaml
 python -m pipelines.stage3_extract_rules --config params.yaml
 python -m pipelines.stage4_select_rules_gflownet --config params.yaml

@@ -17,7 +17,11 @@ import yaml
 
 from src.data.dataset import create_dataloaders
 from src.evaluation.evaluate import evaluate_classification_metrics
-from src.models.cnn import CNNBaseline
+from src.models.cnn import (
+    build_selected_baseline,
+    selected_baseline_checkpoint,
+    selected_baseline_metrics,
+)
 from src.rules.extractor import RuleExtractor
 from src.rules.gfn_distribution_penalty import GFlowNetDistributionPenalty
 from src.training.pareto import choose_conservative_pareto, pareto_front
@@ -29,14 +33,7 @@ from src.utils.seed import set_seed
 def _set_scope(model, scope):
     for parameter in model.parameters():
         parameter.requires_grad = False
-    if scope == "last_layer":
-        modules = [model.backbone.classifier[3]]
-    elif scope == "last_two_layers":
-        modules = [model.backbone.classifier[0], model.backbone.classifier[3]]
-    elif scope == "full_backbone":
-        modules = [model.backbone]
-    else:
-        raise ValueError(f"unknown regularization scope: {scope}")
+    modules = model.regularization_modules(scope)
     for module in modules:
         for parameter in module.parameters():
             parameter.requires_grad = True
@@ -56,7 +53,7 @@ def _run_trial(params, checkpoint, rules, leaf_probs, train_loader, val_loader,
                device, alpha, beta, lr, scope, epochs, checkpoint_dir=None,
                checkpoint_interval=None):
     started = time.perf_counter()
-    model = CNNBaseline(params["num_classes"], freeze_stage="last_block")
+    model = build_selected_baseline(params, pretrained=False)
     load_model_weights(model, checkpoint, device, required=True)
     model = model.to(device); _set_scope(model, scope)
     penalty = GFlowNetDistributionPenalty(
@@ -127,7 +124,7 @@ def main(params_path):
     params = load_params(params_path); set_seed(params["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
     required = ["reports/leaf_probs.json", "checkpoints/rf_model.pkl"]
-    checkpoint = params["regularize"].get("input_checkpoint", "checkpoints/cnn_baseline.pt")
+    checkpoint = selected_baseline_checkpoint(params)
     required.append(checkpoint)
     missing = [path for path in required if not os.path.exists(path)]
     if missing:
@@ -137,12 +134,12 @@ def main(params_path):
     rules = RuleExtractor().extract(joblib.load("checkpoints/rf_model.pkl"))
     _, train_loader, val_loader, _ = create_dataloaders(
         params["data_dir"], params["batch_size"], params["num_workers"], params["seed"])
-    with open("reports/baseline_metrics.json", encoding="utf-8") as stream:
+    with open(selected_baseline_metrics(params), encoding="utf-8") as stream:
         baseline_accuracy = json.load(stream)["validation"]["accuracy"]
     cfg = params["regularize"]
     base_lr = cfg.get("base_lr", params["transfer_learning"]["lr_backbone"])
 
-    baseline_model = CNNBaseline(params["num_classes"], freeze_stage="last_block").to(device)
+    baseline_model = build_selected_baseline(params, pretrained=False).to(device)
     load_model_weights(baseline_model, checkpoint, device, required=True)
     baseline_penalty = GFlowNetDistributionPenalty(rules, leaf_probs, params["num_classes"],
                                                    0.0, 0.0, cfg["routing_temperature"]).to(device)

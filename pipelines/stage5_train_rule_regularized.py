@@ -12,7 +12,7 @@ import torch
 
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
-from src.models.cnn import CNNBaseline
+from src.models.cnn import build_selected_baseline, selected_baseline_checkpoint
 from src.rules.rule_types import RuleSet
 from src.training.trainer import train_model
 from src.utils.checkpoint import load_model_weights
@@ -43,14 +43,14 @@ def main(params_path: str) -> None:
     save_dir = os.path.join(params["output_dir"], "05_rules_model")
     os.makedirs(save_dir, exist_ok=True)
 
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
+    model = build_selected_baseline(params, pretrained=False)
 
     # Nạp trọng số baseline đã hội tụ (stage 1) thay vì tiếp tục từ ImageNet.
     # required=True: đây là điều kiện tiên quyết bắt buộc của stage 5 — nếu
     # chưa chạy stage 1, dừng ngay với lỗi rõ ràng thay vì âm thầm train từ
     # ImageNet (dễ gây nhầm lẫn: kết quả "rule-regularized" sẽ không thật sự
     # kế thừa từ baseline như tên gọi/thiết kế của pipeline).
-    baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    baseline_ckpt = selected_baseline_checkpoint(params)
     load_model_weights(model, baseline_ckpt, device, required=True)
 
     train_cfg = {

@@ -26,7 +26,7 @@ import torch
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
 from src.gflownet.rule_ranking_analysis import load_rule_order, rebuild_gflownet
-from src.models.cnn import CNNBaseline
+from src.models.cnn import build_selected_baseline, selected_baseline_checkpoint
 from src.rules.bayesian_penalty import BayesianRuleMarginalization
 from src.training.trainer import train_model
 from src.utils.checkpoint import load_model_weights
@@ -105,11 +105,11 @@ def main(params_path: str) -> None:
     save_dir = os.path.join(params["output_dir"], "05b_rules_model_bayesian")
     os.makedirs(save_dir, exist_ok=True)
 
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
+    model = build_selected_baseline(params, pretrained=False)
 
     # Giống stage5 gốc: tiếp tục từ baseline đã hội tụ (stage1), không phải
     # từ ImageNet.
-    baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    baseline_ckpt = selected_baseline_checkpoint(params)
     load_model_weights(model, baseline_ckpt, device, required=True)
 
     fine_tune_lr_backbone = bayes_cfg.get("fine_tune_lr_backbone", 1e-6)
