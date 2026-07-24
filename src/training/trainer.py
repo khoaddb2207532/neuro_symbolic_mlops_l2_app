@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 from src.rules.penalty import VectorizedRulePenalty
 from src.rules.rule_types import RuleSet
 from src.training.callbacks import EarlyStopping
-from src.training.optimizer import build_optimizer, build_scheduler
+from src.training.optimizer import build_optimizer
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -35,12 +35,6 @@ MONITOR_MODES = {
 
 DEFAULT_CONFIG = {
     "weight_decay": 1e-4,
-    "use_scheduler": True,
-    "scheduler_factor": 0.1,
-    "scheduler_patience": 5,
-    "scheduler_threshold": 1e-4,
-    "scheduler_cooldown": 0,
-    "scheduler_min_lr": 1e-6,
     "freeze_bn": True,
     "dvclive_path": "dvclive",
     "save_dir": "outputs",
@@ -302,7 +296,6 @@ def train_model(
 
     criterion = nn.CrossEntropyLoss(label_smoothing=smoothing)
     optimizer = build_optimizer(model, cfg)
-    scheduler = build_scheduler(optimizer, cfg)
 
     is_rule_regularized_run = penalty_weight > 0 or penalty_module is not None
     ckpt_name = os.path.join(cfg["save_dir"], "rule_regularized_best.pth" if is_rule_regularized_run else "baseline_best.pth")
@@ -415,9 +408,6 @@ def train_model(
             history["train_acc"].append(train_acc)
             history["val_acc"].append(val_acc)
             history["val_loss"].append(val_loss)
-
-            if scheduler is not None:
-                scheduler.step(val_loss)
 
             logger.info(
                 "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LRs %s ",

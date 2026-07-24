@@ -468,7 +468,14 @@ class BaseGFlowNetPipeline(abc.ABC):
             raise ValueError(f"loss_type phải là 'tb'/'db'/'fm', nhận '{loss_type}'")
 
         gflownet.to(self.device)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.7, patience=10, threshold=1e-4, min_lr=1e-6)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.7,
+            patience=10,
+            threshold=1e-4,
+            min_lr=1e-6,
+        )
 
         live = None
         if use_dvc:

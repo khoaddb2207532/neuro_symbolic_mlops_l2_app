@@ -204,9 +204,6 @@ def train_and_evaluate(
         "lr": params["learning_rate"],
         "weight_decay": params["weight_decay"],
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "use_scheduler": True,
-        "scheduler_factor": 0.1,
-        "scheduler_patience": 3,
         "dvclive_path": os.path.join(save_dir, f"dvclive_rule_regularized_{method_name}"),
         "save_dir": save_dir,
     }

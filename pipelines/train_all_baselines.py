@@ -97,9 +97,6 @@ def train_all(params_path: str, requested_models: Iterable[str] | None = None) -
             "lr": baseline_cfg.get("learning_rate", params["learning_rate"]),
             "weight_decay": params["weight_decay"],
             "monitor_metric": params.get("monitor_metric", "val_acc"),
-            "use_scheduler": True,
-            "scheduler_factor": 0.1,
-            "scheduler_patience": 3,
             "dvclive_path": os.path.join(save_dir, "dvclive"),
             "save_dir": save_dir,
         }

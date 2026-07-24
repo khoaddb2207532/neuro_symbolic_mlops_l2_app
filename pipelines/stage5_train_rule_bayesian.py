@@ -119,9 +119,6 @@ def main(params_path: str) -> None:
         "lr": fine_tune_lr_backbone,
         "weight_decay": params["weight_decay"],
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "use_scheduler": True,
-        "scheduler_factor": 0.1,
-        "scheduler_patience": 3,
         "dvclive_path": os.path.join(save_dir, "dvclive_rule_regularized_bayesian"),
         "save_dir": save_dir,
         # ---- Task 3: xử lý xung đột gradient CE vs rule-penalty (PCGrad) ----

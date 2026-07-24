@@ -274,9 +274,6 @@ def run_one(
         "freeze_bn": tl["freeze_bn"],
         "freeze_schedule": freeze_schedule,
         "monitor_metric": variant_params.get("monitor_metric", "val_acc"),
-        "use_scheduler": True,
-        "scheduler_factor": 0.1,
-        "scheduler_patience": 3,
         "dvclive_path": os.path.join(run_dir, "dvclive"),
         "save_dir": run_dir,
     }
