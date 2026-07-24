@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 import torch
+from torch.utils.data import DataLoader
 
 from src.data.dataset import NeuroSymbolicDataset, create_dataloaders
 from src.data.protocol import validate_audit_summary, validate_split_protocol
@@ -24,7 +25,7 @@ from src.models.cnn import VisionBaseline, canonical_baseline_name
 from src.training.trainer import train_model
 from src.utils.config import load_params
 from src.utils.logging_utils import get_logger
-from src.utils.seed import set_seed
+from src.utils.seed import seed_worker, set_seed
 
 logger = get_logger(__name__)
 
@@ -69,6 +70,25 @@ def train_all(params_path: str, requested_models: Iterable[str] | None = None) -
     dataloaders, train_loader, val_loader, test_loader = create_dataloaders(
         params["data_dir"], params["batch_size"], params["num_workers"], params["seed"]
     )
+    # Đánh giá train bằng preprocessing xác định giống val/test, không dùng
+    # augmentation ngẫu nhiên, không shuffle và không drop mẫu cuối.
+    train_eval_dataset = NeuroSymbolicDataset(
+        params["data_dir"],
+        "train",
+        transform=NeuroSymbolicDataset.get_transforms("val"),
+    )
+    train_eval_generator = torch.Generator()
+    train_eval_generator.manual_seed(params["seed"])
+    train_eval_loader = DataLoader(
+        train_eval_dataset,
+        batch_size=params["batch_size"],
+        shuffle=False,
+        drop_last=False,
+        num_workers=params["num_workers"],
+        pin_memory=True,
+        generator=train_eval_generator,
+        worker_init_fn=seed_worker,
+    )
     test_dataset = NeuroSymbolicDataset(params["data_dir"], "test")
     class_names = [name for name, _ in sorted(test_dataset.class_to_idx.items(), key=lambda x: x[1])]
     protocol = params["data_validation"]
@@ -107,9 +127,13 @@ def train_all(params_path: str, requested_models: Iterable[str] | None = None) -
             device=device, penalty_weight=0.0, num_classes=params["num_classes"],
             config=train_cfg,
         )
+        train_metrics = evaluate_classification_metrics(model, train_eval_loader, device)
         val_metrics = evaluate_classification_metrics(model, val_loader, device)
         test_metrics = evaluate_classification_metrics(model, test_loader, device)
         title = name.replace("_", " ").title()
+        evaluate_model_performance(
+            model, train_eval_loader, device, class_names, f"{title} Train", save_dir
+        )
         evaluate_model_performance(model, val_loader, device, class_names, f"{title} Validation", save_dir)
         evaluate_model_performance(model, test_loader, device, class_names, f"{title} Test", save_dir)
         plot_training_history(history, save_dir=save_dir, title_suffix=title)
@@ -117,7 +141,7 @@ def train_all(params_path: str, requested_models: Iterable[str] | None = None) -
         checkpoint_path = os.path.join(save_dir, "model.pt")
         torch.save(model.state_dict(), checkpoint_path)
         result = {
-            "validation": val_metrics, "test": test_metrics,
+            "train": train_metrics, "validation": val_metrics, "test": test_metrics,
             "feature_dim": model.feature_dim, "checkpoint": checkpoint_path,
             "epochs_trained": len(history["train_loss"]), "seed": params["seed"],
             "data_protocol": split_report, "data_audit_warning": audit_warning,
