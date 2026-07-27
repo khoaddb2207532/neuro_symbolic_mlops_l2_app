@@ -37,7 +37,9 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)  # tránh log Optuna đè l
 # --------------------------------------------------------------------------
 # 0. Load dữ liệu MỘT LẦN — dùng chung cho toàn bộ 3 giai đoạn, mọi trial
 # --------------------------------------------------------------------------
-def load_common_data(params: dict, device: str) -> Tuple[List[Rule], torch.Tensor, torch.Tensor, torch.Tensor]:
+def load_common_data(params: dict, device: str) -> Tuple[
+    List[Rule], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+]:
     features_dir = os.path.join(params["output_dir"], "02_features")
     rules_dir = os.path.join(params["output_dir"], "03_rules")
 
@@ -56,7 +58,7 @@ def load_common_data(params: dict, device: str) -> Tuple[List[Rule], torch.Tenso
     )
     valid_rules = list(valid_rule_set.rules)
     logger.info("Đã load %d luật hợp lệ (dùng chung cho toàn bộ sweep).", len(valid_rules))
-    return valid_rules, cover, correct, rule_len
+    return valid_rules, cover, correct, rule_len, val_labels
 
 
 # --------------------------------------------------------------------------
@@ -68,6 +70,7 @@ def run_one_trial(
     cover: torch.Tensor,
     correct: torch.Tensor,
     rule_len: torch.Tensor,
+    labels: torch.Tensor,
     max_rules: int,
     num_iterations: int,
     device: str,
@@ -77,11 +80,13 @@ def run_one_trial(
     pipeline = RuleExtractionPipeline(
         device=device,
         w_acc=cfg["w_acc"], w_cov=cfg["w_cov"],
+        w_wrong=cfg.get("w_wrong", 0.75),
         w_conflict=cfg["w_conflict"],
         beta=cfg["beta"],
     )
     selected = pipeline.run(
         valid_rules=valid_rules, cover=cover, correct=correct, rule_len=rule_len,
+        labels=labels,
         max_rules=max_rules, output_dir=output_dir,
         num_iterations=num_iterations,
         device=device,
@@ -157,7 +162,7 @@ def select_from_pareto_front(
 # điểm trên Pareto front. Xem thảo luận & reward.py để biết lý do đầy đủ.
 # --------------------------------------------------------------------------
 def stage1_reward_weights(
-    params: dict, valid_rules, cover, correct, rule_len, device: str,
+    params: dict, valid_rules, cover, correct, rule_len, labels, device: str,
     n_trials: int, storage_path: str, sweep_root: str,
     pareto_lambda_conflict: float = 0.3,
 ) -> Dict:
@@ -176,14 +181,15 @@ def stage1_reward_weights(
         cfg = {
             "w_acc": trial.suggest_float("w_acc", 0.7, 1.3),
             "w_cov": trial.suggest_float("w_cov", 0.2, 0.8),
-            "w_conflict": trial.suggest_float("w_conflict", 0.2, 1.0),
+            "w_wrong": 0.75,
+            "w_conflict": trial.suggest_float("w_conflict", 0.0, 0.3),
             "beta": 3.0,  # cố định ở giai đoạn 1
         }
         set_seed(params["seed"] + trial.number)
         output_dir = os.path.join(sweep_root, "stage1", f"trial_{trial.number}")
         os.makedirs(output_dir, exist_ok=True)
 
-        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len,
+        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len, labels,
                                 max_rules, num_iterations, device, output_dir, fixed_kwargs)
         for k, v in metric.items():
             trial.set_user_attr(k, v)
@@ -213,7 +219,8 @@ def stage1_reward_weights(
 # GIAI ĐOẠN 2 — sweep beta + max_rules, dùng w_* tốt nhất từ giai đoạn 1
 # --------------------------------------------------------------------------
 def stage2_beta_maxrules(
-    params: dict, best_weights: Dict, valid_rules, cover, correct, rule_len, device: str,
+    params: dict, best_weights: Dict, valid_rules, cover, correct, rule_len,
+    labels, device: str,
     n_trials: int, storage_path: str, sweep_root: str,
     pareto_lambda_conflict: float = 0.3,
 ) -> Dict:
@@ -230,6 +237,7 @@ def stage2_beta_maxrules(
     def objective(trial: optuna.Trial):
         cfg = {
             "w_acc": best_weights["w_acc"], "w_cov": best_weights["w_cov"],
+            "w_wrong": best_weights.get("w_wrong", 0.75),
             "w_conflict": best_weights["w_conflict"],
             "beta": trial.suggest_float("beta", 1.0, 8.0),
         }
@@ -238,7 +246,7 @@ def stage2_beta_maxrules(
         output_dir = os.path.join(sweep_root, "stage2", f"trial_{trial.number}")
         os.makedirs(output_dir, exist_ok=True)
 
-        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len,
+        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len, labels,
                                 max_rules, num_iterations, device, output_dir, fixed_kwargs)
         for k, v in metric.items():
             trial.set_user_attr(k, v)
@@ -278,7 +286,7 @@ def stage2_beta_maxrules(
 # --------------------------------------------------------------------------
 def stage3_training_dynamics(
     params: dict, best_weights: Dict, best_beta_maxrules: Dict,
-    valid_rules, cover, correct, rule_len, device: str,
+    valid_rules, cover, correct, rule_len, labels, device: str,
     n_trials: int, storage_path: str, sweep_root: str,
     pareto_lambda_conflict: float = 0.3,
 ) -> Dict:
@@ -289,6 +297,7 @@ def stage3_training_dynamics(
     def objective(trial: optuna.Trial):
         cfg = {
             "w_acc": best_weights["w_acc"], "w_cov": best_weights["w_cov"],
+            "w_wrong": best_weights.get("w_wrong", 0.75),
             "w_conflict": best_weights["w_conflict"],
             "beta": best_beta_maxrules["beta"],
         }
@@ -307,7 +316,7 @@ def stage3_training_dynamics(
         output_dir = os.path.join(sweep_root, "stage3", f"trial_{trial.number}")
         os.makedirs(output_dir, exist_ok=True)
 
-        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len,
+        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len, labels,
                                 max_rules, num_iterations, device, output_dir, fixed_kwargs)
         metric["lr"] = lr
         metric["batch_size"] = batch_size
@@ -349,7 +358,7 @@ def multi_seed_validation(
     best_weights: Dict,
     best_beta_maxrules: Dict,
     best_training: Dict,
-    valid_rules, cover, correct, rule_len,
+    valid_rules, cover, correct, rule_len, labels,
     device: str,
     n_seeds: int,
     sweep_root: str,
@@ -366,6 +375,7 @@ def multi_seed_validation(
 
     cfg = {
         "w_acc": best_weights["w_acc"], "w_cov": best_weights["w_cov"],
+        "w_wrong": best_weights.get("w_wrong", 0.75),
         "w_conflict": best_weights["w_conflict"],
         "beta": best_beta_maxrules["beta"],
     }
@@ -392,7 +402,7 @@ def multi_seed_validation(
         set_seed(seed)
         output_dir = os.path.join(sweep_root, "multi_seed_validation", f"seed_{seed}")
         os.makedirs(output_dir, exist_ok=True)
-        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len,
+        metric = run_one_trial(cfg, valid_rules, cover, correct, rule_len, labels,
                                 max_rules, num_iterations, device, output_dir, fixed_kwargs)
         metric["seed"] = seed
         records.append(metric)
@@ -487,6 +497,7 @@ def update_params_yaml(
     gfn_cfg = params.setdefault("gflownet", {})
     gfn_cfg["w_acc"] = best_weights["w_acc"]
     gfn_cfg["w_cov"] = best_weights["w_cov"]
+    gfn_cfg["w_wrong"] = best_weights.get("w_wrong", 0.75)
     gfn_cfg["w_conflict"] = best_weights["w_conflict"]
     # Dọn key cũ (w_red/w_comp) nếu params.yaml từ lần chạy trước còn sót lại,
     # tránh nhầm lẫn khi đọc file thấy cả key cũ lẫn mới.
@@ -542,11 +553,11 @@ def _run_validation_only(params_path: str, n_seeds_validation: int) -> Dict:
         summary_path, best_weights, best_beta_maxrules, best_training,
     )
 
-    valid_rules, cover, correct, rule_len = load_common_data(params, device)
+    valid_rules, cover, correct, rule_len, labels = load_common_data(params, device)
 
     validation_result = multi_seed_validation(
         params, best_weights, best_beta_maxrules, best_training,
-        valid_rules, cover, correct, rule_len, device,
+        valid_rules, cover, correct, rule_len, labels, device,
         n_seeds=n_seeds_validation, sweep_root=sweep_root,
     )
 
@@ -582,7 +593,7 @@ def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_
     # Load 1 lần, dùng chung cho cả sweep VÀ multi-seed validation phía dưới
     # (kể cả khi tái sử dụng summary cũ, vẫn cần valid_rules/cover/correct/rule_len
     # để chạy lại multi-seed validation).
-    valid_rules, cover, correct, rule_len = load_common_data(params, device)
+    valid_rules, cover, correct, rule_len, labels = load_common_data(params, device)
 
     # --- Nếu đã có kết quả sweep trước đó và không ép chạy lại -> tái sử dụng ---
     if os.path.exists(summary_path) and not force_resweep:
@@ -607,21 +618,22 @@ def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_
 
         logger.info("GIAI ĐOẠN 1: Sweep reward weights (multi-objective)")
         best_weights = stage1_reward_weights(
-            params, valid_rules, cover, correct, rule_len, device,
+            params, valid_rules, cover, correct, rule_len, labels, device,
             n_trials=n_trials_stage1, storage_path=storage_path, sweep_root=sweep_root,
             pareto_lambda_conflict=pareto_lambda_conflict,
         )
 
         logger.info("GIAI ĐOẠN 2: Sweep beta + max_rules (multi-objective)")
         best_beta_maxrules = stage2_beta_maxrules(
-            params, best_weights, valid_rules, cover, correct, rule_len, device,
+            params, best_weights, valid_rules, cover, correct, rule_len, labels, device,
             n_trials=n_trials_stage2, storage_path=storage_path, sweep_root=sweep_root,
             pareto_lambda_conflict=pareto_lambda_conflict,
         )
 
         logger.info("GIAI ĐOẠN 3: Sweep lr/batch_size (multi-objective)")
         best_training = stage3_training_dynamics(
-            params, best_weights, best_beta_maxrules, valid_rules, cover, correct, rule_len, device,
+            params, best_weights, best_beta_maxrules,
+            valid_rules, cover, correct, rule_len, labels, device,
             n_trials=n_trials_stage3, storage_path=storage_path, sweep_root=sweep_root,
             pareto_lambda_conflict=pareto_lambda_conflict,
         )
@@ -653,7 +665,7 @@ def main(params_path: str, n_trials_stage1: int, n_trials_stage2: int, n_trials_
     )
     validation_result = multi_seed_validation(
         params, best_weights, best_beta_maxrules, best_training,
-        valid_rules, cover, correct, rule_len, device,
+        valid_rules, cover, correct, rule_len, labels, device,
         n_seeds=n_seeds_validation, sweep_root=sweep_root,
     )
     summary["multi_seed_validation"] = {

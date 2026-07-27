@@ -93,6 +93,7 @@ class _CheckpointTracker:
                     "best_log_reward": self.best_ema,
                     "n_rules": n_valid,
                     "max_rules": max_rules,
+                    "checkpoint_role": "converged",
                 },
                 self.ckpt_path,
             )
@@ -137,7 +138,8 @@ class _SamplerCheckpointTracker:
             self.best_ema = self.ema_val
             state_dict = {k: v.cpu().clone() for k, v in gflownet.state_dict().items()}
             torch.save({"iteration": iteration, "model": state_dict, "best_log_reward": self.best_ema,
-                        "n_rules": n_valid, "max_rules": max_rules, "dist_metrics": dist_metrics},
+                        "n_rules": n_valid, "max_rules": max_rules,
+                        "dist_metrics": dist_metrics, "checkpoint_role": "diverse"},
                        self.ckpt_path)
             logger.info("Update ema_val! Save checkpoint!")
         return self.ema_val, improved
@@ -160,6 +162,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         cover: torch.Tensor,
         correct: torch.Tensor,
         rule_len: torch.Tensor,
+        labels: torch.Tensor,
         max_rules: int,
     ) -> Callable:
         ...
@@ -277,8 +280,12 @@ class BaseGFlowNetPipeline(abc.ABC):
         live: Optional["Live"] = None, # type: ignore
     ) -> List[Rule]:
         elite = _EliteTracker()
-        ckpt = _CheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler.pth"))
-        sampler_ckpt = _SamplerCheckpointTracker(os.path.join(output_dir, "gflownet_best_sampler1.pth"))
+        ckpt = _CheckpointTracker(
+            os.path.join(output_dir, "gflownet_best_converged.pth")
+        )
+        sampler_ckpt = _SamplerCheckpointTracker(
+            os.path.join(output_dir, "gflownet_best_diverse.pth")
+        )
 
         pbar = tqdm(range(num_iterations), desc="GFlowNet (torchgfn)")
         for it in pbar:
@@ -366,10 +373,15 @@ class BaseGFlowNetPipeline(abc.ABC):
             live.end()
 
         if not os.path.exists(sampler_ckpt.ckpt_path):
-            logger.warning("Không checkpoint nào đạt ngưỡng diversity — lưu tạm trọng số cuối làm sampler.")
+            logger.warning(
+                "Không checkpoint nào đạt ngưỡng diversity — dùng policy hội tụ "
+                "tốt nhất làm fallback cho frozen sampler."
+            )
             torch.save({"iteration": num_iterations,
                         "model": {k: v.cpu().clone() for k, v in gflownet.state_dict().items()},
-                        "best_log_reward": None, "n_rules": n_valid, "max_rules": max_rules},
+                        "best_log_reward": None, "n_rules": n_valid,
+                        "max_rules": max_rules,
+                        "checkpoint_role": "diverse_fallback_to_converged"},
                     sampler_ckpt.ckpt_path)
 
         return final_selected
@@ -380,6 +392,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         cover: torch.Tensor,
         correct: torch.Tensor,
         rule_len: torch.Tensor,
+        labels: torch.Tensor,
         max_rules: int,
         output_dir: str,
         gfnet_hidden_dim: int = 256,
@@ -425,21 +438,26 @@ class BaseGFlowNetPipeline(abc.ABC):
         cover = cover[perm].to(self.device)
         correct = correct[perm].to(self.device)
         rule_len = rule_len[perm].to(self.device)
+        labels = labels.to(self.device)
 
         os.makedirs(output_dir, exist_ok=True)
         save_rules_excel(valid_rules, os.path.join(output_dir, "valid_rules.xlsx"))
 
-        reward_fn = self._create_reward_function(valid_rules, cover, correct, rule_len, max_rules)
-        env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=self.device)
+        reward_module = self._create_reward_function(
+            valid_rules, cover, correct, rule_len, labels, max_rules
+        )
+        env = RuleSelectionEnv(
+            n_valid, max_rules, reward_module, device=self.device
+        )
 
         # Lưu lại NGUYÊN VẸN thứ tự valid_rules SAU permutation + cover/correct/
         # rule_len tương ứng, kèm cấu hình kiến trúc (loss_type/hidden_dim) và
-        # trọng số reward — vì `gflownet_best.pth` (lưu ở _CheckpointTracker,
-        # xem class đó phía trên) CHỈ chứa state_dict, KHÔNG chứa permutation.
+        # trọng số reward — vì checkpoint policy CHỈ chứa state_dict, KHÔNG
+        # chứa permutation.
         # Action index i của policy đã train tương ứng với valid_rules[i] SAU
         # permutation, không phải valid_rules gốc trước khi shuffle — nếu thiếu
         # file này, không cách nào ánh xạ đúng lại action -> luật khi nạp lại
-        # gflownet_best.pth cho một quá trình khác (vd bước phân tích ranking
+        # checkpoint policy cho một quá trình khác (vd bước phân tích ranking
         # hoặc Bayesian marginalization ở stage5), vì permutation dùng
         # torch.randperm không được set_seed cố định riêng theo lần gọi.
         rule_order_path = os.path.join(output_dir, "gflownet_rule_order.pkl")
@@ -450,18 +468,24 @@ class BaseGFlowNetPipeline(abc.ABC):
                     "cover": cover.cpu(),
                     "correct": correct.cpu(),
                     "rule_len": rule_len.cpu(),
+                    "labels": labels.cpu(),
                     "n_valid": n_valid,
                     "max_rules": max_rules,
                     "loss_type": loss_type,
                     "gfnet_hidden_dim": gfnet_hidden_dim,
+                    "policy_add_layer_norm": True,
                     "w_acc": getattr(self, "w_acc", 1.0),
                     "w_cov": getattr(self, "w_cov", 0.5),
-                    "w_conflict": getattr(self, "w_conflict", 0.5),
+                    "w_wrong": getattr(self, "w_wrong", 0.75),
+                    "w_conflict": getattr(self, "w_conflict", 0.1),
                     "beta": getattr(self, "beta", 3.0),
                 },
                 f,
             )
-        logger.info("Đã lưu rule order + tensor (khớp index với gflownet_best.pth) tại %s", rule_order_path)
+        logger.info(
+            "Đã lưu rule order + tensor khớp index với checkpoint policy tại %s",
+            rule_order_path,
+        )
 
         pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=gfnet_hidden_dim, n_hidden_layers=2, add_layer_norm = True)
         pb_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions - 1, hidden_dim=gfnet_hidden_dim, n_hidden_layers=2, add_layer_norm = True)
@@ -563,17 +587,23 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         device: str = "cuda",
         w_acc: float = 1.0,
         w_cov: float = 0.5,
-        w_conflict: float = 0.5,
+        w_wrong: float = 0.75,
+        w_conflict: float = 0.1,
         beta: float = 3.0,
         grad_clip_max_norm : Optional[float] = None, 
     ):
         super().__init__(device, grad_clip_max_norm )
-        self.w_acc, self.w_cov, self.w_conflict, self.beta = w_acc, w_cov, w_conflict, beta
+        self.w_acc = w_acc
+        self.w_cov = w_cov
+        self.w_wrong = w_wrong
+        self.w_conflict = w_conflict
+        self.beta = beta
 
     def _reward_params(self) -> Dict[str, Any]:
         return {
             "w_acc": self.w_acc,
             "w_cov": self.w_cov,
+            "w_wrong": self.w_wrong,
             "w_conflict": self.w_conflict,
             "beta": self.beta,
         }
@@ -584,17 +614,24 @@ class RuleExtractionPipeline(BaseGFlowNetPipeline):
         cover: torch.Tensor,
         correct: torch.Tensor,
         rule_len: torch.Tensor,
+        labels: torch.Tensor,
         max_rules: int,
     ) -> Callable:
         targets = torch.tensor([r.target_class for r in valid_rules], device=cover.device)
+        confidences = torch.tensor(
+            [r.confidence for r in valid_rules], device=cover.device
+        )
         reward_module = RuleSetReward(
             cover=cover,
             correct=correct,
             rule_len=rule_len,
             max_rules=max_rules,
             targets=targets,
+            labels=labels,
+            confidences=confidences,
             w_acc=self.w_acc,
             w_cov=self.w_cov,
+            w_wrong=self.w_wrong,
             w_conflict=self.w_conflict,
             beta=self.beta,
         )

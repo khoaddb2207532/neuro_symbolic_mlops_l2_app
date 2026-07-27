@@ -54,7 +54,8 @@ def main(params_path: str) -> None:
         device=device,
         w_acc=gfn_cfg.get("w_acc", 1.0),
         w_cov=gfn_cfg.get("w_cov", 0.5),
-        w_conflict=gfn_cfg.get("w_conflict", 0.5),
+        w_wrong=gfn_cfg.get("w_wrong", 0.75),
+        w_conflict=gfn_cfg.get("w_conflict", 0.1),
         beta=gfn_cfg.get("beta", 3.0),
         grad_clip_max_norm=gfn_cfg.get("grad_clip_max_norm", 5.0),
     )
@@ -63,6 +64,7 @@ def main(params_path: str) -> None:
         cover=cover,
         correct=correct,
         rule_len=rule_len,
+        labels=val_labels,
         max_rules=gfn_cfg["max_rules"],
         output_dir=output_dir,
         gfnet_hidden_dim=gfn_cfg["hidden_dim"],

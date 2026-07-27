@@ -29,6 +29,7 @@ def evaluate_run(
     """
     if not final_selected_rules:
         return {"n_rules": 0, "accuracy": 0.0, "coverage": 0.0,
+                "correct_coverage": 0.0, "wrong_coverage": 0.0,
                 "redundancy": 0.0, "redundancy_conflict": 0.0,
                 "complexity": 0.0, "f1_like": 0.0}
 
@@ -45,6 +46,8 @@ def evaluate_run(
     comp = reward_module.components(s)
     accuracy = comp["accuracy"].item()
     coverage = comp["coverage"].item()
+    correct_coverage = comp["correct_coverage"].item()
+    wrong_coverage = comp["wrong_coverage"].item()
     redundancy_conflict = comp["conflict_ratio"].item()
 
     # `redundancy` (toàn bộ overlap, không tách theo target) vẫn tính riêng
@@ -62,6 +65,8 @@ def evaluate_run(
         "n_rules": int(n_sel.item()),
         "accuracy": accuracy,
         "coverage": coverage,
+        "correct_coverage": correct_coverage,
+        "wrong_coverage": wrong_coverage,
         "redundancy": redundancy,
         "redundancy_conflict": redundancy_conflict,
         "complexity": complexity,
@@ -74,8 +79,10 @@ def debug_breakdown(rule_subset: List[Rule], valid_rules: List[Rule],
     """In log breakdown cho một tập luật — dùng trong training loop để theo dõi."""
     metric = evaluate_run(rule_subset, valid_rules, reward_module)
     logger.info(
-        "DEBUG %s: n_selected=%d, accuracy=%.4f, coverage=%.4f, "
-        "redundancy=%.4f, redundancy_conflict=%.4f, complexity=%.4f, f1_like=%.4f",
+        "DEBUG %s: n_selected=%d, macro_accuracy=%.4f, coverage=%.4f, "
+        "correct_coverage=%.4f, wrong_coverage=%.4f, redundancy=%.4f, "
+        "conflict=%.4f, complexity=%.4f, f1_like=%.4f",
         label, metric["n_rules"], metric["accuracy"], metric["coverage"],
+        metric["correct_coverage"], metric["wrong_coverage"],
         metric["redundancy"], metric["redundancy_conflict"], metric["complexity"], metric["f1_like"],
     )

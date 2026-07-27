@@ -4,8 +4,8 @@ MARGINALIZATION thay vì phạt theo 1 tập luật cố định.
 Khác biệt so với `stage5_train_rule_regularized.py`:
   1. KHÔNG dùng `selected_rules.pkl` (tập luật MAP/best-found cố định của
      GFlowNet) làm rule_set để phạt.
-  2. Thay vào đó, nạp lại CHÍNH policy GFlowNet đã train (`gflownet_best.pth`
-     + `gflownet_rule_order.pkl`, cả hai đều do
+  2. Thay vào đó, nạp policy sampler GFlowNet đã train cùng
+     `gflownet_rule_order.pkl`, cả hai đều do
      `RuleExtractionPipeline.run()` ở stage4 lưu ra — KHÔNG train lại
      GFlowNet ở đây), dùng làm FROZEN SAMPLER.
   3. Mỗi bước train CNN, resample K tập luật MỚI từ sampler này và tính
@@ -44,11 +44,19 @@ def main(params_path: str) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     filtered_dir = os.path.join(params["output_dir"], "04_filtered_rules")
-    ckpt_path = os.path.join(filtered_dir, "gflownet_best_sampler.pth")
+    bayes_cfg = params.get("rule_penalty_bayesian", {})
+    checkpoint_name = bayes_cfg.get(
+        "sampler_checkpoint", "gflownet_best_diverse.pth"
+    )
+    ckpt_path = os.path.join(filtered_dir, checkpoint_name)
     if not os.path.exists(ckpt_path):
-        logger.warning("Chưa có gflownet_best_sampler.pth — fallback gflownet_best.pth "
-                        "(checkpoint tối ưu avg reward, có thể kém đa dạng hơn cho marginalization).")
-        ckpt_path = os.path.join(filtered_dir, "gflownet_best.pth")
+        fallback_name = "gflownet_best_converged.pth"
+        logger.warning(
+            "Chưa có %s — fallback sang %s.",
+            checkpoint_name,
+            fallback_name,
+        )
+        ckpt_path = os.path.join(filtered_dir, fallback_name)
 
     # ---- 1) Nạp lại policy GFlowNet đã train làm FROZEN SAMPLER (không
     # train lại bất kỳ tham số nào của nó) ----
@@ -59,7 +67,6 @@ def main(params_path: str) -> None:
         ckpt_path, len(valid_rules), rule_order["loss_type"],
     )
 
-    bayes_cfg = params.get("rule_penalty_bayesian", {})
     K = bayes_cfg.get("K", 32)
 
     penalty_module = BayesianRuleMarginalization(

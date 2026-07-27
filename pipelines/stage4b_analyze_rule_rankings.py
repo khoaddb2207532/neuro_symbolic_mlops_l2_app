@@ -1,5 +1,5 @@
 """DVC Stage 4b — Phân tích SAU KHI GFlowNet đã train xong (KHÔNG train lại
-bất kỳ tham số nào, chỉ nạp lại `gflownet_best.pth` để sample).
+bất kỳ tham số nào, chỉ nạp checkpoint sampler để sample).
 
   1. Sample K trajectory từ policy đã train.
   2. p_include(i) = tần suất luật i xuất hiện trong K tập được sample.
@@ -50,7 +50,10 @@ def main(params_path: str = "params.yaml", K: int = None) -> None:
         K = params.get("rule_ranking_analysis", {}).get("K", 300)
 
     output_dir = os.path.join(params["output_dir"], "04_filtered_rules")
-    ckpt_path = os.path.join(output_dir, "gflownet_best.pth")
+    checkpoint_name = params.get("rule_ranking_analysis", {}).get(
+        "checkpoint", "gflownet_best_diverse.pth"
+    )
+    ckpt_path = os.path.join(output_dir, checkpoint_name)
 
     rule_order = load_rule_order(output_dir)
     gflownet, env, valid_rules, reward_module = rebuild_gflownet(rule_order, ckpt_path, device)

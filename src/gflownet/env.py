@@ -15,10 +15,8 @@ class RuleSelectionEnv(DiscreteEnv):
     luật i; {n_rules}=exit. Forward mask cấm chọn lại luật đã có hoặc vượt max_rules;
     backward mask cho phép bỏ luật đang được chọn.
 
-    Env SỞ HỮU TRỰC TIẾP `reward_module` (một `RuleSetReward`), thay vì nhận
-    một callable đã bị bọc/gắn thêm attribute từ bên ngoài (pattern cũ khiến
-    pipeline phải làm `reward_fn.reward_module = reward_module` — một hack
-    rò rỉ trách nhiệm). `reward()` và `log_reward()` chỉ là hai cách đọc khác
+    Env SỞ HỮU TRỰC TIẾP `reward_module` (một `RuleSetReward`).
+    `reward()` và `log_reward()` chỉ là hai cách đọc khác
     nhau của CÙNG một `reward_module.score()`, giống cách các env chuẩn của
     torchgfn (vd FacesEnv) tự quản lý reward của chính nó."""
 

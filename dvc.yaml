@@ -83,14 +83,15 @@ stages:
     - outputs/04_filtered_rules/valid_rules.pkl
     - outputs/04_filtered_rules/selected_rules.pkl
     - outputs/04_filtered_rules/gflownet_rule_order.pkl
-    - outputs/04_filtered_rules/gflownet_best.pth
+    - outputs/04_filtered_rules/gflownet_best_converged.pth
+    - outputs/04_filtered_rules/gflownet_best_diverse.pth
 
   analyze_rule_rankings:
     cmd: python -m pipelines.stage4b_analyze_rule_rankings --config params.yaml
     deps:
     - pipelines/stage4b_analyze_rule_rankings.py
     - src/gflownet/rule_ranking_analysis.py
-    - outputs/04_filtered_rules/gflownet_best.pth
+    - outputs/04_filtered_rules/gflownet_best_diverse.pth
     - outputs/04_filtered_rules/gflownet_rule_order.pkl
     params:
     - rule_ranking_analysis
@@ -127,7 +128,8 @@ stages:
     - src/training/trainer.py
     - src/utils/checkpoint.py
     - outputs/baseline_comparison
-    - outputs/04_filtered_rules/gflownet_best.pth
+    - outputs/04_filtered_rules/gflownet_best_diverse.pth
+    - outputs/04_filtered_rules/gflownet_best_converged.pth
     - outputs/04_filtered_rules/gflownet_rule_order.pkl
     params:
     - baseline_comparison.selected_architecture

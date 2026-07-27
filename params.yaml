@@ -46,11 +46,13 @@ rule_penalty:
 # mỗi bước train CNN, xem src/rules/bayesian_penalty.py).
 rule_penalty_bayesian:
   K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
+  sampler_checkpoint: "gflownet_best_diverse.pth"
 
 # Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
 # GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.
 rule_ranking_analysis:
   K: 300                       # số trajectory sample từ policy đã train
+  checkpoint: "gflownet_best_diverse.pth"
 
 gflownet:
   max_rules: 120
@@ -65,6 +67,7 @@ gflownet:
   val_samples: 140
   w_acc: 1.0
   w_cov: 0.5
-  w_conflict: 0.5
+  w_wrong: 0.75
+  w_conflict: 0.1
   beta: 3.0
   grad_clip_max_norm : 5.0

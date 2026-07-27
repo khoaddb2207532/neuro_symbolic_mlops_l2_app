@@ -1,5 +1,5 @@
 """Phân tích SAU KHI GFlowNet đã huấn luyện xong — KHÔNG train lại bất kỳ
-tham số nào. Dùng lại đúng policy đã lưu ở `gflownet_best.pth` làm sampler
+tham số nào. Dùng lại đúng policy checkpoint được chỉ định làm sampler
 thuần (chỉ forward, `torch.no_grad()`), rồi:
 
   1. Sample K (200-500) trajectory từ policy đã train.
@@ -14,7 +14,7 @@ thuần (chỉ forward, `torch.no_grad()`), rồi:
                                     greedy (vì covered ban đầu rỗng nên gain
                                     của greedy ở bước đầu = score singleton).
 
-QUAN TRỌNG VỀ INDEX: `gflownet_best.pth` chỉ chứa state_dict, KHÔNG chứa
+QUAN TRỌNG VỀ INDEX: checkpoint policy chỉ chứa state_dict, KHÔNG chứa
 permutation mà `RuleExtractionPipeline.run()` đã áp dụng lên `valid_rules`
 trước khi train (xem `src/gflownet/pipeline.py::run()`). Action index i của
 policy đã train tương ứng với `valid_rules[i]` SAU permutation đó — vì vậy
@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 def load_rule_order(output_dir: str) -> Dict:
     """Nạp `gflownet_rule_order.pkl` (valid_rules đã permute + cover/correct/
     rule_len + cấu hình kiến trúc) đã được `RuleExtractionPipeline.run()` lưu
-    cùng lúc với `gflownet_best.pth`."""
+    cùng lúc với checkpoint policy."""
     path = os.path.join(output_dir, "gflownet_rule_order.pkl")
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -51,7 +51,7 @@ def load_rule_order(output_dir: str) -> Dict:
             "tự lưu khi chạy stage4 (select_rules_gflownet) — hãy chạy lại "
             "stage4 với bản pipeline.py đã cập nhật trước khi chạy phân tích "
             "này. Không thể suy ngược đúng ánh xạ action->luật chỉ từ "
-            "gflownet_best.pth vì checkpoint đó không lưu permutation."
+            "checkpoint policy vì checkpoint đó không lưu permutation."
         )
     with open(path, "rb") as f:
         return pickle.load(f)
@@ -69,27 +69,41 @@ def rebuild_gflownet(rule_order: Dict, ckpt_path: str, device: torch.device):
     cover = rule_order["cover"].to(device)
     correct = rule_order["correct"].to(device)
     rule_len = rule_order["rule_len"].to(device)
+    labels = rule_order["labels"].to(device)
     valid_rules: List[Rule] = rule_order["valid_rules"]
     targets = torch.tensor([r.target_class for r in valid_rules], device=device)
+    confidences = torch.tensor(
+        [r.confidence for r in valid_rules], device=device
+    )
 
     reward_module = RuleSetReward(
         cover=cover, correct=correct, rule_len=rule_len, max_rules=max_rules,
-        targets=targets,
+        targets=targets, labels=labels, confidences=confidences,
         w_acc=rule_order.get("w_acc", 1.0), w_cov=rule_order.get("w_cov", 0.5),
-        w_conflict=rule_order.get("w_conflict", 0.5), beta=rule_order.get("beta", 3.0),
+        w_wrong=rule_order.get("w_wrong", 0.75),
+        w_conflict=rule_order.get("w_conflict", 0.1),
+        beta=rule_order.get("beta", 3.0),
     )
 
-    def reward_fn(states: torch.Tensor) -> torch.Tensor:
-        if states.dim() == 1:
-            states = states.unsqueeze(0)
-        return reward_module(states.to(device))
+    env = RuleSelectionEnv(
+        n_valid, max_rules, reward_module, device=device
+    )
 
-    reward_fn.reward_module = reward_module
-
-    env = RuleSelectionEnv(n_valid, max_rules, reward_fn, device=device)
-
-    pf_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions, hidden_dim=hidden_dim, n_hidden_layers=2)
-    pb_module = MLP(input_dim=env.state_shape[-1], output_dim=env.n_actions - 1, hidden_dim=hidden_dim, n_hidden_layers=2)
+    add_layer_norm = rule_order.get("policy_add_layer_norm", True)
+    pf_module = MLP(
+        input_dim=env.state_shape[-1],
+        output_dim=env.n_actions,
+        hidden_dim=hidden_dim,
+        n_hidden_layers=2,
+        add_layer_norm=add_layer_norm,
+    )
+    pb_module = MLP(
+        input_dim=env.state_shape[-1],
+        output_dim=env.n_actions - 1,
+        hidden_dim=hidden_dim,
+        n_hidden_layers=2,
+        add_layer_norm=add_layer_norm,
+    )
     pf_estimator = DiscretePolicyEstimator(module=pf_module, n_actions=env.n_actions, is_backward=False, preprocessor=env.preprocessor)
     pb_estimator = DiscretePolicyEstimator(module=pb_module, n_actions=env.n_actions, is_backward=True, preprocessor=env.preprocessor)
 
@@ -105,7 +119,15 @@ def rebuild_gflownet(rule_order: Dict, ckpt_path: str, device: torch.device):
         raise ValueError(f"loss_type phải là 'tb'/'db'/'fm', nhận '{loss_type}'")
 
     gflownet.to(device)
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(f"Không tìm thấy checkpoint GFlowNet: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
+    if ckpt.get("n_rules") != n_valid or ckpt.get("max_rules") != max_rules:
+        raise ValueError(
+            "Checkpoint GFlowNet không khớp rule order: "
+            f"checkpoint(n_rules={ckpt.get('n_rules')}, max_rules={ckpt.get('max_rules')}) "
+            f"!= rule_order(n_rules={n_valid}, max_rules={max_rules})."
+        )
     gflownet.load_state_dict(ckpt["model"])
     gflownet.eval()
     for p in gflownet.parameters():

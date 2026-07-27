@@ -367,15 +367,19 @@ def main(params_path: str = "params.yaml") -> None:
     # (chi phat cap luat KHAC target cung phu 1 vung) + yeu cau `targets`
     # (target_class cua tung luat) de tach trung lap vo hai khoi xung dot that.
     targets = torch.tensor([r.target_class for r in valid_rules], device=device)
+    confidences = torch.tensor([r.confidence for r in valid_rules], device=device)
     shared_reward_module = RuleSetReward(
         cover=cover,
         correct=correct,
         rule_len=rule_len,
         max_rules=max_rules_full,
         targets=targets,
+        labels=val_labels,
+        confidences=confidences,
         w_acc=gfn_cfg.get("w_acc", 1.0),
         w_cov=gfn_cfg.get("w_cov", 0.5),
-        w_conflict=gfn_cfg.get("w_conflict", 0.5),
+        w_wrong=gfn_cfg.get("w_wrong", 0.75),
+        w_conflict=gfn_cfg.get("w_conflict", 0.1),
         beta=gfn_cfg.get("beta", 3.0),
     )
 
@@ -389,7 +393,8 @@ def main(params_path: str = "params.yaml") -> None:
         device=device,
         w_acc=gfn_cfg.get("w_acc", 1.0),
         w_cov=gfn_cfg.get("w_cov", 0.5),
-        w_conflict=gfn_cfg.get("w_conflict", 0.5),
+        w_wrong=gfn_cfg.get("w_wrong", 0.75),
+        w_conflict=gfn_cfg.get("w_conflict", 0.1),
         beta=gfn_cfg.get("beta", 3.0),
     )
 
@@ -399,6 +404,7 @@ def main(params_path: str = "params.yaml") -> None:
             cover=cover,
             correct=correct,
             rule_len=rule_len,
+            labels=val_labels,
             max_rules=max_rules_full,
             output_dir=gfn_output_dir,
             gfnet_hidden_dim=gfn_cfg["hidden_dim"],

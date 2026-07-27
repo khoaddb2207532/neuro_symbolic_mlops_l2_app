@@ -13,7 +13,7 @@ Module này thay bằng kỳ vọng theo TOÀN BỘ PHÂN PHỐI luật mà poli
                                                             resample MỖI bước.
 
 FROZEN SAMPLER: `pi_theta` là policy GFlowNet đã train xong (nạp từ
-`gflownet_best.pth`, state_dict lưu trong `_CheckpointTracker.update()` ở
+checkpoint sampler, với state_dict được lưu trong pipeline GFlowNet ở
 `src/gflownet/pipeline.py`, dòng ~84-94). Toàn bộ tham số của nó bị
 `requires_grad_(False)` và luôn `.eval()` — GFlowNet KHÔNG được cập nhật
 trong lúc train CNN, chỉ đóng vai trò sampler thuần.

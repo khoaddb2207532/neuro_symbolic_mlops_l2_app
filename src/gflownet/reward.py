@@ -1,10 +1,21 @@
+"""Reward chọn ruleset cho mục tiêu regularize CNN.
+
+Score = w_acc * MacroAccuracy
+      + w_cov * CorrectCoverage
+      - w_wrong * WrongCoverage
+      - w_conflict * ConfidenceWeightedConflict.
+
+Ruleset dự đoán bằng weighted voting theo confidence của các luật được chọn.
+"""
 import torch
 
 
 class RuleSetReward:
     def __init__(self, cover: torch.Tensor, correct: torch.Tensor,
                  rule_len: torch.Tensor, max_rules: int, targets: torch.Tensor,
-                 w_acc=1.0, w_cov=0.5, w_conflict=0.5, beta=3.0):
+                 labels: torch.Tensor, confidences: torch.Tensor,
+                 w_acc=1.0, w_cov=0.5, w_wrong=0.75,
+                 w_conflict=0.1, beta=3.0):
         """
         cover:    (n_rules, n_val) bool - luật i có match mẫu j không
         correct:  (n_rules, n_val) bool - luật i match VÀ dự đoán đúng nhãn mẫu j
@@ -53,7 +64,10 @@ class RuleSetReward:
         self.rule_len = rule_len.float()
         self.n_val = cover.shape[1]
         self.max_rules = max_rules
-        self.w_acc, self.w_cov, self.w_conflict = w_acc, w_cov, w_conflict
+        self.w_acc = w_acc
+        self.w_cov = w_cov
+        self.w_wrong = w_wrong
+        self.w_conflict = w_conflict
         self.beta = beta
 
         # ma trận overlap giữa các luật (Jaccard) — CHỈ dùng cho thống kê mô
@@ -67,7 +81,11 @@ class RuleSetReward:
 
         targets = targets.to(cover.device)
         self.targets = targets
-        self.num_classes = int(targets.max().item()) + 1 if targets.numel() > 0 else 0
+        self.labels = labels.to(cover.device).long()
+        self.confidences = confidences.to(cover.device).float()
+        max_target = int(targets.max().item()) if targets.numel() > 0 else -1
+        max_label = int(self.labels.max().item()) if self.labels.numel() > 0 else -1
+        self.num_classes = max(max_target, max_label) + 1
         # class_masks[c, i] = 1 nếu luật i có target = c — dùng để gộp các
         # luật ĐƯỢC CHỌN theo từng target riêng biệt (xem components()).
         self.class_masks = torch.zeros(self.num_classes, cover.shape[0], device=cover.device)
@@ -82,37 +100,89 @@ class RuleSetReward:
 
         s: (B, n_rules) nhị phân. Trả về dict các tensor (B,).
         """
-        covered = (s @ self.cover) > 0                       # (B, n_val)
-        correct_covered = (s @ self.correct) > 0
-        coverage = covered.float().mean(-1)
-        # accuracy chỉ tính trên phần được phủ
-        accuracy = (correct_covered.float().sum(-1)) / covered.float().sum(-1).clamp(min=1)
+        if self.num_classes == 0:
+            zeros = torch.zeros(s.shape[0], device=s.device)
+            return {
+                "n_selected": s.sum(-1),
+                "coverage": zeros,
+                "accuracy": zeros,
+                "macro_accuracy": zeros,
+                "correct_coverage": zeros,
+                "wrong_coverage": zeros,
+                "conflict_ratio": zeros,
+            }
 
-        # conflict_ratio: với mỗi target c, gộp (OR) coverage của các luật
-        # ĐƯỢC CHỌN thuộc target đó -> covered_by_class (B, C, n_val). Một
-        # mẫu bị "xung đột" nếu nó được phủ bởi >= 2 target khác nhau trong
-        # số các luật đã chọn. Đo theo TỈ LỆ MẪU (chia n_val cố định), không
-        # theo trung bình cặp luật -> không bị pha loãng khi ruleset lớn dần.
-        if self.num_classes > 0:
-            s_by_class = s.unsqueeze(1) * self.class_masks.unsqueeze(0)      # (B, C, R)
-            covered_by_class = torch.einsum("bcr,rj->bcj", s_by_class, self.cover) > 0  # (B, C, n_val)
-            n_classes_covering = covered_by_class.float().sum(dim=1)         # (B, n_val)
-            conflict_ratio = (n_classes_covering >= 2).float().mean(-1)      # (B,)
-        else:
-            conflict_ratio = torch.zeros(s.shape[0], device=s.device)
+        # votes[b,c,j] là tổng confidence của các luật target=c trong ruleset b
+        # cùng phủ mẫu validation j.
+        weighted_selected = s * self.confidences.unsqueeze(0)                # (B, R)
+        selected_by_class = (
+            weighted_selected.unsqueeze(1) * self.class_masks.unsqueeze(0)
+        )                                                                    # (B, C, R)
+        votes = torch.einsum(
+            "bcr,rj->bcj", selected_by_class, self.cover
+        )                                                                    # (B, C, N)
+        total_votes = votes.sum(dim=1)                                       # (B, N)
+        covered = total_votes > 0
+        predictions = votes.argmax(dim=1)                                    # (B, N)
+        labels = self.labels.unsqueeze(0)
+        correct_predictions = covered & (predictions == labels)
+        wrong_predictions = covered & (predictions != labels)
+
+        # MacroAccuracy được tính có điều kiện trên phần đã phủ của từng lớp;
+        # Correct/WrongCoverage dùng toàn bộ số mẫu của lớp làm mẫu số.
+        per_class_accuracy = []
+        per_class_correct_coverage = []
+        per_class_wrong_coverage = []
+        for class_idx in range(self.num_classes):
+            class_mask = self.labels == class_idx
+            if not class_mask.any():
+                continue
+            class_count = class_mask.sum().float()
+            class_covered = covered[:, class_mask]
+            class_correct = correct_predictions[:, class_mask].float().sum(-1)
+            class_wrong = wrong_predictions[:, class_mask].float().sum(-1)
+            per_class_accuracy.append(
+                class_correct / class_covered.float().sum(-1).clamp(min=1)
+            )
+            per_class_correct_coverage.append(class_correct / class_count)
+            per_class_wrong_coverage.append(class_wrong / class_count)
+
+        macro_accuracy = torch.stack(per_class_accuracy, dim=-1).mean(-1)
+        correct_coverage = torch.stack(
+            per_class_correct_coverage, dim=-1
+        ).mean(-1)
+        wrong_coverage = torch.stack(
+            per_class_wrong_coverage, dim=-1
+        ).mean(-1)
+        coverage = correct_coverage + wrong_coverage
+
+        # Conflict liên tục có trọng số confidence: phần vote không thuộc lớp
+        # thắng, chuẩn hóa theo tổng vote. Bằng 0 khi các luật hoàn toàn đồng thuận.
+        winning_votes = votes.max(dim=1).values
+        per_sample_conflict = (
+            (total_votes - winning_votes) / total_votes.clamp(min=1e-8)
+        )
+        conflict_ratio = per_sample_conflict.mean(-1)
 
         return {
             "n_selected": s.sum(-1),
             "coverage": coverage,
-            "accuracy": accuracy,
+            "accuracy": macro_accuracy,
+            "macro_accuracy": macro_accuracy,
+            "correct_coverage": correct_coverage,
+            "wrong_coverage": wrong_coverage,
             "conflict_ratio": conflict_ratio,
         }
 
     def score(self, s: torch.Tensor) -> torch.Tensor:
         # s: (B, n_rules) nhị phân
         c = self.components(s)
-        return (self.w_acc * c["accuracy"] + self.w_cov * c["coverage"]
-                - self.w_conflict * c["conflict_ratio"])
+        return (
+            self.w_acc * c["macro_accuracy"]
+            + self.w_cov * c["correct_coverage"]
+            - self.w_wrong * c["wrong_coverage"]
+            - self.w_conflict * c["conflict_ratio"]
+        )
 
     def __call__(self, s: torch.Tensor) -> torch.Tensor:
         raw = self.score(s)                       # có thể âm
