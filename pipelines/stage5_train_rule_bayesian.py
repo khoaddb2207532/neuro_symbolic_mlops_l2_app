@@ -11,12 +11,9 @@ Khác biệt so với `stage5_train_rule_regularized.py`:
   3. Mỗi bước train CNN, resample K tập luật MỚI từ sampler này và tính
      rule-penalty kỳ vọng (Monte Carlo không chệch qua K mẫu) — xem
      `src.rules.bayesian_penalty.BayesianRuleMarginalization`.
-  4. Bật `resolve_loss_conflict=True`: xử lý xung đột gradient (PCGrad) giữa
-     CE loss và rule-penalty loss (xem `src.training.trainer._resolve_loss_conflict`).
-
 Vẫn dùng chung `train_model()`/`train_one_epoch()` ở `src/training/trainer.py`
 — chỉ khác ở CÁCH XÂY DỰNG penalty_module (truyền thẳng vào thay vì để
-`train_model` tự build từ `rule_set`) và cờ cấu hình `resolve_loss_conflict`.
+`train_model` tự build từ `rule_set`).
 """
 import argparse
 import os
@@ -26,11 +23,15 @@ import torch
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
 from src.gflownet.rule_ranking_analysis import load_rule_order, rebuild_gflownet
-from src.models.cnn import CNNBaseline
+from src.models.cnn import ImageClassificationBaseline
 from src.rules.bayesian_penalty import BayesianRuleMarginalization
 from src.training.trainer import train_model
 from src.utils.checkpoint import load_model_weights
-from src.utils.config import load_params
+from src.utils.config import (
+    load_params,
+    selected_baseline_architecture,
+    selected_baseline_checkpoint,
+)
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
 
@@ -84,28 +85,23 @@ def main(params_path: str) -> None:
     save_dir = os.path.join(params["output_dir"], "05b_rules_model_bayesian")
     os.makedirs(save_dir, exist_ok=True)
 
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
+    architecture = selected_baseline_architecture(params)
+    model = ImageClassificationBaseline(
+        architecture=architecture,
+        num_classes=params["num_classes"],
+        pretrained=False,
+    )
 
-    # Giống stage5 gốc: tiếp tục từ baseline đã hội tụ (stage1), không phải
-    # từ ImageNet.
-    # baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
-    # load_model_weights(model, baseline_ckpt, device, required=True)
+    baseline_ckpt = selected_baseline_checkpoint(params)
+    load_model_weights(model, baseline_ckpt, device, required=True)
 
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule"].items()}
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
-        "freeze_bn": params["transfer_learning"]["freeze_bn"],
-        "freeze_schedule": freeze_schedule,
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "use_scheduler": True,
-        "scheduler_factor": 0.1,
-        "scheduler_patience": 3,
         "dvclive_path": os.path.join(save_dir, "dvclive_rule_regularized_bayesian"),
         "save_dir": save_dir,
-        # ---- Task 3: xử lý xung đột gradient CE vs rule-penalty (PCGrad) ----
-        "resolve_loss_conflict": bayes_cfg.get("resolve_loss_conflict", True),
     }
 
     model, history = train_model(

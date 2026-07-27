@@ -3,10 +3,6 @@
     NHẤT `VectorizedRulePenalty` (xem src/rules/penalty.py để biết lý do đã
     gộp bỏ implementation loop trùng lặp trước đây).
   * DVCLive experiment tracking
-  * PROGRESSIVE UNFREEZING: chuyển freeze_stage của model theo epoch, theo
-    `config["freeze_schedule"]`, đúng chiến lược transfer learning đã chọn
-    (xem src/models/cnn.py). Optimizer được build lại mỗi khi stage đổi vì
-    param groups (và param nào requires_grad) thay đổi.
 """
 import copy
 import os
@@ -21,7 +17,7 @@ from torch.utils.data import DataLoader
 from src.rules.penalty import VectorizedRulePenalty
 from src.rules.rule_types import RuleSet
 from src.training.callbacks import EarlyStopping
-from src.training.optimizer import build_optimizer, build_scheduler
+from src.training.optimizer import build_optimizer
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -36,22 +32,9 @@ MONITOR_MODES = {
 
 DEFAULT_CONFIG = {
     "weight_decay": 1e-4,
-    "use_scheduler": True,
-    "scheduler_factor": 0.1,
-    "scheduler_patience": 5,
-    "scheduler_threshold": 1e-4,
-    "scheduler_cooldown": 0,
-    "scheduler_min_lr": 1e-6,
-    "freeze_bn": True,
     "dvclive_path": "dvclive",
     "save_dir": "outputs",
     "monitor_metric": "val_acc",  # đổi thành "val_loss" nếu muốn early-stop/lưu checkpoint theo loss
-    # Chiến lược progressive unfreezing mặc định: epoch -> freeze_stage
-    "freeze_schedule": {0: "head_only"},
-    # Nếu True: xử lý xung đột gradient (PCGrad) giữa CE loss và rule-penalty
-    # loss thay vì backward trực tiếp trên tổng — xem _resolve_loss_conflict().
-    # Mặc định False để KHÔNG đổi hành vi/số liệu của các pipeline hiện có.
-    "resolve_loss_conflict": False,
 }
 
 
@@ -70,87 +53,50 @@ def save_checkpoint(path: str, model: nn.Module, optimizer, epoch: int, best_acc
     )
 
 
-def _resolve_loss_conflict(ce_loss: torch.Tensor, penalty: torch.Tensor, params: list) -> Tuple[bool, float]:
-    """Xử lý xung đột gradient giữa CE loss (nhiệm vụ chính) và rule-penalty
-    loss (regularizer) trên các tham số DÙNG CHUNG `params` — kỹ thuật
-    PCGrad (Projecting Conflicting Gradients, Yu et al. 2020) rút gọn cho
-    đúng 2 loss:
+def _has_gradient_conflict(
+    ce_loss: torch.Tensor,
+    penalty: torch.Tensor,
+    params: list,
+) -> Optional[bool]:
+    """Đo xung đột gradient để quan sát, không thay đổi gradient huấn luyện.
 
-      1. Tính grad_ce, grad_penalty RIÊNG BIỆT (2 lần `torch.autograd.grad`
-         trên cùng graph, không phải 2 lần forward).
-      2. Nếu cos(grad_ce, grad_penalty) < 0 (2 gradient "kéo" NGƯỢC hướng
-         nhau — dấu hiệu 2 loss đang xung đột trên cùng tham số) -> chiếu
-         grad_penalty lên phần KHÔNG xung đột với grad_ce (loại bỏ thành
-         phần đối nghịch bằng phép chiếu vector), giữ nguyên grad_ce.
-      3. Nếu KHÔNG xung đột (dot >= 0) -> cộng thẳng grad_ce + grad_penalty,
-         numerically giống hệt `(ce_loss + penalty).backward()` (không đổi
-         hành vi cũ trong trường hợp phổ biến 2 loss "hợp tác").
-      4. Gán gradient cuối cùng vào `.grad` của từng tham số (thay cho
-         `loss.backward()` thông thường).
-
-    Trả về (had_conflict, cos_similarity) để quan sát/log — không phải để
-    quyết định logic bên ngoài.
-
-    Nếu `penalty` không có graph (vd rule_set rỗng, trả về hằng số 0 không
-    `requires_grad`) thì bỏ qua toàn bộ cơ chế này, chỉ backward `ce_loss`.
+    Trả về ``None`` khi penalty không có gradient hoặc một trong hai gradient
+    có norm bằng 0. Graph được giữ lại để sau đó vẫn gọi
+    ``(ce_loss + penalty).backward()`` theo cách thông thường.
     """
     if not (penalty.requires_grad and penalty.grad_fn is not None):
-        for p in params:
-            p.grad = None
-        ce_loss.backward()
-        return False, 0.0
+        return None
 
-    grad_ce = torch.autograd.grad(ce_loss, params, retain_graph=True, allow_unused=True)
-    grad_pen = torch.autograd.grad(penalty, params, retain_graph=False, allow_unused=True)
+    ce_grads = torch.autograd.grad(
+        ce_loss, params, retain_graph=True, allow_unused=True
+    )
+    penalty_grads = torch.autograd.grad(
+        penalty, params, retain_graph=True, allow_unused=True
+    )
 
-    flat_ce = torch.cat([
-        (g if g is not None else torch.zeros_like(p)).reshape(-1)
-        for g, p in zip(grad_ce, params)
-    ])
-    flat_pen = torch.cat([
-        (g if g is not None else torch.zeros_like(p)).reshape(-1)
-        for g, p in zip(grad_pen, params)
-    ])
+    dot = ce_loss.new_zeros(())
+    ce_norm_sq = ce_loss.new_zeros(())
+    penalty_norm_sq = ce_loss.new_zeros(())
+    for ce_grad, penalty_grad in zip(ce_grads, penalty_grads):
+        if ce_grad is not None:
+            ce_norm_sq += ce_grad.square().sum()
+        if penalty_grad is not None:
+            penalty_norm_sq += penalty_grad.square().sum()
+        if ce_grad is not None and penalty_grad is not None:
+            dot += (ce_grad * penalty_grad).sum()
 
-    dot = torch.dot(flat_ce, flat_pen)
-    ce_norm_sq = flat_ce.dot(flat_ce)
-    pen_norm = flat_pen.norm()
-    ce_norm = ce_norm_sq.sqrt()
-    cos_sim = (dot / (ce_norm * pen_norm + 1e-12)).item() if pen_norm > 0 and ce_norm > 0 else 0.0
-
-    had_conflict = dot.item() < 0
-    if had_conflict:
-        # Loại bỏ thành phần của grad_penalty đối nghịch với grad_ce (chiếu
-        # lên siêu phẳng trực giao với grad_ce), giữ grad_ce nguyên vẹn —
-        # đúng công thức PCGrad cho cặp (task chính, regularizer).
-        proj_coeff = dot / (ce_norm_sq + 1e-12)
-        flat_pen = flat_pen - proj_coeff * flat_ce
-
-    combined_flat = flat_ce + flat_pen
-
-    idx = 0
-    for p in params:
-        numel = p.numel()
-        p.grad = combined_flat[idx: idx + numel].view_as(p).clone()
-        idx += numel
-
-    return had_conflict, cos_sim
+    if ce_norm_sq.item() == 0.0 or penalty_norm_sq.item() == 0.0:
+        return None
+    return dot.item() < 0.0
 
 
 def train_one_epoch(
-    model, loader, criterion, optimizer, device, penalty_module=None, freeze_bn=True,
-    resolve_conflict: bool = False,
+    model, loader, criterion, optimizer, device, penalty_module=None,
 ):
     """penalty_module: nếu không None (VectorizedRulePenalty hoặc
     BayesianRuleMarginalization — cùng chữ ký forward(features, logits)),
     được cộng vào loss chính. Không còn nhánh loop-based riêng — chỉ một
     công thức.
-
-    resolve_conflict: nếu True và penalty_module có graph (không phải hằng
-    số 0), xử lý xung đột gradient giữa CE loss và rule-penalty loss bằng
-    PCGrad (xem `_resolve_loss_conflict`) thay vì backward tổng trực tiếp.
-    Mặc định False để giữ nguyên hành vi cũ (loss = ce+penalty; backward
-    trên tổng) cho các script chưa bật cờ này.
 
     Trả về (train_loss, train_ce, train_penalty, train_acc, coverage_stats).
     train_acc được tính trên chính batch train (không phải eval mode) để
@@ -161,18 +107,14 @@ def train_one_epoch(
     hỗ trợ `last_coverage_stats()`): thống kê xem luật có thực sự "sống"
     (đóng góp gradient) hay không, tổng hợp theo batch-size-weighted average
     qua các batch trong epoch — xem src/rules/penalty.py::last_coverage_stats().
-    Khi resolve_conflict=True, coverage_stats còn thêm "conflict_ratio":
-    tỉ lệ batch mà CE và rule-penalty xung đột (cos<0) trong epoch này.
     """
     model.train()
-    if freeze_bn and hasattr(model, "freeze_bn"):
-        model.freeze_bn()
 
     total_loss = total_ce = total_penalty = 0.0
     total_correct = 0
     total_samples = 0
     n_conflict_batches = 0
-    n_batches = 0
+    n_measured_gradient_batches = 0
 
     # Tích luỹ coverage stats qua các batch (weighted theo batch size, giống
     # cách total_loss/total_ce/... được tích luỹ ở trên).
@@ -180,8 +122,7 @@ def train_one_epoch(
     sum_mean_sat = 0.0
     n_rules_total = 0
     has_coverage = penalty_module is not None and hasattr(penalty_module, "last_coverage_stats")
-
-    trainable_params = [p for p in model.parameters() if p.requires_grad] if resolve_conflict else None
+    trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
 
     for images, labels in loader:
         images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
@@ -193,13 +134,13 @@ def train_one_epoch(
         ce_loss = criterion(logits, labels)
         penalty = penalty_module(features, logits) if penalty_module is not None else torch.tensor(0.0, device=device)
 
-        if resolve_conflict and penalty_module is not None:
-            had_conflict, _cos_sim = _resolve_loss_conflict(ce_loss, penalty, trainable_params)
-            n_conflict_batches += int(had_conflict)
-            n_batches += 1
-        else:
-            loss = ce_loss + penalty
-            loss.backward()
+        has_conflict = _has_gradient_conflict(ce_loss, penalty, trainable_params)
+        if has_conflict is not None:
+            n_conflict_batches += int(has_conflict)
+            n_measured_gradient_batches += 1
+
+        loss = ce_loss + penalty
+        loss.backward()
 
         optimizer.step()
 
@@ -227,9 +168,10 @@ def train_one_epoch(
             "coverage_ratio": sum_coverage_ratio / total_samples,
             "mean_rule_sat": sum_mean_sat / total_samples,
         }
-        if resolve_conflict:
-            coverage_stats["conflict_ratio"] = n_conflict_batches / n_batches if n_batches > 0 else 0.0
-
+        if n_measured_gradient_batches > 0:
+            coverage_stats["conflict_ratio"] = (
+                n_conflict_batches / n_measured_gradient_batches
+            )
     return (
         total_loss / total_samples,
         total_ce / total_samples,
@@ -291,14 +233,7 @@ def train_model(
     model = model.to(device)
 
     criterion = nn.CrossEntropyLoss(label_smoothing=smoothing)
-    freeze_schedule = cfg["freeze_schedule"]
-
-    def rebuild_optimizer():
-        opt = build_optimizer(model, cfg)
-        sch = build_scheduler(opt, cfg)
-        return opt, sch
-
-    optimizer, scheduler = rebuild_optimizer()
+    optimizer = build_optimizer(model, cfg)
 
     is_rule_regularized_run = penalty_weight > 0 or penalty_module is not None
     ckpt_name = os.path.join(cfg["save_dir"], "rule_regularized_best.pth" if is_rule_regularized_run else "baseline_best.pth")
@@ -321,10 +256,6 @@ def train_model(
         penalty_module = penalty_module.to(device)
         logger.info("Dùng penalty_module được truyền sẵn: %s", type(penalty_module).__name__)
 
-    resolve_conflict = cfg.get("resolve_loss_conflict", False) and penalty_module is not None
-    if resolve_conflict:
-        logger.info("Bật xử lý xung đột gradient (PCGrad) giữa CE loss và rule-penalty loss.")
-
     history = {
         "train_loss": [], "train_ce": [], "train_penalty": [], "train_acc": [],
         "val_loss": [], "val_acc": [],
@@ -338,23 +269,14 @@ def train_model(
             {
                 "num_epochs": num_epochs, "lr": lr, "patience": patience,
                 "penalty_weight": penalty_weight, "smoothing": smoothing, "num_classes": num_classes,
-                "freeze_schedule": str(freeze_schedule),
                 "batch_size": train_loader.batch_size,
                 "total_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
                 "initial_temp": initial_temp, 
                 "final_temp": final_temp,
-                "resolve_loss_conflict": resolve_conflict,
             }
         )
 
         for epoch in range(num_epochs):
-            # ---- Progressive unfreezing: chuyển stage nếu epoch nằm trong schedule ----
-            if epoch in freeze_schedule and hasattr(model, "set_freeze_stage"):
-                stage = freeze_schedule[epoch]
-                logger.info("Epoch %d: chuyển freeze_stage -> '%s'", epoch, stage)
-                model.set_freeze_stage(stage)
-                optimizer, scheduler = rebuild_optimizer()
-
             # ---- Ủ nhiệt độ khớp luật: mềm ở epoch đầu -> cứng dần về cuối ----
             if penalty_module is not None:
                 penalty_module.update_temperature(epoch, num_epochs)
@@ -362,8 +284,7 @@ def train_model(
 
             train_loss, train_ce, train_penalty, train_acc, coverage_stats = train_one_epoch(
                 model, train_loader, criterion, optimizer, device,
-                penalty_module, freeze_bn=cfg.get("freeze_bn", True),
-                resolve_conflict=resolve_conflict,
+                penalty_module,
             )
             val_acc, val_loss = validate(model, val_loader, criterion, device)
             lr_details = " | ".join([
@@ -377,9 +298,6 @@ def train_model(
             history["train_acc"].append(train_acc)
             history["val_acc"].append(val_acc)
             history["val_loss"].append(val_loss)
-
-            if scheduler is not None:
-                scheduler.step(val_loss)
 
             logger.info(
                 "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LRs %s ",
@@ -414,7 +332,11 @@ def train_model(
                     coverage_stats["coverage_ratio"] * 100,
                     coverage_stats["mean_rule_sat"],
                     penalty_module._temperature.item(),
-                    f" | grad_conflict_ratio={coverage_stats['conflict_ratio']:.2f}" if "conflict_ratio" in coverage_stats else "",
+                    (
+                        f" | grad_conflict_ratio={coverage_stats['conflict_ratio']:.2f}"
+                        if "conflict_ratio" in coverage_stats
+                        else ""
+                    ),
                 )    
 
             # Giá trị dùng để quyết định "tốt nhất" phụ thuộc monitor_metric

@@ -15,25 +15,20 @@ patience: 5
 weight_decay: !!float 1e-4
 monitor_metric: "val_loss"
 
-# --------------------------------------------------------------
-# CHIẾN LƯỢC TRANSFER LEARNING ĐÃ CHỌN:
-#   "Freeze Backbone + Freeze BatchNorm" -> "Differential LR" ->
-#   "Progressive Unfreezing" .
-# --------------------------------------------------------------
 transfer_learning:
-  lr_head: !!float 1e-4          # classifier học nhanh
-  lr_backbone: !!float 1e-5       # backbone (khi mở) học chậm hơn 10x
-  freeze_bn: true          # BatchNorm luôn đóng băng cho tới stage "full"
-  # Stage 1 (baseline, cell gốc "01_baseline"): warm-up head, sau đó mở dần.
-  freeze_schedule:
-    0: "head_only"    # epoch 0-4: chỉ train classifier
-    5: "last_block"   # epoch 5-14: mở 3 block cuối của backbone
-    15: "full"         # epoch 15+: mở toàn bộ (nếu dataset đủ lớn)
-  # Stage 2 (rule-regularized fine-tuning, "05_rules_model"): tiếp tục từ
-  # baseline đã hội tụ nên có thể mở sớm hơn, không cần warm-up dài.
-  freeze_schedule_stage2:
-    0: "last_block"
-    10: "full"
+  lr_head: !!float 1e-4
+  lr_backbone: !!float 1e-5
+
+baseline_comparison:
+  selected_architecture: mobilenetv3_small
+  architectures:
+    - mobilenetv3_small
+    - resnet50
+    - densenet121
+    - efficientnet_b0
+    - swin_t
+    - vit_b_16
+  pretrained: true
 
 rules:
   min_support: 0.01
@@ -51,7 +46,6 @@ rule_penalty:
 # mỗi bước train CNN, xem src/rules/bayesian_penalty.py).
 rule_penalty_bayesian:
   K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
-  resolve_loss_conflict: true  # bật PCGrad giữa CE loss và rule-penalty loss
 
 # Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
 # GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.
@@ -72,5 +66,5 @@ gflownet:
   w_acc: 1.0
   w_cov: 0.5
   w_conflict: 0.5
-  beta: 1.0
-  grad_clip_max_norm : None
+  beta: 3.0
+  grad_clip_max_norm : 5.0

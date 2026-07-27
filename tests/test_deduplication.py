@@ -78,7 +78,7 @@ def test_save_rules_excel_shared_across_pipeline(tmp_path):
 def test_feature_extractor_shares_backbone_factory():
     """CNNBaseline và FeatureExtractor phải cho ra kiến trúc backbone giống hệt
     nhau (cùng dùng _build_mobilenet_v3), tránh code xây dựng model bị lặp."""
-    model_a = CNNBaseline(num_classes=5, freeze_stage="head_only")
+    model_a = CNNBaseline(num_classes=5)
     model_b = FeatureExtractor(num_classes=5)
     keys_a = set(model_a.backbone.state_dict().keys())
     keys_b = set(model_b.backbone.state_dict().keys())

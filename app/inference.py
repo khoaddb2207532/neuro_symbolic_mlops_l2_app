@@ -11,11 +11,11 @@ import torch
 from PIL import Image
 
 from src.data.dataset import NeuroSymbolicDataset
-from src.models.cnn import CNNBaseline
+from src.models.cnn import ImageClassificationBaseline
 from src.rules.penalty import BinaryTransformer
 from src.rules.rule_types import RuleSet
 from src.utils.checkpoint import load_model_weights
-from src.utils.config import load_params
+from src.utils.config import load_params, selected_baseline_architecture
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -50,8 +50,13 @@ class InferenceService:
             logger.warning("Không tìm thấy data_dir để lấy tên class, dùng chỉ số thay thế.")
             return [f"class_{i}" for i in range(self.params["num_classes"])]
 
-    def _load_model(self, model_path: str) -> CNNBaseline:
-        model = CNNBaseline(num_classes=self.params["num_classes"], freeze_stage="full")
+    def _load_model(self, model_path: str) -> ImageClassificationBaseline:
+        architecture = selected_baseline_architecture(self.params)
+        model = ImageClassificationBaseline(
+            architecture=architecture,
+            num_classes=self.params["num_classes"],
+            pretrained=False,
+        )
         # required=True: app serving PHẢI có model đã huấn luyện, không được
         # âm thầm chạy trên trọng số ImageNet chưa fine-tune.
         load_model_weights(model, model_path, self.device, required=True)

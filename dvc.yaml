@@ -24,12 +24,35 @@ stages:
     - outputs/01_baseline/dvclive_baseline/metrics.json:
         cache: true
 
+  train_all_baselines:
+    cmd: python -m pipelines.train_all_baselines --config params.yaml
+    deps:
+    - pipelines/train_all_baselines.py
+    - src/models/cnn.py
+    - src/training/trainer.py
+    - src/data/dataset.py
+    params:
+    - seed
+    - data_dir
+    - num_classes
+    - batch_size
+    - num_epochs
+    - patience
+    - weight_decay
+    - transfer_learning
+    - baseline_comparison.architectures
+    - baseline_comparison.pretrained
+    outs:
+    - outputs/baseline_comparison
+
   extract_features:
     cmd: python -m pipelines.stage2_extract_features --config params.yaml
     deps:
     - pipelines/stage2_extract_features.py
     - src/data/features.py
-    - outputs/01_baseline/baseline_best.pth
+    - outputs/baseline_comparison
+    params:
+    - baseline_comparison.selected_architecture
     outs:
     - outputs/02_features
 
@@ -82,10 +105,11 @@ stages:
     - src/rules/penalty.py
     - src/training/trainer.py
     - src/utils/checkpoint.py
-    - outputs/01_baseline/baseline_best.pth
+    - outputs/baseline_comparison
     - outputs/04_filtered_rules/valid_rules.pkl
     - outputs/04_filtered_rules/selected_rules.pkl
     params:
+    - baseline_comparison.selected_architecture
     - transfer_learning
     - rule_penalty
     outs:
@@ -102,10 +126,11 @@ stages:
     - src/gflownet/rule_ranking_analysis.py
     - src/training/trainer.py
     - src/utils/checkpoint.py
-    - outputs/01_baseline/baseline_best.pth
+    - outputs/baseline_comparison
     - outputs/04_filtered_rules/gflownet_best.pth
     - outputs/04_filtered_rules/gflownet_rule_order.pkl
     params:
+    - baseline_comparison.selected_architecture
     - transfer_learning
     - rule_penalty
     - rule_penalty_bayesian

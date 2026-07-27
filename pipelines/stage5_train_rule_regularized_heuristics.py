@@ -33,13 +33,17 @@ from sklearn.metrics import f1_score
 
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
-from src.models.cnn import CNNBaseline
+from src.models.cnn import ImageClassificationBaseline
 from src.rules.io import save_rules_excel
 from src.rules.rule_types import Rule, RuleSet
 from src.rules.validator import RuleValidator
 from src.training.trainer import train_model
 from src.utils.checkpoint import load_model_weights
-from src.utils.config import load_params
+from src.utils.config import (
+    load_params,
+    selected_baseline_architecture,
+    selected_baseline_checkpoint,
+)
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
 
@@ -194,23 +198,22 @@ def train_and_evaluate(
             "giống hệt baseline không có luật.", method_name,
         )
 
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
+    architecture = selected_baseline_architecture(params)
+    model = ImageClassificationBaseline(
+        architecture=architecture,
+        num_classes=params["num_classes"],
+        pretrained=False,
+    )
     # Nạp lại đúng trọng số baseline (stage1) cho CẢ 3 phương pháp — đảm bảo
     # chênh lệch cuối cùng CHỈ đến từ cách chọn luật, không phải từ 3 baseline
     # xuất phát khác nhau.
     load_model_weights(model, baseline_ckpt, device, required=True)
 
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule_stage2"].items()}
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
-        "freeze_bn": params["transfer_learning"]["freeze_bn"],
-        "freeze_schedule": freeze_schedule,
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "use_scheduler": True,
-        "scheduler_factor": 0.1,
-        "scheduler_patience": 3,
         "dvclive_path": os.path.join(save_dir, f"dvclive_rule_regularized_{method_name}"),
         "save_dir": save_dir,
     }
@@ -272,7 +275,7 @@ def main(params_path: str, methods: List[str], random_seed: int) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- Kiểm tra điều kiện tiên quyết: stage1-3 phải đã chạy xong ---
-    baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    baseline_ckpt = selected_baseline_checkpoint(params)
     features_dir = os.path.join(params["output_dir"], "02_features")
     raw_rules_path = os.path.join(params["output_dir"], "03_rules", "raw_rules.pkl")
     required_paths = [

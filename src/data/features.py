@@ -31,7 +31,8 @@ def extract_and_save_features(model, dataloaders: dict, output_dir: str, device=
         for split in valid_splits:
             all_features, all_labels = [], []
             for images, labels in tqdm(dataloaders[split], desc=f"Extracting {split}"):
-                feats = model(images.to(device))
+                output = model(images.to(device))
+                feats = output[1] if isinstance(output, (tuple, list)) else output
                 all_features.append(feats.cpu())
                 all_labels.append(labels.cpu())
             torch.save(torch.cat(all_features, 0), os.path.join(output_dir, f"{split}_features.pt"))
