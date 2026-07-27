@@ -134,6 +134,15 @@ def main(params_path: str) -> None:
         config=train_cfg,
     )
 
+    sampling_summary = penalty_module.save_sampling_summary(save_dir)
+    logger.info(
+        "Đã lưu %d/%d luật từng được GFlowNet sample từ %d ruleset vào %s.",
+        sampling_summary["n_rules_ever_sampled"],
+        sampling_summary["n_valid_rules"],
+        sampling_summary["total_sampled_rulesets"],
+        save_dir,
+    )
+
     evaluate_model_performance(
         model, test_loader, device, class_names,
         title="Rule-Regularized CNN Performance (Bayesian marginalization)", output_dir=save_dir,

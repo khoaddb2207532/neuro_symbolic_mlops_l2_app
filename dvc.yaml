@@ -138,6 +138,9 @@ stages:
     - rule_penalty_bayesian
     outs:
     - outputs/05b_rules_model_bayesian/final_model_weights.pth
+    - outputs/05b_rules_model_bayesian/gflownet_sampled_rules.pkl
+    - outputs/05b_rules_model_bayesian/gflownet_sampled_rules.xlsx
+    - outputs/05b_rules_model_bayesian/gflownet_sampling_summary.json
     metrics:
     - outputs/05b_rules_model_bayesian/dvclive_rule_regularized_bayesian/metrics.json:
         cache: true

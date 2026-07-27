@@ -35,8 +35,12 @@ riêng biệt (mỗi cái ứng với 1 ruleset) rồi lấy trung bình, chỉ 
 nhiều vì phần tốn kém nhất (tính rule_sat từ features) chỉ làm 1 lần thay vì
 K lần.
 """
+import json
+import os
+import pickle
 from typing import List, Optional
 
+import pandas as pd
 import torch
 import torch.nn as nn
 
@@ -118,6 +122,18 @@ class BayesianRuleMarginalization(nn.Module):
         self.register_buffer("targets", targets)
         self.register_buffer("confs", confs)
         self.register_buffer("_temperature", torch.tensor(float(initial_temp)))
+        # Thống kê gộp trên GPU để không phải ghi file/đồng bộ CPU ở mỗi batch.
+        # persistent=False vì đây là audit của một lần train CNN, không phải
+        # trạng thái cần nạp lại cùng checkpoint mô hình.
+        self.register_buffer(
+            "_sample_counts", torch.zeros(R, dtype=torch.long), persistent=False
+        )
+        self.register_buffer(
+            "_sampled_ruleset_count", torch.zeros((), dtype=torch.long), persistent=False
+        )
+        self.register_buffer(
+            "_sampled_rule_count", torch.zeros((), dtype=torch.long), persistent=False
+        )
 
         self._last_rule_sat: Optional[torch.Tensor] = None
         self._last_masks: Optional[torch.Tensor] = None
@@ -141,7 +157,80 @@ class BayesianRuleMarginalization(nn.Module):
         sampler, không lan truyền gradient ngược vào GFlowNet."""
         traj = self.gflownet.sample_trajectories(self.env, n=self.K, save_logprobs=False)
         masks = traj.terminating_states.tensor.bool().to(device)  # (K, R)
+        self._sample_counts.add_(masks.sum(dim=0, dtype=torch.long))
+        self._sampled_ruleset_count.add_(masks.size(0))
+        self._sampled_rule_count.add_(masks.sum(dtype=torch.long))
         return masks
+
+    def save_sampling_summary(self, output_dir: str) -> dict:
+        """Lưu các luật từng được GFlowNet sample và tần suất inclusion.
+
+        Không ghi từng trajectory trong vòng train vì K ruleset được sample ở
+        mọi batch có thể tạo log rất lớn. Thay vào đó lưu union các luật dưới
+        dạng pickle và bảng thống kê đầy đủ theo đúng thứ tự rule của GFlowNet.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        counts = self._sample_counts.detach().cpu().tolist()
+        total_rulesets = int(self._sampled_ruleset_count.item())
+        total_rule_selections = int(self._sampled_rule_count.item())
+        sampled_indices = [idx for idx, count in enumerate(counts) if count > 0]
+        sampled_rules = [self.valid_rules[idx] for idx in sampled_indices]
+
+        pickle_path = os.path.join(output_dir, "gflownet_sampled_rules.pkl")
+        with open(pickle_path, "wb") as file:
+            pickle.dump(sampled_rules, file)
+
+        rows = []
+        for idx, (rule, count) in enumerate(zip(self.valid_rules, counts)):
+            rows.append(
+                {
+                    "Rule Index": idx,
+                    "Sample Count": count,
+                    "Inclusion Probability": (
+                        count / total_rulesets if total_rulesets else 0.0
+                    ),
+                    "Ever Sampled": count > 0,
+                    "Target Class": rule.target_class,
+                    "Confidence (%)": round(rule.confidence * 100, 2),
+                    "#Features": len(rule.conditions),
+                    "Rule": str(rule),
+                }
+            )
+        excel_path = os.path.join(output_dir, "gflownet_sampled_rules.xlsx")
+        table = pd.DataFrame(
+            rows,
+            columns=[
+                "Rule Index",
+                "Sample Count",
+                "Inclusion Probability",
+                "Ever Sampled",
+                "Target Class",
+                "Confidence (%)",
+                "#Features",
+                "Rule",
+            ],
+        )
+        if not table.empty:
+            table = table.sort_values(
+                ["Sample Count", "Rule Index"], ascending=[False, True]
+            )
+        table.to_excel(excel_path, index=False)
+
+        summary = {
+            "total_sampled_rulesets": total_rulesets,
+            "total_rule_selections": total_rule_selections,
+            "mean_ruleset_size": (
+                total_rule_selections / total_rulesets if total_rulesets else 0.0
+            ),
+            "n_valid_rules": len(self.valid_rules),
+            "n_rules_ever_sampled": len(sampled_rules),
+            "pickle_path": pickle_path,
+            "excel_path": excel_path,
+        }
+        summary_path = os.path.join(output_dir, "gflownet_sampling_summary.json")
+        with open(summary_path, "w", encoding="utf-8") as file:
+            json.dump(summary, file, ensure_ascii=False, indent=2)
+        return summary
 
     def forward(self, features: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
         R = len(self.valid_rules)
