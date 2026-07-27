@@ -17,7 +17,7 @@ monitor_metric: "val_loss"
 
 transfer_learning:
   lr_head: !!float 1e-4
-  lr_backbone: !!float 1e-5
+  lr_backbone: !!float 1e-4
 
 baseline_comparison:
   selected_architecture: mobilenetv3_small

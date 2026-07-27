@@ -10,8 +10,8 @@ def build_optimizer(model: nn.Module, config: Dict):
     weight_decay = config.get("weight_decay", 1e-4)
 
     if hasattr(model, "trainable_param_groups") and "lr_backbone" in config and "lr_head" in config:
-        # Chiến lược Differential LR: backbone (nếu đang mở) học chậm hơn nhiều
-        # so với head, để không phá vỡ đặc trưng pretrained.
+        # Giữ hai nhóm để quan sát/log riêng backbone và head. Cấu hình trung
+        # tâm hiện đặt LR của hai nhóm bằng nhau để fine-tune đồng nhất.
         param_groups = model.trainable_param_groups(
             lr_head=config["lr_head"], lr_backbone=config["lr_backbone"]
         )
