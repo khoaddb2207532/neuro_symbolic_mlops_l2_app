@@ -231,6 +231,9 @@ def train_and_evaluate(
         smoothing=params["rule_penalty"]["smoothing"],
         initial_temp=params["rule_penalty"]["initial_temp"],
         final_temp=params["rule_penalty"]["final_temp"],
+        temp_warmup_epochs=params["rule_penalty"].get("temp_warmup_epochs", 2),
+        temp_anneal_epochs=params["rule_penalty"].get("temp_anneal_epochs", 10),
+        min_epochs_before_early_stop=params["rule_penalty"].get("min_epochs_before_early_stop", 12),
         num_classes=params["num_classes"],
         config=train_cfg,
     )

@@ -41,6 +41,7 @@ import torch
 import torch.nn as nn
 
 from src.rules.rule_types import Rule
+from src.rules.temperature import geometric_temperature
 
 
 class BayesianRuleMarginalization(nn.Module):
@@ -63,6 +64,8 @@ class BayesianRuleMarginalization(nn.Module):
         num_classes: int = 12,
         initial_temp: float = 2.0,
         final_temp: float = 15.0,
+        temp_warmup_epochs: int = 2,
+        temp_anneal_epochs: int = 10,
     ):
         super().__init__()
         if len(valid_rules) != env.n_rules:
@@ -82,6 +85,8 @@ class BayesianRuleMarginalization(nn.Module):
         self.num_classes = num_classes
         self.initial_temp = initial_temp
         self.final_temp = final_temp
+        self.temp_warmup_epochs = temp_warmup_epochs
+        self.temp_anneal_epochs = temp_anneal_epochs
 
         # ---- Frozen sampler: KHÔNG BAO GIỜ cập nhật gradient của GFlowNet
         # trong lúc train CNN — chỉ dùng để sample. ----
@@ -117,12 +122,15 @@ class BayesianRuleMarginalization(nn.Module):
         self._last_rule_sat: Optional[torch.Tensor] = None
         self._last_masks: Optional[torch.Tensor] = None
 
-    def update_temperature(self, epoch: int, total_epochs: int) -> None:
-        """Cùng lịch trình ủ nhiệt độ với `VectorizedRulePenalty` — mềm lúc
-        đầu, cứng dần về cuối."""
-        progress = epoch / max(total_epochs - 1, 1)
-        progress = min(max(progress, 0.0), 1.0)
-        new_temp = self.initial_temp * (1 - progress) + self.final_temp * progress
+    def update_temperature(self, epoch: int) -> None:
+        """Cùng lịch cố định với ``VectorizedRulePenalty``."""
+        new_temp = geometric_temperature(
+            epoch,
+            self.initial_temp,
+            self.final_temp,
+            self.temp_warmup_epochs,
+            self.temp_anneal_epochs,
+        )
         self._temperature.fill_(new_temp)
 
     @torch.no_grad()

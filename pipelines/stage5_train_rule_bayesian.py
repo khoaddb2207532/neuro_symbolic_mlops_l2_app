@@ -80,6 +80,8 @@ def main(params_path: str) -> None:
         num_classes=params["num_classes"],
         initial_temp=params["rule_penalty"]["initial_temp"],
         final_temp=params["rule_penalty"]["final_temp"],
+        temp_warmup_epochs=params["rule_penalty"].get("temp_warmup_epochs", 2),
+        temp_anneal_epochs=params["rule_penalty"].get("temp_anneal_epochs", 10),
     )
 
     dataloaders, train_loader, val_loader, test_loader = create_dataloaders(
@@ -125,6 +127,9 @@ def main(params_path: str) -> None:
         smoothing=params["rule_penalty"]["smoothing"],
         initial_temp=params["rule_penalty"]["initial_temp"],
         final_temp=params["rule_penalty"]["final_temp"],
+        temp_warmup_epochs=params["rule_penalty"].get("temp_warmup_epochs", 2),
+        temp_anneal_epochs=params["rule_penalty"].get("temp_anneal_epochs", 10),
+        min_epochs_before_early_stop=params["rule_penalty"].get("min_epochs_before_early_stop", 12),
         num_classes=params["num_classes"],
         config=train_cfg,
     )

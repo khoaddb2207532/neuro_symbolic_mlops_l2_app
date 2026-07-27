@@ -39,7 +39,10 @@ rule_penalty:
   weight: 0.1
   smoothing: 0.1
   initial_temp: 2.0
-  final_temp: 15.0
+  final_temp: 12.0
+  temp_warmup_epochs: 2
+  temp_anneal_epochs: 10
+  min_epochs_before_early_stop: 12
 
 # Dùng bởi pipelines/stage5_train_rule_bayesian.py — regularization kiểu
 # Bayesian marginalization (frozen GFlowNet sampler, resample K tập luật MỚI

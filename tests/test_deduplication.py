@@ -32,6 +32,7 @@ def test_vectorized_penalty_temperature_is_real_and_used():
     penalty = VectorizedRulePenalty(
         RuleSet(rules=[rule]), penalty_weight=0.1, num_classes=3,
         initial_temp=1.0, final_temp=50.0,
+        temp_warmup_epochs=0, temp_anneal_epochs=10,
     )
     assert hasattr(penalty, "update_temperature")
     assert hasattr(penalty, "_temperature")
@@ -40,11 +41,11 @@ def test_vectorized_penalty_temperature_is_real_and_used():
     features = torch.tensor([[0.5]])  # đúng ngay tại ngưỡng -> sigmoid(0)=0.5 dù nhiệt độ nào
     logits = torch.zeros(1, 3)
 
-    penalty.update_temperature(epoch=0, total_epochs=10)
+    penalty.update_temperature(epoch=0)
     temp_start = penalty._temperature.item()
     loss_soft = penalty(features, logits)
 
-    penalty.update_temperature(epoch=9, total_epochs=10)
+    penalty.update_temperature(epoch=9)
     temp_end = penalty._temperature.item()
     loss_sharp = penalty(features, logits)
 
@@ -52,9 +53,9 @@ def test_vectorized_penalty_temperature_is_real_and_used():
     # Với feature nằm lệch khỏi ngưỡng, rule_sat (và do đó loss) phải khác
     # nhau rõ rệt giữa nhiệt độ thấp (mềm) và nhiệt độ cao (cứng).
     features_offset = torch.tensor([[0.3]])
-    penalty.update_temperature(epoch=0, total_epochs=10)
+    penalty.update_temperature(epoch=0)
     sat_soft = penalty(features_offset, logits)
-    penalty.update_temperature(epoch=9, total_epochs=10)
+    penalty.update_temperature(epoch=9)
     sat_sharp = penalty(features_offset, logits)
     assert sat_soft.item() != pytest.approx(sat_sharp.item())
 

@@ -14,7 +14,7 @@ LỊCH SỬ THIẾT KẾ (đọc để hiểu vì sao có 2 lần đổi hướn
     luật hơn. Khớp mềm bằng sigmoid làm `rule_sat` trở thành hàm khả vi theo
     `features`, nên rule-penalty giờ thực sự regularize được không gian biểu
     diễn (representation), không chỉ quyết định phân loại ở lớp cuối. Nhiệt
-    độ ủ dần cao→thấp qua các epoch để "mềm" lúc đầu (dễ tối ưu, gradient
+    độ ủ dần thấp→cao qua các epoch để "mềm" lúc đầu (dễ tối ưu, gradient
     mượt) rồi "cứng" dần về cuối (khớp luật gần đúng nghĩa boolean thật).
   - `GPUFastRuleValidator.validate()` (dùng ở stage3 để tính support/confidence
     của luật) VẪN dùng so khớp CỨNG — đây là lựa chọn có chủ đích khác: thống
@@ -31,6 +31,7 @@ import torch
 import torch.nn as nn
 
 from src.rules.rule_types import RuleSet
+from src.rules.temperature import geometric_temperature
 
 
 class BinaryTransformer:
@@ -78,6 +79,8 @@ class VectorizedRulePenalty(nn.Module):
         num_classes: int = 12,
         initial_temp: float = 2.0,
         final_temp: float = 15.0,
+        temp_warmup_epochs: int = 2,
+        temp_anneal_epochs: int = 10,
         active_threshold: float = 1.0,
     ):
         super().__init__()
@@ -88,6 +91,8 @@ class VectorizedRulePenalty(nn.Module):
         self.num_classes = num_classes
         self.initial_temp = initial_temp
         self.final_temp = final_temp
+        self.temp_warmup_epochs = temp_warmup_epochs
+        self.temp_anneal_epochs = temp_anneal_epochs
         # Ngưỡng (trên tổng rule_sat của cả batch) để coi 1 luật là "active"
         # trong batch đó — xem last_coverage_stats(). Mặc định 1.0 tương
         # đương "ít nhất khoảng 1 sample khớp gần như hoàn toàn" theo thang
@@ -102,13 +107,15 @@ class VectorizedRulePenalty(nn.Module):
         # đè ngay sau forward() tiếp theo).
         self._last_rule_sat: Optional[torch.Tensor] = None
 
-    def update_temperature(self, epoch: int, total_epochs: int) -> None:
-        """Gọi mỗi epoch (từ trainer.py) để ủ nhiệt độ tuyến tính: mềm lúc đầu
-        (gradient mượt, dễ tối ưu) -> cứng dần về cuối (khớp luật gần đúng
-        boolean thật)."""
-        progress = epoch / max(total_epochs - 1, 1)
-        progress = min(max(progress, 0.0), 1.0)
-        new_temp = self.initial_temp * (1 - progress) + self.final_temp * progress
+    def update_temperature(self, epoch: int) -> None:
+        """Ủ theo lịch cố định, không phụ thuộc giới hạn ``num_epochs``."""
+        new_temp = geometric_temperature(
+            epoch,
+            self.initial_temp,
+            self.final_temp,
+            self.temp_warmup_epochs,
+            self.temp_anneal_epochs,
+        )
         self._temperature.fill_(new_temp)
 
     def forward(self, features: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:

@@ -213,6 +213,9 @@ def train_model(
     num_classes: int = 12,
     initial_temp: float = 2.0,
     final_temp: float = 15.0,
+    temp_warmup_epochs: int = 2,
+    temp_anneal_epochs: int = 10,
+    min_epochs_before_early_stop: int = 0,
     config: Optional[Dict] = None,
     penalty_module: Optional[nn.Module] = None,
 ) -> Tuple[nn.Module, dict]:
@@ -236,6 +239,21 @@ def train_model(
     optimizer = build_optimizer(model, cfg)
 
     is_rule_regularized_run = penalty_weight > 0 or penalty_module is not None
+    if temp_warmup_epochs < 0 or temp_anneal_epochs < 1:
+        raise ValueError("temp_warmup_epochs >= 0 và temp_anneal_epochs >= 1.")
+    if min_epochs_before_early_stop < 0:
+        raise ValueError("min_epochs_before_early_stop không được âm.")
+    if is_rule_regularized_run:
+        anneal_end_epoch = temp_warmup_epochs + temp_anneal_epochs
+        if min_epochs_before_early_stop < anneal_end_epoch:
+            logger.warning(
+                "min_epochs_before_early_stop=%d nhỏ hơn thời điểm hoàn tất ủ T=%d; "
+                "tự nâng lên %d để early stopping không cắt ngang lịch ủ.",
+                min_epochs_before_early_stop,
+                anneal_end_epoch,
+                anneal_end_epoch,
+            )
+            min_epochs_before_early_stop = anneal_end_epoch
     ckpt_name = os.path.join(cfg["save_dir"], "rule_regularized_best.pth" if is_rule_regularized_run else "baseline_best.pth")
     monitor_metric = cfg["monitor_metric"]
     if monitor_metric not in MONITOR_MODES:
@@ -251,6 +269,8 @@ def train_model(
             rule_set, penalty_weight=penalty_weight, use_confidence=use_confidence,
             smoothing=smoothing, num_classes=num_classes,
             initial_temp=initial_temp, final_temp=final_temp,
+            temp_warmup_epochs=temp_warmup_epochs,
+            temp_anneal_epochs=temp_anneal_epochs,
         ).to(device)
     elif penalty_module is not None:
         penalty_module = penalty_module.to(device)
@@ -273,13 +293,16 @@ def train_model(
                 "total_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
                 "initial_temp": initial_temp, 
                 "final_temp": final_temp,
+                "temp_warmup_epochs": temp_warmup_epochs,
+                "temp_anneal_epochs": temp_anneal_epochs,
+                "min_epochs_before_early_stop": min_epochs_before_early_stop,
             }
         )
 
         for epoch in range(num_epochs):
             # ---- Ủ nhiệt độ khớp luật: mềm ở epoch đầu -> cứng dần về cuối ----
             if penalty_module is not None:
-                penalty_module.update_temperature(epoch, num_epochs)
+                penalty_module.update_temperature(epoch)
                 live.log_metric("rules/temperature", penalty_module._temperature.item())
 
             train_loss, train_ce, train_penalty, train_acc, coverage_stats = train_one_epoch(
@@ -346,6 +369,12 @@ def train_model(
             # Một lời gọi duy nhất quyết định "đây có phải điểm tốt nhất chưa?"
             # -- vừa dùng cho quyết định lưu checkpoint, vừa cho patience counter.
             is_best = stopper(monitor_value)
+            early_stop_enabled = epoch + 1 >= min_epochs_before_early_stop
+            if not early_stop_enabled:
+                # Vẫn theo dõi/lưu best checkpoint trong giai đoạn ủ, nhưng patience
+                # chỉ bắt đầu có hiệu lực sau khi lịch nhiệt độ đã hoàn tất.
+                stopper.counter = 0
+                stopper.early_stop = False
             if is_best:
                 best_acc = val_acc  # vẫn ghi nhận accuracy để log/báo cáo, dù đang theo dõi metric khác
                 best_weights = copy.deepcopy(model.state_dict())
@@ -356,7 +385,7 @@ def train_model(
                 live.log_metric("best_val_acc", best_acc)
                 live.log_metric(f"best_{monitor_metric}", monitor_value)
 
-            if stopper.early_stop:
+            if early_stop_enabled and stopper.early_stop:
                 logger.info("Early stopping triggered.")
                 live.log_metric("early_stop", 1)
                 break
@@ -365,7 +394,12 @@ def train_model(
 
     elapsed = time.time() - start_time
     if penalty_module is not None:
-        progress_pct = (penalty_module._temperature.item() - initial_temp) / (final_temp - initial_temp) * 100
+        temp_span = final_temp - initial_temp
+        progress_pct = (
+            (penalty_module._temperature.item() - initial_temp) / temp_span * 100
+            if abs(temp_span) > 1e-12
+            else 100.0
+        )
         logger.info("Nhiệt độ dừng ở %.2f (%.1f%% quãng đường ủ dự kiến)", penalty_module._temperature.item(), progress_pct)
     logger.info("Training complete in %.2f minutes | Best Val Acc: %.4f", elapsed / 60, best_acc)
 
