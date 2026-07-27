@@ -132,7 +132,12 @@ def train_one_epoch(
         logits, features = outputs if isinstance(outputs, (tuple, list)) and len(outputs) == 2 else (outputs, None)
 
         ce_loss = criterion(logits, labels)
-        penalty = penalty_module(features, logits) if penalty_module is not None else torch.tensor(0.0, device=device)
+        if penalty_module is None:
+            penalty = torch.tensor(0.0, device=device)
+        elif getattr(penalty_module, "uses_images", False):
+            penalty = penalty_module(images, logits)
+        else:
+            penalty = penalty_module(features, logits)
 
         has_conflict = _has_gradient_conflict(ce_loss, penalty, trainable_params)
         if has_conflict is not None:
@@ -322,10 +327,13 @@ def train_model(
             history["val_acc"].append(val_acc)
             history["val_loss"].append(val_loss)
 
-            logger.info(
-                "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LRs %s ",
-                epoch + 1, num_epochs, train_loss, train_acc, train_ce, train_penalty, val_loss, val_acc, lr_details,
-            )
+            should_log_epoch = (epoch + 1) % 5 == 0
+            if should_log_epoch:
+                logger.info(
+                    "Epoch %d/%d | Train Loss %.4f | Train Acc %.4f | CE %.4f | Penalty %.4f | Val Loss %.4f | Val Acc %.4f | LRs %s",
+                    epoch + 1, num_epochs, train_loss, train_acc, train_ce,
+                    train_penalty, val_loss, val_acc, lr_details,
+                )
             # DVCLive theo dõi đầy đủ 4 metric chính: train_loss, train_acc,
             # val_loss, val_acc — cộng thêm breakdown loss (ce/penalty) và lr.
             live.log_metric("train/loss", train_loss)
@@ -348,19 +356,20 @@ def train_model(
                     live.log_metric("rules/mean_ruleset_size", coverage_stats["mean_ruleset_size"])
                 if "conflict_ratio" in coverage_stats:
                     live.log_metric("rules/grad_conflict_ratio", coverage_stats["conflict_ratio"])
-                logger.info(
-                    "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | T=%.2f%s",
-                    round(coverage_stats["coverage_ratio"] * coverage_stats["n_rules_total"]),
-                    coverage_stats["n_rules_total"],
-                    coverage_stats["coverage_ratio"] * 100,
-                    coverage_stats["mean_rule_sat"],
-                    penalty_module._temperature.item(),
-                    (
-                        f" | grad_conflict_ratio={coverage_stats['conflict_ratio']:.2f}"
-                        if "conflict_ratio" in coverage_stats
-                        else ""
-                    ),
-                )    
+                if should_log_epoch:
+                    logger.info(
+                        "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | T=%.2f%s",
+                        round(coverage_stats["coverage_ratio"] * coverage_stats["n_rules_total"]),
+                        coverage_stats["n_rules_total"],
+                        coverage_stats["coverage_ratio"] * 100,
+                        coverage_stats["mean_rule_sat"],
+                        penalty_module._temperature.item(),
+                        (
+                            f" | grad_conflict_ratio={coverage_stats['conflict_ratio']:.2f}"
+                            if "conflict_ratio" in coverage_stats
+                            else ""
+                        ),
+                    )
 
             # Giá trị dùng để quyết định "tốt nhất" phụ thuộc monitor_metric
             # (val_acc -> mode='max', val_loss -> mode='min'), xem MONITOR_MODES.

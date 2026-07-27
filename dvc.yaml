@@ -144,6 +144,26 @@ stages:
     metrics:
     - outputs/05b_rules_model_bayesian/dvclive_rule_regularized_bayesian/metrics.json:
         cache: true
+
+  train_rule_distillation:
+    cmd: python -m pipelines.stage5_distillation --config params.yaml
+    deps:
+    - pipelines/stage5_distillation.py
+    - src/rules/distillation.py
+    - src/training/trainer.py
+    - src/utils/checkpoint.py
+    - outputs/baseline_comparison
+    - outputs/04_filtered_rules/selected_rules.pkl
+    params:
+    - baseline_comparison.selected_architecture
+    - transfer_learning
+    - rule_penalty
+    - rule_distillation
+    outs:
+    - outputs/05c_rules_distillation/final_model_weights.pth
+    metrics:
+    - outputs/05c_rules_distillation/dvclive_rule_distillation/metrics.json:
+        cache: true
 params:
 - outputs/01_baseline/dvclive_baseline/params.yaml
 - outputs/01_baseline/dvclive_baseline/params.yaml

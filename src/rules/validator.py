@@ -66,7 +66,11 @@ class RuleValidator:
         correct_chunks: List[torch.Tensor] = []
         rule_len_chunks: List[torch.Tensor] = []
 
-        for i in tqdm(range(0, len(rule_set.rules), self.rule_batch_size), desc="Validate + build tensors"):
+        for i in tqdm(
+            range(0, len(rule_set.rules), self.rule_batch_size),
+            desc="Validate + build tensors",
+            disable=True,
+        ):
             batch_rules = rule_set.rules[i : i + self.rule_batch_size]
             B = len(batch_rules)
             feat_idx, thresholds, ops, valid_m, targets = self._build_rule_tensors(batch_rules, device)

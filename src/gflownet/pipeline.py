@@ -287,7 +287,9 @@ class BaseGFlowNetPipeline(abc.ABC):
             os.path.join(output_dir, "gflownet_best_diverse.pth")
         )
 
-        pbar = tqdm(range(num_iterations), desc="GFlowNet (torchgfn)")
+        pbar = tqdm(
+            range(num_iterations), desc="GFlowNet (torchgfn)", disable=True
+        )
         for it in pbar:
             in_warmup = it < logZ_warmup_steps
 
@@ -336,12 +338,19 @@ class BaseGFlowNetPipeline(abc.ABC):
 
                     live.log_metric("val/tb_residual", tb_residual)
 
-                logger.info("Iter %d: ema=%.4f best (%d rules), tb_residual=%.4f \n", it + 1, ema_val, len(elite.best_selected), tb_residual)
-                logger.info(
-                    "Loss= %.4f : avg_log_r= %.4f : logZ= %.4f : grad_norm= %.4f : lr= %.6g",
-                    loss.item(), avg_log_r, logZ_val,
-                    grad_norm.item(), optimizer.param_groups[0]["lr"],
-                )
+                if (it + 1) % 100 == 0:
+                    logger.info(
+                        "Iter %d: ema=%.4f best (%d rules), tb_residual=%.4f",
+                        it + 1,
+                        ema_val,
+                        len(elite.best_selected),
+                        tb_residual,
+                    )
+                    logger.info(
+                        "Loss= %.4f : avg_log_r= %.4f : logZ= %.4f : grad_norm= %.4f : lr= %.6g",
+                        loss.item(), avg_log_r, logZ_val,
+                        grad_norm.item(), optimizer.param_groups[0]["lr"],
+                    )
 
             if live is not None:
                 live.next_step()

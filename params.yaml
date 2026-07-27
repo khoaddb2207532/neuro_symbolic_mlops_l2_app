@@ -44,6 +44,13 @@ rule_penalty:
   temp_anneal_epochs: 10
   min_epochs_before_early_stop: 12
 
+# Student khởi tạo từ ImageNet; teacher baseline đóng băng chỉ tạo feature để
+# các luật đã chọn bỏ phiếu thành soft targets.
+rule_distillation:
+  weight: 0.1
+  temperature: 2.0
+  use_confidence: true
+
 # Dùng bởi pipelines/stage5_train_rule_bayesian.py — regularization kiểu
 # Bayesian marginalization (frozen GFlowNet sampler, resample K tập luật MỚI
 # mỗi bước train CNN, xem src/rules/bayesian_penalty.py).
