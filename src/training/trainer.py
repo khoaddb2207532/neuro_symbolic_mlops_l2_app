@@ -238,7 +238,10 @@ def train_model(
     best_weights = copy.deepcopy(model.state_dict())
     start_time = time.time()
 
-    with Live(dir=cfg["dvclive_path"]) as live:
+    # DVC itself orchestrates the pipeline.  Disabling DVCLive's implicit
+    # experiment save avoids checking outputs from unrelated stages and avoids
+    # repeatedly appending generated params/metrics/plots to dvc.yaml.
+    with Live(dir=cfg["dvclive_path"], save_dvc_exp=False) as live:
         live.log_params(
             {
                 "num_epochs": num_epochs, "lr": lr, "patience": patience,

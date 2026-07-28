@@ -194,7 +194,11 @@ class BaseGFlowNetPipeline(abc.ABC):
         samples = gflownet.to_training_samples(trajectories)
 
         optimizer.zero_grad()
-        loss = gflownet.loss(env=env, trajectories = samples, recalculate_all_logprobs = False)
+        # The second argument has a different name for each torchgfn objective:
+        # ``trajectories`` (TB), ``transitions`` (DB), and ``states_container``
+        # (FM).  Passing it positionally keeps this shared training path valid
+        # for all three objectives and across torchgfn releases.
+        loss = gflownet.loss(env, samples, recalculate_all_logprobs=False)
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(
             gflownet.parameters(), max_norm=self.grad_clip_max_norm
@@ -536,7 +540,14 @@ class BaseGFlowNetPipeline(abc.ABC):
                     "use_dvc=True nhưng chưa cài dvclive (`pip install dvclive`) — bỏ qua tracking DVC."
                 )
             else:
-                live = Live(dir=dvc_dir or os.path.join(output_dir, "dvclive"), report="html")
+                # DVC owns stage orchestration.  Let DVCLive write metrics only;
+                # auto-saving an experiment here makes it validate unrelated
+                # stage outputs, which may legitimately be absent on Kaggle.
+                live = Live(
+                    dir=dvc_dir or os.path.join(output_dir, "dvclive"),
+                    report="html",
+                    save_dvc_exp=False,
+                )
                 live.log_params(
                     {
                         "loss_type": loss_type,
