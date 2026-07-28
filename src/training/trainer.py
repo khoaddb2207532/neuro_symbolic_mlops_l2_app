@@ -53,43 +53,6 @@ def save_checkpoint(path: str, model: nn.Module, optimizer, epoch: int, best_acc
     )
 
 
-def _has_gradient_conflict(
-    ce_loss: torch.Tensor,
-    penalty: torch.Tensor,
-    params: list,
-) -> Optional[bool]:
-    """Đo xung đột gradient để quan sát, không thay đổi gradient huấn luyện.
-
-    Trả về ``None`` khi penalty không có gradient hoặc một trong hai gradient
-    có norm bằng 0. Graph được giữ lại để sau đó vẫn gọi
-    ``(ce_loss + penalty).backward()`` theo cách thông thường.
-    """
-    if not (penalty.requires_grad and penalty.grad_fn is not None):
-        return None
-
-    ce_grads = torch.autograd.grad(
-        ce_loss, params, retain_graph=True, allow_unused=True
-    )
-    penalty_grads = torch.autograd.grad(
-        penalty, params, retain_graph=True, allow_unused=True
-    )
-
-    dot = ce_loss.new_zeros(())
-    ce_norm_sq = ce_loss.new_zeros(())
-    penalty_norm_sq = ce_loss.new_zeros(())
-    for ce_grad, penalty_grad in zip(ce_grads, penalty_grads):
-        if ce_grad is not None:
-            ce_norm_sq += ce_grad.square().sum()
-        if penalty_grad is not None:
-            penalty_norm_sq += penalty_grad.square().sum()
-        if ce_grad is not None and penalty_grad is not None:
-            dot += (ce_grad * penalty_grad).sum()
-
-    if ce_norm_sq.item() == 0.0 or penalty_norm_sq.item() == 0.0:
-        return None
-    return dot.item() < 0.0
-
-
 def train_one_epoch(
     model, loader, criterion, optimizer, device, penalty_module=None,
 ):
@@ -113,17 +76,12 @@ def train_one_epoch(
     total_loss = total_ce = total_penalty = 0.0
     total_correct = 0
     total_samples = 0
-    n_conflict_batches = 0
-    n_measured_gradient_batches = 0
-
     # Tích luỹ coverage stats qua các batch (weighted theo batch size, giống
     # cách total_loss/total_ce/... được tích luỹ ở trên).
     sum_coverage_ratio = 0.0
     sum_mean_sat = 0.0
     n_rules_total = 0
     has_coverage = penalty_module is not None and hasattr(penalty_module, "last_coverage_stats")
-    trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
-
     for images, labels in loader:
         images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
         optimizer.zero_grad()
@@ -138,11 +96,6 @@ def train_one_epoch(
             penalty = penalty_module(images, logits)
         else:
             penalty = penalty_module(features, logits)
-
-        has_conflict = _has_gradient_conflict(ce_loss, penalty, trainable_params)
-        if has_conflict is not None:
-            n_conflict_batches += int(has_conflict)
-            n_measured_gradient_batches += 1
 
         loss = ce_loss + penalty
         loss.backward()
@@ -173,10 +126,6 @@ def train_one_epoch(
             "coverage_ratio": sum_coverage_ratio / total_samples,
             "mean_rule_sat": sum_mean_sat / total_samples,
         }
-        if n_measured_gradient_batches > 0:
-            coverage_stats["conflict_ratio"] = (
-                n_conflict_batches / n_measured_gradient_batches
-            )
     return (
         total_loss / total_samples,
         total_ce / total_samples,
@@ -354,21 +303,14 @@ def train_model(
                 live.log_metric("rules/mean_satisfaction", coverage_stats["mean_rule_sat"])
                 if "mean_ruleset_size" in coverage_stats:
                     live.log_metric("rules/mean_ruleset_size", coverage_stats["mean_ruleset_size"])
-                if "conflict_ratio" in coverage_stats:
-                    live.log_metric("rules/grad_conflict_ratio", coverage_stats["conflict_ratio"])
                 if should_log_epoch:
                     logger.info(
-                        "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | T=%.2f%s",
+                        "  Rule coverage: %d/%d luật active (%.1f%%) | mean_rule_sat=%.4f | T=%.2f",
                         round(coverage_stats["coverage_ratio"] * coverage_stats["n_rules_total"]),
                         coverage_stats["n_rules_total"],
                         coverage_stats["coverage_ratio"] * 100,
                         coverage_stats["mean_rule_sat"],
                         penalty_module._temperature.item(),
-                        (
-                            f" | grad_conflict_ratio={coverage_stats['conflict_ratio']:.2f}"
-                            if "conflict_ratio" in coverage_stats
-                            else ""
-                        ),
                     )
 
             # Giá trị dùng để quyết định "tốt nhất" phụ thuộc monitor_metric

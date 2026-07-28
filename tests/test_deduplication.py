@@ -69,6 +69,23 @@ def test_vectorized_penalty_forward_runs():
     assert loss.dim() == 0  # scalar
 
 
+def test_vectorized_penalty_rule_tensors_are_registered_buffers():
+    rules = [
+        Rule(
+            [Condition(0, "<=", 0.5), Condition(2, ">", -0.25)],
+            target_class=1,
+            confidence=0.8,
+        )
+    ]
+    penalty = VectorizedRulePenalty(RuleSet(rules=rules), num_classes=3)
+    buffers = dict(penalty.named_buffers())
+
+    assert {"feat_idx", "thresholds", "ops", "valid_m", "targets", "confs"} <= buffers.keys()
+    assert penalty.feat_idx.tolist() == [[0, 2]]
+    assert penalty.ops.tolist() == [[False, True]]
+    assert penalty.valid_m.tolist() == [[True, True]]
+
+
 def test_save_rules_excel_shared_across_pipeline(tmp_path):
     rules = [Rule([Condition(0, "<=", 0.5)], target_class=0, confidence=0.9)]
     out_path = tmp_path / "rules.xlsx"
