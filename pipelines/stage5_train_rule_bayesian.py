@@ -143,6 +143,15 @@ def main(params_path: str) -> None:
         save_dir,
     )
 
+    for item in sampling_summary["top_impact_rules"][:5]:
+        logger.info(
+            "Rule impact #%d: index=%d | contribution=%.6f | share=%.2f%%",
+            item["rank"],
+            item["rule_index"],
+            item["cumulative_penalty_contribution"],
+            item["contribution_share"] * 100.0,
+        )
+
     evaluate_model_performance(
         model, test_loader, device, class_names,
         title="Rule-Regularized CNN Performance (Bayesian marginalization)", output_dir=save_dir,

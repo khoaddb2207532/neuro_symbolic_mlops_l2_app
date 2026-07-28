@@ -134,6 +134,16 @@ class BayesianRuleMarginalization(nn.Module):
         self.register_buffer(
             "_sampled_rule_count", torch.zeros((), dtype=torch.long), persistent=False
         )
+        # Audit loss contribution per rule without changing the training loss.
+        self.register_buffer(
+            "_contribution_sum", torch.zeros(R, dtype=torch.float64), persistent=False
+        )
+        self.register_buffer(
+            "_normalized_weight_sum", torch.zeros(R, dtype=torch.float64), persistent=False
+        )
+        self.register_buffer(
+            "_contribution_step_count", torch.zeros((), dtype=torch.long), persistent=False
+        )
 
         self._last_rule_sat: Optional[torch.Tensor] = None
         self._last_masks: Optional[torch.Tensor] = None
@@ -171,8 +181,23 @@ class BayesianRuleMarginalization(nn.Module):
         """
         os.makedirs(output_dir, exist_ok=True)
         counts = self._sample_counts.detach().cpu().tolist()
+        contributions = self._contribution_sum.detach().cpu().tolist()
+        normalized_weights = self._normalized_weight_sum.detach().cpu().tolist()
+        contribution_steps = int(self._contribution_step_count.item())
         total_rulesets = int(self._sampled_ruleset_count.item())
         total_rule_selections = int(self._sampled_rule_count.item())
+        total_contribution = float(sum(contributions))
+        contribution_ranking = sorted(
+            range(len(contributions)),
+            key=lambda idx: (-contributions[idx], idx),
+        )
+        impact_rank = {
+            idx: rank
+            for rank, idx in enumerate(
+                (idx for idx in contribution_ranking if contributions[idx] > 0),
+                start=1,
+            )
+        }
         sampled_indices = [idx for idx, count in enumerate(counts) if count > 0]
         sampled_rules = [self.valid_rules[idx] for idx in sampled_indices]
 
@@ -182,9 +207,25 @@ class BayesianRuleMarginalization(nn.Module):
 
         rows = []
         for idx, (rule, count) in enumerate(zip(self.valid_rules, counts)):
+            contribution = float(contributions[idx])
             rows.append(
                 {
                     "Rule Index": idx,
+                    "Impact Rank": impact_rank.get(idx),
+                    "Cumulative Penalty Contribution": contribution,
+                    "Mean Penalty Contribution per Step": (
+                        contribution / contribution_steps if contribution_steps else 0.0
+                    ),
+                    "Contribution Share (%)": (
+                        contribution / total_contribution * 100.0
+                        if total_contribution > 0
+                        else 0.0
+                    ),
+                    "Mean Normalized Selection Weight": (
+                        float(normalized_weights[idx]) / contribution_steps
+                        if contribution_steps
+                        else 0.0
+                    ),
                     "Sample Count": count,
                     "Inclusion Probability": (
                         count / total_rulesets if total_rulesets else 0.0
@@ -201,6 +242,11 @@ class BayesianRuleMarginalization(nn.Module):
             rows,
             columns=[
                 "Rule Index",
+                "Impact Rank",
+                "Cumulative Penalty Contribution",
+                "Mean Penalty Contribution per Step",
+                "Contribution Share (%)",
+                "Mean Normalized Selection Weight",
                 "Sample Count",
                 "Inclusion Probability",
                 "Ever Sampled",
@@ -212,7 +258,8 @@ class BayesianRuleMarginalization(nn.Module):
         )
         if not table.empty:
             table = table.sort_values(
-                ["Sample Count", "Rule Index"], ascending=[False, True]
+                ["Cumulative Penalty Contribution", "Rule Index"],
+                ascending=[False, True],
             )
         table.to_excel(excel_path, index=False)
 
@@ -224,6 +271,22 @@ class BayesianRuleMarginalization(nn.Module):
             ),
             "n_valid_rules": len(self.valid_rules),
             "n_rules_ever_sampled": len(sampled_rules),
+            "contribution_steps": contribution_steps,
+            "total_cumulative_penalty_contribution": total_contribution,
+            "top_impact_rules": [
+                {
+                    "rank": rank,
+                    "rule_index": idx,
+                    "cumulative_penalty_contribution": float(contributions[idx]),
+                    "contribution_share": (
+                        float(contributions[idx]) / total_contribution
+                        if total_contribution > 0
+                        else 0.0
+                    ),
+                }
+                for rank, idx in enumerate(contribution_ranking[:10], start=1)
+                if contributions[idx] > 0
+            ],
             "pickle_path": pickle_path,
             "excel_path": excel_path,
         }
@@ -276,6 +339,19 @@ class BayesianRuleMarginalization(nn.Module):
         per_ruleset_penalty = masked_sum / mask_count  # (K,) = L_rule_penalty(s_k)/penalty_weight
 
         mc_estimate = per_ruleset_penalty.mean()  # (1/K) * sum_k L_rule_penalty(s_k)/penalty_weight
+        with torch.no_grad():
+            # The vector sums exactly to the scalar penalty for this step.
+            normalized_weight = (masks / mask_count.unsqueeze(1)).mean(dim=0)
+            step_contribution = (
+                self.penalty_weight * avg_loss_full.detach() * normalized_weight
+            )
+            self._normalized_weight_sum.add_(
+                normalized_weight.to(dtype=torch.float64)
+            )
+            self._contribution_sum.add_(
+                step_contribution.to(dtype=torch.float64)
+            )
+            self._contribution_step_count.add_(1)
         return self.penalty_weight * mc_estimate
 
     def last_coverage_stats(self) -> dict:
