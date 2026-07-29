@@ -54,7 +54,9 @@ SelectFn = Callable[[List[Rule], torch.Tensor, torch.Tensor, torch.Tensor, int],
 
 # --------------------------------------------------------------------------
 # 3 thuật toán chọn luật — cùng chữ ký (valid_rules, cover, correct, rule_len,
-# max_rules) -> List[int], để dùng thay thế lẫn nhau trong select_rules().
+# selection_budget) -> List[int], để dùng thay thế lẫn nhau trong
+# select_rules(). Ngân sách này phải bằng số luật GFlowNet thực sự chọn khi
+# chạy thí nghiệm matched-budget.
 # --------------------------------------------------------------------------
 def random_selection(
     valid_rules: List[Rule],
@@ -99,7 +101,9 @@ def greedy_coverage(
 ) -> List[int]:
     """Greedy submodular don gian: lap `max_rules` lan, moi lan chon luat
     lam tang so mau MOI duoc phu (chua tung duoc phu boi cac luat da chon)
-    nhieu nhat. Dung lai neu khong con luat nao tang duoc coverage.
+    nhieu nhat. Neu khong con luat nao tang coverage, van tiep tuc chon theo
+    tie-break deterministic cua ``torch.argmax`` cho den du matched budget.
+    Dieu nay dam bao so sanh cong bang voi GFlowNet ve so luong luat.
     Vector hoa tren GPU/CPU bang tensor `cover` (n_rules, n_val) bool,
     khong dung vong lap python long qua tung luat trong moi vong (chi
     vong lap ngoai qua `max_rules` buoc, moi buoc 1 phep tinh tensor)."""
@@ -116,8 +120,6 @@ def greedy_coverage(
         gains = (cover_bool & ~covered.unsqueeze(0)).sum(dim=1).float()
         gains[selected_mask] = -1.0
         best_idx = int(torch.argmax(gains).item())
-        if gains[best_idx].item() <= 0:
-            break
         selected.append(best_idx)
         selected_mask[best_idx] = True
         covered |= cover_bool[best_idx]
@@ -158,17 +160,42 @@ def select_rules(
         pickle.dump(valid_rule_set, f)
 
     valid_rules = list(valid_rule_set.rules)
-    max_rules = params["gflownet"]["max_rules"]
-    selected_indices = select_fn(valid_rules, cover, correct, rule_len, max_rules)
+    # Trong thí nghiệm matched-budget, notebook/orchestrator đặt
+    # ``selection_budget`` bằng đúng số luật GFlowNet thực sự chọn. Fallback
+    # về gflownet.max_rules giữ tương thích ngược cho các lần chạy cũ.
+    selection_budget = params.get(
+        "selection_budget",
+        params["gflownet"]["max_rules"],
+    )
+    if not isinstance(selection_budget, int) or selection_budget <= 0:
+        raise ValueError(
+            "selection_budget phải là số nguyên dương, nhận "
+            f"{selection_budget!r}."
+        )
+
+    selected_indices = select_fn(
+        valid_rules,
+        cover,
+        correct,
+        rule_len,
+        selection_budget,
+    )
     selected_rules = valid_rule_set.filter_rules(selected_indices).rules  # List[Rule]
+
+    expected_count = min(selection_budget, len(valid_rules))
+    if len(selected_rules) != expected_count:
+        raise RuntimeError(
+            f"[{method_name}] Vi phạm matched-budget: chọn "
+            f"{len(selected_rules)} luật, kỳ vọng {expected_count}."
+        )
 
     with open(os.path.join(output_dir, "selected_rules.pkl"), "wb") as f:
         pickle.dump(selected_rules, f)
     save_rules_excel(selected_rules, os.path.join(output_dir, "selected_rules.xlsx"))
 
     logger.info(
-        "[%s] Đã chọn %d/%d luật hợp lệ (max_rules=%d).",
-        method_name, len(selected_rules), len(valid_rules), max_rules,
+        "[%s] Đã chọn %d/%d luật hợp lệ (selection_budget=%d).",
+        method_name, len(selected_rules), len(valid_rules), selection_budget,
     )
     return selected_rules
 
