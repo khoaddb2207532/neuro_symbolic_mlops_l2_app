@@ -25,6 +25,7 @@ from pipelines.run_core_seed_experiment import (
     _report_metrics,
     _required_dataset_splits,
     _restore_if_available,
+    _safe_extract_tar,
     _write_config,
 )
 
@@ -267,6 +268,14 @@ def run(args: argparse.Namespace) -> None:
 
     save_dir = output_dir / "05b_rules_model_bayesian"
     report = _first_report(save_dir)
+    if report is None:
+        bayesian_archives = sorted(
+            input_root.rglob(f"seed_{args.seed}_bayesian_artifacts.tar.gz")
+        )
+        if bayesian_archives:
+            print("Khôi phục Bayesian artefact từ:", bayesian_archives[0])
+            _safe_extract_tar(bayesian_archives[0], save_dir)
+            report = _first_report(save_dir)
     if report is not None:
         print("SKIP Bayesian Stage 5: đã có report", report)
     else:
@@ -312,19 +321,21 @@ def run(args: argparse.Namespace) -> None:
             }
         )
 
-    core_rows = _load_core_results(
-        input_root,
-        seed=args.seed,
-        backbone=args.backbone,
-    )
-    combined_path, comparison_path = _write_immediate_comparison(
-        working_dir=working_dir,
-        seed=args.seed,
-        backbone=args.backbone,
-        bayesian_accuracy=accuracy,
-        bayesian_f1=f1_macro,
-        core_rows=core_rows,
-    )
+    combined_path = comparison_path = None
+    if not args.defer_comparison:
+        core_rows = _load_core_results(
+            input_root,
+            seed=args.seed,
+            backbone=args.backbone,
+        )
+        combined_path, comparison_path = _write_immediate_comparison(
+            working_dir=working_dir,
+            seed=args.seed,
+            backbone=args.backbone,
+            bayesian_accuracy=accuracy,
+            bayesian_f1=f1_macro,
+            core_rows=core_rows,
+        )
 
     archive = shutil.make_archive(
         str(working_dir / f"seed_{args.seed}_bayesian_artifacts"),
@@ -333,8 +344,9 @@ def run(args: argparse.Namespace) -> None:
     )
     print("\nBayesian Stage 5 hoàn tất:")
     print(" -", results_path)
-    print(" -", combined_path)
-    print(" -", comparison_path)
+    if combined_path is not None:
+        print(" -", combined_path)
+        print(" -", comparison_path)
     print(" -", archive)
 
 
@@ -356,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sampler-checkpoint",
         default="gflownet_best_diverse.pth",
+    )
+    parser.add_argument(
+        "--defer-comparison",
+        action="store_true",
+        help="Chỉ xuất kết quả seed; module batch sẽ tổng hợp sau khi đủ seed.",
     )
     return parser
 
