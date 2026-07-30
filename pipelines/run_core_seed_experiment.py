@@ -12,6 +12,7 @@ Ví dụ:
     python -m pipelines.run_core_seed_experiment \
         --config params.yaml \
         --seed 42 \
+        --backbone mobilenetv3_small \
         --data-dir /kaggle/input/.../vietnamese_cultural_dataset \
         --output-dir /kaggle/working/neuro_symbolic_mlops_l2_app/outputs_seed_42 \
         --kaggle-input-root /kaggle/input
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import re
 import shutil
@@ -34,8 +36,15 @@ import yaml
 from openpyxl import load_workbook
 
 
-BACKBONE = "mobilenetv3_small"
 HEURISTICS = ("random", "topk_confidence", "greedy_coverage")
+SUPPORTED_BACKBONES = (
+    "mobilenetv3_small",
+    "resnet50",
+    "densenet121",
+    "efficientnet_b0",
+    "swin_t",
+    "vit_b_16",
+)
 
 
 def _run_module(project: Path, config_path: Path, module: str, *args: object) -> None:
@@ -55,6 +64,7 @@ def _write_config(
     config_path: Path,
     *,
     seed: int,
+    backbone: str,
     data_dir: Path,
     output_dir: Path,
     selection_budget: Optional[int] = None,
@@ -67,8 +77,8 @@ def _write_config(
     config["num_workers"] = 2
     config["num_epochs"] = 100
     config["patience"] = 5
-    config["baseline_comparison"]["selected_architecture"] = BACKBONE
-    config["baseline_comparison"]["architectures"] = [BACKBONE]
+    config["baseline_comparison"]["selected_architecture"] = backbone
+    config["baseline_comparison"]["architectures"] = [backbone]
     config["gflownet"]["loss_type"] = "db"
     if selection_budget is None:
         config.pop("selection_budget", None)
@@ -107,7 +117,37 @@ def _find_restorable_output(input_root: Path, seed: int) -> Tuple[str, Path] | N
     return None
 
 
-def _restore_if_available(input_root: Optional[Path], output_dir: Path, seed: int) -> None:
+def _validate_output_identity(output_dir: Path, seed: int, backbone: str) -> None:
+    metadata_path = output_dir / "experiment_metadata.json"
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if int(metadata.get("seed", -1)) != seed or metadata.get("backbone") != backbone:
+            raise ValueError(
+                "Kaggle Input không khớp thí nghiệm yêu cầu: "
+                f"metadata={metadata}, requested={{'seed': {seed}, "
+                f"'backbone': '{backbone}'}}."
+            )
+        return
+
+    # Tương thích output cũ chưa có metadata: suy ra backbone từ thư mục
+    # baseline. Không cho phép dùng feature/rule của backbone khác.
+    baseline_root = output_dir / "baseline_comparison"
+    model_dirs = sorted(
+        path.name for path in baseline_root.iterdir() if path.is_dir()
+    ) if baseline_root.is_dir() else []
+    if model_dirs and backbone not in model_dirs:
+        raise ValueError(
+            f"Output restore chứa backbone {model_dirs}, không phải {backbone}. "
+            "Hãy Add Input đúng notebook/backbone."
+        )
+
+
+def _restore_if_available(
+    input_root: Optional[Path],
+    output_dir: Path,
+    seed: int,
+    backbone: str,
+) -> None:
     if input_root is None or not input_root.is_dir():
         return
     source = _find_restorable_output(input_root, seed)
@@ -125,6 +165,7 @@ def _restore_if_available(input_root: Optional[Path], output_dir: Path, seed: in
         shutil.copytree(path, output_dir, dirs_exist_ok=True)
     else:
         _safe_extract_tar(path, output_dir)
+    _validate_output_identity(output_dir, seed, backbone)
 
 
 def _xlsx_row_count(path: Path) -> int:
@@ -184,15 +225,24 @@ def run(args: argparse.Namespace) -> None:
 
     _required_dataset_splits(data_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    _restore_if_available(input_root, output_dir, args.seed)
+    _restore_if_available(input_root, output_dir, args.seed, args.backbone)
     config = _write_config(
         config_path,
         seed=args.seed,
+        backbone=args.backbone,
         data_dir=data_dir,
         output_dir=output_dir,
     )
+    (output_dir / "experiment_metadata.json").write_text(
+        json.dumps(
+            {"seed": args.seed, "backbone": args.backbone, "loss_type": "db"},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
-    baseline_dir = output_dir / "baseline_comparison" / BACKBONE
+    baseline_dir = output_dir / "baseline_comparison" / args.backbone
     baseline_checkpoint = baseline_dir / "baseline_best.pth"
     baseline_report = _first_report(baseline_dir)
     if baseline_checkpoint.exists() and baseline_report is not None:
@@ -208,7 +258,7 @@ def run(args: argparse.Namespace) -> None:
             config_path,
             "pipelines.train_all_baselines",
             "--models",
-            BACKBONE,
+            args.backbone,
             "--epochs",
             config["num_epochs"],
         )
@@ -270,6 +320,7 @@ def run(args: argparse.Namespace) -> None:
     _write_config(
         config_path,
         seed=args.seed,
+        backbone=args.backbone,
         data_dir=data_dir,
         output_dir=output_dir,
         selection_budget=budget,
@@ -339,9 +390,17 @@ def run(args: argparse.Namespace) -> None:
     fairness_path = working_dir / f"seed_{args.seed}_fairness.csv"
     _write_csv(
         fairness_path,
-        [{"seed": args.seed, **counts, "matched_budget_pass": True}],
+        [
+            {
+                "seed": args.seed,
+                "backbone": args.backbone,
+                **counts,
+                "matched_budget_pass": True,
+            }
+        ],
         [
             "seed",
+            "backbone",
             "gflownet",
             "random",
             "topk_confidence",
@@ -356,6 +415,7 @@ def run(args: argparse.Namespace) -> None:
     result_rows = [
         {
             "seed": args.seed,
+            "backbone": args.backbone,
             "method": "cnn_baseline",
             "n_rules_selected": 0,
             "test_accuracy": baseline_accuracy,
@@ -363,6 +423,7 @@ def run(args: argparse.Namespace) -> None:
         },
         {
             "seed": args.seed,
+            "backbone": args.backbone,
             "method": "gflownet_db",
             "n_rules_selected": budget,
             "test_accuracy": gfn_accuracy,
@@ -375,6 +436,7 @@ def run(args: argparse.Namespace) -> None:
         result_rows.append(
             {
                 "seed": args.seed,
+                "backbone": args.backbone,
                 "method": method,
                 "n_rules_selected": counts[method],
                 "test_accuracy": accuracy,
@@ -412,6 +474,7 @@ def run(args: argparse.Namespace) -> None:
         result_rows,
         [
             "seed",
+            "backbone",
             "method",
             "n_rules_selected",
             "test_accuracy",
@@ -433,6 +496,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="params.yaml")
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument(
+        "--backbone",
+        default="mobilenetv3_small",
+        choices=SUPPORTED_BACKBONES,
+        help="Backbone CNN/Transformer dùng cho toàn bộ pipeline của seed.",
+    )
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--project-dir", default=os.getcwd())
