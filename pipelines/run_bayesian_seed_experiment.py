@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Dict, List
 
 import yaml
 
@@ -61,6 +62,144 @@ def _run_stage5(project: Path, config_path: Path) -> None:
     ]
     print("\n$", " ".join(command), flush=True)
     subprocess.run(command, cwd=project, check=True)
+
+
+def _load_core_results(
+    input_root: Path,
+    *,
+    seed: int,
+    backbone: str,
+) -> List[Dict]:
+    candidates = sorted(
+        path
+        for path in input_root.rglob(f"seed_{seed}_results.csv")
+        if "_bayesian_results.csv" not in path.name
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"Không tìm thấy seed_{seed}_results.csv trong {input_root}. "
+            "Hãy Add Input output thí nghiệm lõi của đúng seed."
+        )
+
+    valid_rows: List[Dict] = []
+    for path in candidates:
+        with path.open(newline="", encoding="utf-8") as file:
+            rows = list(csv.DictReader(file))
+        matching = [
+            row
+            for row in rows
+            if int(row["seed"]) == seed
+            and (
+                not row.get("backbone")
+                or row["backbone"] == backbone
+            )
+        ]
+        if matching:
+            print("Nạp kết quả lõi để so sánh từ:", path)
+            valid_rows.extend(matching)
+
+    if not valid_rows:
+        raise ValueError(
+            f"Có CSV seed {seed} nhưng không có kết quả backbone {backbone}."
+        )
+
+    by_method = {row["method"]: row for row in valid_rows}
+    expected = {
+        "cnn_baseline",
+        "gflownet_db",
+        "random",
+        "topk_confidence",
+        "greedy_coverage",
+    }
+    missing = expected - set(by_method)
+    if missing:
+        raise ValueError(
+            f"Kết quả lõi seed {seed} thiếu method: {sorted(missing)}"
+        )
+    return [by_method[method] for method in sorted(expected)]
+
+
+def _write_immediate_comparison(
+    *,
+    working_dir: Path,
+    seed: int,
+    backbone: str,
+    bayesian_accuracy: float,
+    bayesian_f1: float,
+    core_rows: List[Dict],
+) -> tuple[Path, Path]:
+    combined_path = working_dir / f"seed_{seed}_results_with_bayesian.csv"
+    comparison_path = working_dir / f"seed_{seed}_bayesian_comparison.csv"
+
+    normalized_core = [
+        {
+            "seed": seed,
+            "backbone": backbone,
+            "method": row["method"],
+            "n_rules_selected": row.get("n_rules_selected", ""),
+            "test_accuracy": float(row["test_accuracy"]),
+            "test_f1_macro": float(row["test_f1_macro"]),
+        }
+        for row in core_rows
+    ]
+    bayesian_row = {
+        "seed": seed,
+        "backbone": backbone,
+        "method": "gflownet_db_bayesian",
+        "n_rules_selected": "",
+        "test_accuracy": bayesian_accuracy,
+        "test_f1_macro": bayesian_f1,
+    }
+    all_rows = normalized_core + [bayesian_row]
+    with combined_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=list(bayesian_row))
+        writer.writeheader()
+        writer.writerows(all_rows)
+
+    comparison_rows = []
+    for reference in normalized_core:
+        comparison_rows.append(
+            {
+                "seed": seed,
+                "backbone": backbone,
+                "comparison": (
+                    f"gflownet_db_bayesian - {reference['method']}"
+                ),
+                "bayesian_accuracy": bayesian_accuracy,
+                "reference_accuracy": reference["test_accuracy"],
+                "accuracy_delta": (
+                    bayesian_accuracy - reference["test_accuracy"]
+                ),
+                "bayesian_f1_macro": bayesian_f1,
+                "reference_f1_macro": reference["test_f1_macro"],
+                "f1_macro_delta": bayesian_f1 - reference["test_f1_macro"],
+            }
+        )
+    with comparison_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=list(comparison_rows[0]),
+        )
+        writer.writeheader()
+        writer.writerows(comparison_rows)
+
+    print("\nSO SÁNH BAYESIAN NGAY TRÊN CÙNG SEED")
+    print(
+        f"{'Reference':<24} {'Acc ref':>9} {'Acc Bayes':>10} "
+        f"{'Δ Acc':>9} {'F1 ref':>9} {'F1 Bayes':>10} {'Δ F1':>9}"
+    )
+    for row in comparison_rows:
+        reference = row["comparison"].split(" - ", 1)[1]
+        print(
+            f"{reference:<24} "
+            f"{row['reference_accuracy']:>9.4f} "
+            f"{row['bayesian_accuracy']:>10.4f} "
+            f"{row['accuracy_delta']:>+9.4f} "
+            f"{row['reference_f1_macro']:>9.4f} "
+            f"{row['bayesian_f1_macro']:>10.4f} "
+            f"{row['f1_macro_delta']:>+9.4f}"
+        )
+    return combined_path, comparison_path
 
 
 def run(args: argparse.Namespace) -> None:
@@ -173,6 +312,20 @@ def run(args: argparse.Namespace) -> None:
             }
         )
 
+    core_rows = _load_core_results(
+        input_root,
+        seed=args.seed,
+        backbone=args.backbone,
+    )
+    combined_path, comparison_path = _write_immediate_comparison(
+        working_dir=working_dir,
+        seed=args.seed,
+        backbone=args.backbone,
+        bayesian_accuracy=accuracy,
+        bayesian_f1=f1_macro,
+        core_rows=core_rows,
+    )
+
     archive = shutil.make_archive(
         str(working_dir / f"seed_{args.seed}_bayesian_artifacts"),
         "gztar",
@@ -180,6 +333,8 @@ def run(args: argparse.Namespace) -> None:
     )
     print("\nBayesian Stage 5 hoàn tất:")
     print(" -", results_path)
+    print(" -", combined_path)
+    print(" -", comparison_path)
     print(" -", archive)
 
 
