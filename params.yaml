@@ -72,7 +72,7 @@ gflownet:
   lr: !!float 1e-3
   logZ_lr: 0.1
   validation_interval: 100
-  loss_type: "tb"          # "tb" | "db" | "fm"
+  loss_type: "db"          # "tb" | "db" | "fm"
   logZ_warmup_steps: 50
   val_samples: 140
   w_acc: 1.0

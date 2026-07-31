@@ -325,6 +325,21 @@ def run(args: argparse.Namespace) -> None:
         output_dir=output_dir,
         selection_budget=budget,
     )
+    if args.include_bayesian:
+        bayesian_config = yaml.safe_load(
+            config_path.read_text(encoding="utf-8")
+        )
+        bayesian_config.setdefault("rule_penalty_bayesian", {})["K"] = (
+            args.bayesian_mc_samples
+        )
+        config_path.write_text(
+            yaml.safe_dump(
+                bayesian_config,
+                sort_keys=False,
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
 
     gfn_report = _first_report(output_dir / "05_rules_model")
     if gfn_report is not None:
@@ -375,6 +390,28 @@ def run(args: argparse.Namespace) -> None:
                 f"Heuristic {method} chạy xong nhưng thiếu rules/report."
             )
         heuristic_reports[method] = method_report
+
+    bayesian_report: Optional[Path] = None
+    if args.include_bayesian:
+        bayesian_dir = output_dir / "05b_rules_model_bayesian"
+        bayesian_report = _first_report(bayesian_dir)
+        if bayesian_report is not None:
+            print("SKIP Bayesian Stage 5:", bayesian_report)
+        else:
+            print(
+                "RESUME Bayesian Stage 5:",
+                f"MC K={args.bayesian_mc_samples}",
+            )
+            _run_module(
+                project,
+                config_path,
+                "pipelines.stage5_train_rule_bayesian",
+            )
+            bayesian_report = _first_report(bayesian_dir)
+            if bayesian_report is None:
+                raise FileNotFoundError(
+                    "Bayesian Stage 5 chạy xong nhưng thiếu report."
+                )
 
     counts = {"gflownet": budget}
     for method in HEURISTICS:
@@ -453,6 +490,19 @@ def run(args: argparse.Namespace) -> None:
             }
         )
 
+    if bayesian_report is not None:
+        bayesian_accuracy, bayesian_f1 = _report_metrics(bayesian_report)
+        result_rows.append(
+            {
+                "seed": args.seed,
+                "backbone": args.backbone,
+                "method": "gflownet_db_bayesian",
+                "n_rules_selected": "",
+                "test_accuracy": bayesian_accuracy,
+                "test_f1_macro": bayesian_f1,
+            }
+        )
+
     # Mỗi lần gọi script cho một method sẽ ghi đè CSV tạm. Dựng lại bảng
     # canonical từ ba report riêng sau khi tất cả method đã hoàn tất.
     heuristic_csv = output_dir / "rule_selection_finetune_comparison.csv"
@@ -510,6 +560,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--kaggle-input-root",
         default="/kaggle/input",
         help="Thư mục Add Input. Module tự restore output cùng seed nếu tìm thấy.",
+    )
+    parser.add_argument(
+        "--include-bayesian",
+        action="store_true",
+        help="Chạy/resume Bayesian Stage 5 sau ba heuristic.",
+    )
+    parser.add_argument(
+        "--bayesian-mc-samples",
+        type=int,
+        default=32,
+        help="Số ruleset Monte Carlo mỗi bước Bayesian Stage 5.",
     )
     return parser
 
