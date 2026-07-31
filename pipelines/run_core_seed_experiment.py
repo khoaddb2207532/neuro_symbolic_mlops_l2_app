@@ -29,6 +29,8 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -46,6 +48,65 @@ SUPPORTED_BACKBONES = (
     "vit_b_16",
 )
 
+_RUNTIME_EVENTS: List[Dict] = []
+_RUNTIME_LEDGER_PATH: Optional[Path] = None
+_RUNTIME_CONTEXT: Dict = {}
+
+
+def _runtime_stage_name(module: str, args: Tuple[object, ...]) -> str:
+    mapping = {
+        "pipelines.train_all_baselines": "baseline_cnn",
+        "pipelines.stage2_extract_features": "feature_extraction",
+        "pipelines.stage3_extract_rules": "rule_extraction",
+        "pipelines.stage4_select_rules_gflownet": "gflownet_stage4",
+        "pipelines.stage4b_analyze_rule_rankings": "ranking_analysis_stage4b",
+        "pipelines.stage4c_evaluate_gflownet_checkpoints": (
+            "checkpoint_evaluation_stage4c"
+        ),
+        "pipelines.stage5_train_rule_regularized": (
+            "gflownet_fixed_stage5"
+        ),
+        "pipelines.stage5_train_rule_bayesian": "bayesian_stage5",
+        "pipelines.evaluate_saved_checkpoints": "exact_checkpoint_evaluation",
+        "pipelines.analyze_rule_set_quality": "rule_set_quality_analysis",
+    }
+    if module == "pipelines.stage5_train_rule_regularized_heuristics":
+        string_args = list(map(str, args))
+        method = (
+            string_args[string_args.index("--methods") + 1]
+            if "--methods" in string_args
+            else "unknown"
+        )
+        return f"heuristic_{method}_selection_and_stage5"
+    return mapping.get(module, module)
+
+
+def _persist_runtime_events() -> None:
+    if _RUNTIME_LEDGER_PATH is None:
+        return
+    _RUNTIME_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _RUNTIME_LEDGER_PATH.write_text(
+        json.dumps(_RUNTIME_EVENTS, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _initialize_runtime_tracking(
+    output_dir: Path,
+    *,
+    seed: int,
+    backbone: str,
+) -> None:
+    global _RUNTIME_EVENTS, _RUNTIME_LEDGER_PATH, _RUNTIME_CONTEXT
+    _RUNTIME_LEDGER_PATH = output_dir / "runtime_events.json"
+    if _RUNTIME_LEDGER_PATH.exists():
+        _RUNTIME_EVENTS = json.loads(
+            _RUNTIME_LEDGER_PATH.read_text(encoding="utf-8")
+        )
+    else:
+        _RUNTIME_EVENTS = []
+    _RUNTIME_CONTEXT = {"seed": seed, "backbone": backbone}
+
 
 def _run_module(project: Path, config_path: Path, module: str, *args: object) -> None:
     command = [
@@ -57,7 +118,34 @@ def _run_module(project: Path, config_path: Path, module: str, *args: object) ->
         *map(str, args),
     ]
     print("\n$", " ".join(command), flush=True)
-    subprocess.run(command, cwd=project, check=True)
+    stage = _runtime_stage_name(module, args)
+    started_at = datetime.now(timezone.utc)
+    timer = time.perf_counter()
+    status = "completed"
+    return_code = 0
+    try:
+        subprocess.run(command, cwd=project, check=True)
+    except subprocess.CalledProcessError as error:
+        status = "failed"
+        return_code = int(error.returncode)
+        raise
+    finally:
+        elapsed_seconds = time.perf_counter() - timer
+        _RUNTIME_EVENTS.append(
+            {
+                **_RUNTIME_CONTEXT,
+                "stage": stage,
+                "module": module,
+                "status": status,
+                "return_code": return_code,
+                "started_at_utc": started_at.isoformat(),
+                "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+                "elapsed_seconds": elapsed_seconds,
+                "elapsed_minutes": elapsed_seconds / 60.0,
+                "command_args": list(map(str, args)),
+            }
+        )
+        _persist_runtime_events()
 
 
 def _write_config(
@@ -274,6 +362,78 @@ def _write_csv(path: Path, rows: Iterable[Dict], fieldnames: List[str]) -> None:
         writer.writerows(rows)
 
 
+def _write_runtime_summary(
+    output_dir: Path,
+    working_dir: Path,
+    *,
+    seed: int,
+    backbone: str,
+    include_bayesian: bool,
+) -> Tuple[Path, Path]:
+    expected_stages = [
+        "baseline_cnn",
+        "feature_extraction",
+        "rule_extraction",
+        "gflownet_stage4",
+        "gflownet_fixed_stage5",
+        "heuristic_random_selection_and_stage5",
+        "heuristic_topk_confidence_selection_and_stage5",
+        "heuristic_greedy_coverage_selection_and_stage5",
+    ]
+    if include_bayesian:
+        expected_stages.append("bayesian_stage5")
+
+    rows = []
+    for stage in expected_stages:
+        completed = [
+            event
+            for event in _RUNTIME_EVENTS
+            if event.get("stage") == stage
+            and event.get("status") == "completed"
+        ]
+        if completed:
+            event = completed[-1]
+            rows.append(
+                {
+                    "seed": seed,
+                    "backbone": backbone,
+                    "stage": stage,
+                    "runtime_status": "measured",
+                    "elapsed_seconds": event["elapsed_seconds"],
+                    "elapsed_minutes": event["elapsed_minutes"],
+                    "started_at_utc": event["started_at_utc"],
+                    "finished_at_utc": event["finished_at_utc"],
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "seed": seed,
+                    "backbone": backbone,
+                    "stage": stage,
+                    "runtime_status": "unavailable_historical",
+                    "elapsed_seconds": "",
+                    "elapsed_minutes": "",
+                    "started_at_utc": "",
+                    "finished_at_utc": "",
+                }
+            )
+
+    summary_source = output_dir / "runtime_summary.csv"
+    _write_csv(summary_source, rows, list(rows[0]))
+    summary_destination = (
+        working_dir / f"seed_{seed}_runtime_summary.csv"
+    )
+    events_destination = (
+        working_dir / f"seed_{seed}_runtime_events.json"
+    )
+    shutil.copy2(summary_source, summary_destination)
+    if _RUNTIME_LEDGER_PATH is None or not _RUNTIME_LEDGER_PATH.exists():
+        raise FileNotFoundError("Runtime event ledger chưa được tạo.")
+    shutil.copy2(_RUNTIME_LEDGER_PATH, events_destination)
+    return summary_destination, events_destination
+
+
 def run(args: argparse.Namespace) -> None:
     project = Path(args.project_dir).resolve()
     config_path = Path(args.config)
@@ -287,6 +447,11 @@ def run(args: argparse.Namespace) -> None:
     _required_dataset_splits(data_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     _restore_if_available(input_root, output_dir, args.seed, args.backbone)
+    _initialize_runtime_tracking(
+        output_dir,
+        seed=args.seed,
+        backbone=args.backbone,
+    )
     config = _write_config(
         config_path,
         seed=args.seed,
@@ -851,6 +1016,13 @@ def run(args: argparse.Namespace) -> None:
             "test_weighted_f1",
         ],
     )
+    runtime_summary_path, runtime_events_path = _write_runtime_summary(
+        output_dir,
+        working_dir,
+        seed=args.seed,
+        backbone=args.backbone,
+        include_bayesian=args.include_bayesian,
+    )
     archive = shutil.make_archive(
         str(working_dir / f"seed_{args.seed}_artifacts"),
         "gztar",
@@ -866,6 +1038,8 @@ def run(args: argparse.Namespace) -> None:
     print(" -", ranking_output_csv)
     print(" -", ranking_output_metrics)
     print(" -", ranking_output_summary)
+    print(" -", runtime_summary_path)
+    print(" -", runtime_events_path)
     for checkpoint_output in checkpoint_eval_outputs:
         print(" -", checkpoint_output)
     print(" -", archive)
