@@ -453,6 +453,94 @@ def run(args: argparse.Namespace) -> None:
     shutil.copy2(ranking_csv, ranking_output_csv)
     shutil.copy2(ranking_metrics, ranking_output_metrics)
     shutil.copy2(ranking_summary, ranking_output_summary)
+
+    checkpoint_eval_status = (
+        gfn_rules_dir / "checkpoint_posterior_evaluation_status.json"
+    )
+    checkpoint_eval_repeats = (
+        gfn_rules_dir / "checkpoint_posterior_evaluation_repeats.csv"
+    )
+    checkpoint_eval_summary_csv = (
+        gfn_rules_dir / "checkpoint_posterior_evaluation_summary.csv"
+    )
+    checkpoint_eval_summary_json = (
+        gfn_rules_dir / "checkpoint_posterior_evaluation_summary.json"
+    )
+    checkpoint_eval_summary_text = (
+        gfn_rules_dir / "checkpoint_posterior_evaluation_summary.txt"
+    )
+    checkpoint_eval_current = False
+    if checkpoint_eval_status.exists():
+        status = json.loads(
+            checkpoint_eval_status.read_text(encoding="utf-8")
+        )
+        if status.get("comparison_available"):
+            checkpoint_eval_current = (
+                status.get("repeats") == args.checkpoint_eval_repeats
+                and status.get("samples_per_repeat")
+                == args.checkpoint_eval_samples
+                and all(
+                    path.exists()
+                    for path in (
+                        checkpoint_eval_repeats,
+                        checkpoint_eval_summary_csv,
+                        checkpoint_eval_summary_json,
+                        checkpoint_eval_summary_text,
+                    )
+                )
+            )
+        else:
+            # Trạng thái unavailable chỉ còn hợp lệ nếu hiện vẫn thiếu một
+            # trong hai checkpoint.
+            checkpoint_eval_current = not (
+                gfn_diverse_checkpoint.exists()
+                and gfn_converged_checkpoint.exists()
+            )
+    if checkpoint_eval_current:
+        print("SKIP Stage 4c checkpoint posterior evaluation.")
+    else:
+        print(
+            "RESUME Stage 4c checkpoint posterior evaluation:",
+            f"{args.checkpoint_eval_repeats} x "
+            f"{args.checkpoint_eval_samples} samples/checkpoint",
+        )
+        _run_module(
+            project,
+            config_path,
+            "pipelines.stage4c_evaluate_gflownet_checkpoints",
+            "--repeats",
+            args.checkpoint_eval_repeats,
+            "--samples-per-repeat",
+            args.checkpoint_eval_samples,
+            "--sample-batch-size",
+            args.checkpoint_eval_batch_size,
+        )
+    if not checkpoint_eval_status.exists():
+        raise FileNotFoundError("Stage 4c không tạo status JSON.")
+
+    checkpoint_eval_outputs = []
+    status = json.loads(
+        checkpoint_eval_status.read_text(encoding="utf-8")
+    )
+    status_destination = (
+        working_dir
+        / f"seed_{args.seed}_checkpoint_posterior_evaluation_status.json"
+    )
+    shutil.copy2(checkpoint_eval_status, status_destination)
+    checkpoint_eval_outputs.append(status_destination)
+    if status.get("comparison_available"):
+        for source, suffix in (
+            (checkpoint_eval_repeats, "repeats.csv"),
+            (checkpoint_eval_summary_csv, "summary.csv"),
+            (checkpoint_eval_summary_json, "summary.json"),
+            (checkpoint_eval_summary_text, "summary.txt"),
+        ):
+            destination = (
+                working_dir
+                / f"seed_{args.seed}_checkpoint_posterior_evaluation_{suffix}"
+            )
+            shutil.copy2(source, destination)
+            checkpoint_eval_outputs.append(destination)
     _write_config(
         config_path,
         seed=args.seed,
@@ -778,6 +866,8 @@ def run(args: argparse.Namespace) -> None:
     print(" -", ranking_output_csv)
     print(" -", ranking_output_metrics)
     print(" -", ranking_output_summary)
+    for checkpoint_output in checkpoint_eval_outputs:
+        print(" -", checkpoint_output)
     print(" -", archive)
 
 
@@ -810,6 +900,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=32,
         help="Số ruleset Monte Carlo mỗi bước Bayesian Stage 5.",
+    )
+    parser.add_argument(
+        "--checkpoint-eval-repeats",
+        type=int,
+        default=5,
+    )
+    parser.add_argument(
+        "--checkpoint-eval-samples",
+        type=int,
+        default=1000,
+    )
+    parser.add_argument(
+        "--checkpoint-eval-batch-size",
+        type=int,
+        default=250,
     )
     return parser
 

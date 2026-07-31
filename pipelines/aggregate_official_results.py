@@ -202,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-seeds",
         type=int,
         nargs="+",
-        default=[42, 44, 46],
+        default=[42, 44, 46, 48, 50],
     )
     return parser
 

@@ -174,7 +174,12 @@ def _aggregate(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="params.yaml")
-    parser.add_argument("--seeds", type=int, nargs="+", default=[42, 44, 46])
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=[42, 44, 46, 48, 50],
+    )
     parser.add_argument(
         "--backbone",
         default="mobilenetv3_small",
