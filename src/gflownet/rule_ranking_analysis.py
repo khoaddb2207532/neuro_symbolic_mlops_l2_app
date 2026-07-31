@@ -163,6 +163,17 @@ def rank_topk_confidence(valid_rules: List[Rule]) -> List[int]:
     return sorted(range(n), key=lambda i: valid_rules[i].confidence, reverse=True)
 
 
+def score_single_rules(
+    reward_module: RuleSetReward,
+    n_rules: int,
+    device,
+) -> torch.Tensor:
+    """Raw ``RuleSetReward.score`` của từng singleton ruleset."""
+    eye = torch.eye(n_rules, device=device)
+    with torch.no_grad():
+        return reward_module.score(eye).detach().cpu()
+
+
 def rank_marginal_gain_alone(reward_module: RuleSetReward, n_rules: int, device) -> List[int]:
     """Ranking 'ngây thơ' #2 — điểm `reward_module.score()` của tập CHỈ GỒM
     MỘT luật i đứng một mình (singleton set), sắp giảm dần. Đây chính là
@@ -171,10 +182,8 @@ def rank_marginal_gain_alone(reward_module: RuleSetReward, n_rules: int, device)
     do đó ranking theo singleton score = ranking theo "ai sẽ được greedy chọn
     đầu tiên nếu đứng một mình". Vector hoá toàn bộ n_rules cùng lúc bằng ma
     trận đơn vị (mỗi hàng = 1 singleton set) thay vì lặp qua từng luật."""
-    eye = torch.eye(n_rules, device=device)
-    with torch.no_grad():
-        scores = reward_module.score(eye)  # (n_rules,)
-    return torch.argsort(scores, descending=True).cpu().tolist()
+    scores = score_single_rules(reward_module, n_rules, device)
+    return torch.argsort(scores, descending=True).tolist()
 
 
 def ranking_from_scores(scores: torch.Tensor) -> List[int]:

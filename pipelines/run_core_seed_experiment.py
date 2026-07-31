@@ -360,24 +360,99 @@ def run(args: argparse.Namespace) -> None:
     gfn_rules_dir = output_dir / "04_filtered_rules"
     gfn_rules_xlsx = gfn_rules_dir / "selected_rules.xlsx"
     gfn_rules_pickle = gfn_rules_dir / "selected_rules.pkl"
-    if gfn_rules_xlsx.exists() and gfn_rules_pickle.exists():
+    gfn_rule_order = gfn_rules_dir / "gflownet_rule_order.pkl"
+    gfn_diverse_checkpoint = (
+        gfn_rules_dir / "gflownet_best_diverse.pth"
+    )
+    gfn_converged_checkpoint = (
+        gfn_rules_dir / "gflownet_best_converged.pth"
+    )
+    has_gfn_checkpoint = (
+        gfn_diverse_checkpoint.exists()
+        or gfn_converged_checkpoint.exists()
+    )
+    if (
+        gfn_rules_xlsx.exists()
+        and gfn_rules_pickle.exists()
+        and gfn_rule_order.exists()
+        and has_gfn_checkpoint
+    ):
         print("SKIP Stage 4:", gfn_rules_xlsx)
     else:
         print(
             "RESUME Stage 4:",
             f"xlsx={'OK' if gfn_rules_xlsx.exists() else 'MISSING'},",
-            f"pickle={'OK' if gfn_rules_pickle.exists() else 'MISSING'}",
+            f"pickle={'OK' if gfn_rules_pickle.exists() else 'MISSING'},",
+            f"rule_order={'OK' if gfn_rule_order.exists() else 'MISSING'},",
+            f"checkpoint={'OK' if has_gfn_checkpoint else 'MISSING'}",
         )
         _run_module(project, config_path, "pipelines.stage4_select_rules_gflownet")
-        if not gfn_rules_xlsx.exists() or not gfn_rules_pickle.exists():
+        has_gfn_checkpoint = (
+            gfn_diverse_checkpoint.exists()
+            or gfn_converged_checkpoint.exists()
+        )
+        if (
+            not gfn_rules_xlsx.exists()
+            or not gfn_rules_pickle.exists()
+            or not gfn_rule_order.exists()
+            or not has_gfn_checkpoint
+        ):
             raise FileNotFoundError(
-                "Stage 4 chạy xong nhưng thiếu selected_rules.xlsx/.pkl."
+                "Stage 4 chạy xong nhưng thiếu rules/rule-order/checkpoint."
             )
 
     budget = _xlsx_row_count(gfn_rules_xlsx)
     if budget <= 0:
         raise RuntimeError("GFlowNet không chọn luật nào.")
     print(f"Matched budget K={budget}", flush=True)
+
+    ranking_dir = output_dir / "04_filtered_rules"
+    ranking_csv = ranking_dir / "rule_ranking_analysis.csv"
+    ranking_metrics = (
+        ranking_dir / "rule_ranking_analysis_metrics.csv"
+    )
+    ranking_summary = (
+        ranking_dir / "rule_ranking_analysis_summary.txt"
+    )
+    if (
+        ranking_csv.exists()
+        and ranking_metrics.exists()
+        and ranking_summary.exists()
+    ):
+        print("SKIP Stage 4b ranking analysis:", ranking_csv)
+    else:
+        print("RESUME Stage 4b ranking analysis.")
+        _run_module(
+            project,
+            config_path,
+            "pipelines.stage4b_analyze_rule_rankings",
+        )
+        if not all(
+            path.exists()
+            for path in (
+                ranking_csv,
+                ranking_metrics,
+                ranking_summary,
+            )
+        ):
+            raise FileNotFoundError(
+                "Stage 4b không tạo đủ CSV/metrics/summary."
+            )
+
+    ranking_output_csv = (
+        working_dir / f"seed_{args.seed}_rule_ranking_analysis.csv"
+    )
+    ranking_output_metrics = (
+        working_dir
+        / f"seed_{args.seed}_rule_ranking_analysis_metrics.csv"
+    )
+    ranking_output_summary = (
+        working_dir
+        / f"seed_{args.seed}_rule_ranking_analysis_summary.txt"
+    )
+    shutil.copy2(ranking_csv, ranking_output_csv)
+    shutil.copy2(ranking_metrics, ranking_output_metrics)
+    shutil.copy2(ranking_summary, ranking_output_summary)
     _write_config(
         config_path,
         seed=args.seed,
@@ -633,6 +708,9 @@ def run(args: argparse.Namespace) -> None:
     print(" -", fairness_path)
     print(" -", quality_csv_path)
     print(" -", quality_json_path)
+    print(" -", ranking_output_csv)
+    print(" -", ranking_output_metrics)
+    print(" -", ranking_output_summary)
     print(" -", archive)
 
 

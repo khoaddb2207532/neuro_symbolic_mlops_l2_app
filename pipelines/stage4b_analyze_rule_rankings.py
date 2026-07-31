@@ -13,20 +13,22 @@ Output:
   outputs/04_filtered_rules/rule_ranking_analysis_summary.txt
 """
 import argparse
+import csv
 import os
+import pickle
 
+import numpy as np
 import pandas as pd
 import torch
+from scipy.stats import kendalltau, spearmanr
 
 from src.gflownet.rule_ranking_analysis import (
-    kendall_tau,
     load_rule_order,
-    rank_marginal_gain_alone,
     rank_topk_confidence,
     ranking_from_scores,
     rebuild_gflownet,
     sample_inclusion_probabilities,
-    spearman_rho,
+    score_single_rules,
     topk_overlap,
 )
 from src.utils.config import load_params
@@ -34,12 +36,6 @@ from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
 
 logger = get_logger(__name__)
-
-# Kendall-tau ở đây là O(n^2) (thuần Python/numpy, không phụ thuộc scipy) —
-# với vài nghìn luật vẫn ổn, nhưng để tránh script treo nếu n_rules quá lớn,
-# ta bỏ qua kendall-tau (giữ lại spearman, vẫn O(n log n)) khi vượt ngưỡng này.
-_KENDALL_MAX_N = 4000
-
 
 def main(params_path: str = "params.yaml", K: int = None) -> None:
     params = load_params(params_path)
@@ -54,6 +50,16 @@ def main(params_path: str = "params.yaml", K: int = None) -> None:
         "checkpoint", "gflownet_best_diverse.pth"
     )
     ckpt_path = os.path.join(output_dir, checkpoint_name)
+    if not os.path.exists(ckpt_path):
+        fallback = os.path.join(
+            output_dir, "gflownet_best_converged.pth"
+        )
+        logger.warning(
+            "Không có %s — fallback sang %s.",
+            checkpoint_name,
+            os.path.basename(fallback),
+        )
+        ckpt_path = fallback
 
     rule_order = load_rule_order(output_dir)
     gflownet, env, valid_rules, reward_module = rebuild_gflownet(rule_order, ckpt_path, device)
@@ -69,37 +75,50 @@ def main(params_path: str = "params.yaml", K: int = None) -> None:
 
     rank_p = ranking_from_scores(p_include)
     rank_conf = rank_topk_confidence(valid_rules)
-    rank_alone = rank_marginal_gain_alone(reward_module, n_rules, device)
+    singleton_scores = score_single_rules(
+        reward_module, n_rules, device
+    )
+    rank_alone = ranking_from_scores(singleton_scores)
 
-    spearman_conf = spearman_rho(rank_p, rank_conf, n_rules)
-    spearman_alone = spearman_rho(rank_p, rank_alone, n_rules)
+    # Correlation trực tiếp trên score, không correlation giữa ordinal rank
+    # tự tạo. scipy xử lý tie đúng cách; Kendall mặc định là tau-b.
+    p_numpy = p_include.numpy()
+    confidence_numpy = np.asarray(
+        [float(rule.confidence) for rule in valid_rules]
+    )
+    singleton_numpy = singleton_scores.numpy()
+    spearman_conf = float(
+        spearmanr(p_numpy, confidence_numpy).statistic
+    )
+    spearman_alone = float(
+        spearmanr(p_numpy, singleton_numpy).statistic
+    )
+    kendall_conf = float(
+        kendalltau(p_numpy, confidence_numpy, variant="b").statistic
+    )
+    kendall_alone = float(
+        kendalltau(p_numpy, singleton_numpy, variant="b").statistic
+    )
 
-    if n_rules <= _KENDALL_MAX_N:
-        kendall_conf = kendall_tau(rank_p, rank_conf, n_rules)
-        kendall_alone = kendall_tau(rank_p, rank_alone, n_rules)
-    else:
-        logger.warning(
-            "n_rules=%d > %d — bỏ qua kendall-tau (O(n^2)) để tránh chạy quá lâu, chỉ báo cáo spearman.",
-            n_rules, _KENDALL_MAX_N,
-        )
-        kendall_conf = kendall_alone = float("nan")
-
-    # Overlap top-k tại budget = max_rules (ngân sách GFlowNet được phép chọn) —
-    # trực quan hơn correlation: "cùng chọn bao nhiêu luật trong top-budget?"
-    budget = min(rule_order["max_rules"], n_rules)
+    # Top-k dùng đúng số luật elite GFlowNet thực sự chọn, không dùng cap
+    # max_rules, để giữ matched-budget với các heuristic.
+    selected_path = os.path.join(output_dir, "selected_rules.pkl")
+    with open(selected_path, "rb") as file:
+        selected_rules = pickle.load(file)
+    budget = min(len(selected_rules), n_rules)
     overlap_conf = topk_overlap(rank_p, rank_conf, budget)
     overlap_alone = topk_overlap(rank_p, rank_alone, budget)
 
     logger.info(
-        "Spearman(p_include, confidence)=%.4f | Spearman(p_include, marginal_alone)=%.4f",
+        "Spearman(p_include, confidence)=%.4f | Spearman(p_include, single_rule_reward)=%.4f",
         spearman_conf, spearman_alone,
     )
     logger.info(
-        "Kendall-tau(p_include, confidence)=%.4f | Kendall-tau(p_include, marginal_alone)=%.4f",
+        "Kendall-tau-b(p_include, confidence)=%.4f | Kendall-tau-b(p_include, single_rule_reward)=%.4f",
         kendall_conf, kendall_alone,
     )
     logger.info(
-        "Top-%d overlap (Jaccard) p_include vs confidence=%.4f | vs marginal_alone=%.4f",
+        "Top-%d overlap (Jaccard) p_include vs confidence=%.4f | vs single_rule_reward=%.4f",
         budget, overlap_conf, overlap_alone,
     )
 
@@ -115,26 +134,63 @@ def main(params_path: str = "params.yaml", K: int = None) -> None:
                 "rule": str(rule),
                 "confidence": rule.confidence,
                 "p_include": p_include[i].item(),
+                "single_rule_reward": singleton_scores[i].item(),
+                "target_class": int(rule.target_class),
+                "rule_length": len(rule.conditions),
                 "rank_p_include": pos_p[i],
                 "rank_confidence": pos_conf[i],
-                "rank_marginal_alone": pos_alone[i],
+                "rank_single_rule_reward": pos_alone[i],
             }
         )
     df = pd.DataFrame(rows).sort_values("rank_p_include")
     csv_path = os.path.join(output_dir, "rule_ranking_analysis.csv")
     df.to_csv(csv_path, index=False)
 
+    metrics_row = {
+        "seed": int(params["seed"]),
+        "backbone": params["baseline_comparison"][
+            "selected_architecture"
+        ],
+        "loss_type": rule_order["loss_type"],
+        "trajectory_samples": K,
+        "n_rules": n_rules,
+        "top_k_budget": budget,
+        "spearman_inclusion_confidence": spearman_conf,
+        "spearman_inclusion_single_rule_reward": spearman_alone,
+        "kendall_tau_b_inclusion_confidence": kendall_conf,
+        "kendall_tau_b_inclusion_single_rule_reward": kendall_alone,
+        "top_k_jaccard_inclusion_confidence": overlap_conf,
+        "top_k_jaccard_inclusion_single_rule_reward": overlap_alone,
+    }
+    metrics_path = os.path.join(
+        output_dir, "rule_ranking_analysis_metrics.csv"
+    )
+    with open(metrics_path, "w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(
+            file, fieldnames=list(metrics_row)
+        )
+        writer.writeheader()
+        writer.writerow(metrics_row)
+
     summary_path = os.path.join(output_dir, "rule_ranking_analysis_summary.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
-        f.write(f"K={K}, n_rules={n_rules}, budget(max_rules)={budget}\n")
+        f.write(
+            f"K={K}, n_rules={n_rules}, "
+            f"budget(actual_gflownet_elite)={budget}\n"
+        )
         f.write(f"Spearman(p_include, confidence)       = {spearman_conf:.4f}\n")
-        f.write(f"Spearman(p_include, marginal_alone)   = {spearman_alone:.4f}\n")
-        f.write(f"Kendall-tau(p_include, confidence)    = {kendall_conf:.4f}\n")
-        f.write(f"Kendall-tau(p_include, marginal_alone)= {kendall_alone:.4f}\n")
+        f.write(f"Spearman(p_include, single_rule_reward)= {spearman_alone:.4f}\n")
+        f.write(f"Kendall-tau-b(p_include, confidence)   = {kendall_conf:.4f}\n")
+        f.write(f"Kendall-tau-b(p_include, single_rule_reward)= {kendall_alone:.4f}\n")
         f.write(f"Top-{budget} Jaccard overlap vs confidence      = {overlap_conf:.4f}\n")
-        f.write(f"Top-{budget} Jaccard overlap vs marginal_alone  = {overlap_alone:.4f}\n")
+        f.write(f"Top-{budget} Jaccard overlap vs single_rule_reward = {overlap_alone:.4f}\n")
 
-    logger.info("Đã ghi %s và %s", csv_path, summary_path)
+    logger.info(
+        "Đã ghi %s, %s và %s",
+        csv_path,
+        metrics_path,
+        summary_path,
+    )
     logger.info("Stage 4b (phân tích ranking) hoàn thành.")
 
 
