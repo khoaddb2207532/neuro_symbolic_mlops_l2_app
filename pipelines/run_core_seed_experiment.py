@@ -168,6 +168,67 @@ def _restore_if_available(
     _validate_output_identity(output_dir, seed, backbone)
 
 
+def _restore_bayesian_if_available(
+    input_root: Optional[Path],
+    output_dir: Path,
+    seed: int,
+    backbone: str,
+) -> Optional[Path]:
+    """Khôi phục Bayesian Stage 5 từ output notebook cũ nếu có.
+
+    Output Bayesian cũ có thể nằm trong một ``outputs_seed_<seed>`` khác với
+    output lõi, hoặc chỉ còn archive ``seed_<seed>_bayesian_artifacts.tar.gz``.
+    Chỉ classification report được xem là completion marker.
+    """
+    destination = output_dir / "05b_rules_model_bayesian"
+    existing_report = _first_report(destination)
+    if existing_report is not None:
+        return existing_report
+    if input_root is None or not input_root.is_dir():
+        return None
+
+    # Ưu tiên cây output đầy đủ vì nó giữ cả metadata seed/backbone.
+    for candidate_root in sorted(
+        path
+        for path in input_root.rglob(f"outputs_seed_{seed}")
+        if path.is_dir()
+    ):
+        candidate_bayesian = (
+            candidate_root / "05b_rules_model_bayesian"
+        )
+        candidate_report = _first_report(candidate_bayesian)
+        if candidate_report is None:
+            continue
+        _validate_output_identity(candidate_root, seed, backbone)
+        print(
+            "Khôi phục Bayesian Stage 5 từ output notebook cũ:",
+            candidate_bayesian,
+        )
+        shutil.copytree(
+            candidate_bayesian,
+            destination,
+            dirs_exist_ok=True,
+        )
+        restored_report = _first_report(destination)
+        if restored_report is not None:
+            return restored_report
+
+    # Fallback cho notebook cũ chỉ publish archive Bayesian riêng.
+    for archive in sorted(
+        input_root.rglob(f"seed_{seed}_bayesian_artifacts.tar.gz")
+    ):
+        print("Khôi phục Bayesian Stage 5 từ archive cũ:", archive)
+        _safe_extract_tar(archive, destination)
+        restored_report = _first_report(destination)
+        if restored_report is not None:
+            return restored_report
+        print(
+            "Archive không chứa classification report hoàn tất, "
+            "tiếp tục tìm candidate khác."
+        )
+    return None
+
+
 def _xlsx_row_count(path: Path) -> int:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -394,9 +455,17 @@ def run(args: argparse.Namespace) -> None:
     bayesian_report: Optional[Path] = None
     if args.include_bayesian:
         bayesian_dir = output_dir / "05b_rules_model_bayesian"
-        bayesian_report = _first_report(bayesian_dir)
+        bayesian_report = _restore_bayesian_if_available(
+            input_root,
+            output_dir,
+            args.seed,
+            args.backbone,
+        )
         if bayesian_report is not None:
-            print("SKIP Bayesian Stage 5:", bayesian_report)
+            print(
+                "SKIP Bayesian Stage 5: đã tìm thấy report hoàn tất",
+                bayesian_report,
+            )
         else:
             print(
                 "RESUME Bayesian Stage 5:",
