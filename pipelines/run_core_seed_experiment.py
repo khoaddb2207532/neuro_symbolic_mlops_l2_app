@@ -477,8 +477,12 @@ def run(args: argparse.Namespace) -> None:
             encoding="utf-8",
         )
 
-    gfn_report = _first_report(output_dir / "05_rules_model")
-    if gfn_report is not None:
+    gfn_model_dir = output_dir / "05_rules_model"
+    gfn_model_checkpoint = (
+        gfn_model_dir / "rule_regularized_best.pth"
+    )
+    gfn_report = _first_report(gfn_model_dir)
+    if gfn_report is not None and gfn_model_checkpoint.exists():
         print("SKIP Stage 5 GFlowNet:", gfn_report)
     else:
         _run_module(project, config_path, "pipelines.stage5_train_rule_regularized")
@@ -499,7 +503,16 @@ def run(args: argparse.Namespace) -> None:
         method_report = _first_report(
             output_dir / f"05_rules_model_{method}"
         )
-        if method_rules.exists() and method_report is not None:
+        method_checkpoint = (
+            output_dir
+            / f"05_rules_model_{method}"
+            / "rule_regularized_best.pth"
+        )
+        if (
+            method_rules.exists()
+            and method_report is not None
+            and method_checkpoint.exists()
+        ):
             print(f"SKIP heuristic {method}: {method_report}")
             heuristic_reports[method] = method_report
             continue
@@ -507,7 +520,8 @@ def run(args: argparse.Namespace) -> None:
         print(
             f"RESUME heuristic {method}: "
             f"rules={'OK' if method_rules.exists() else 'MISSING'}, "
-            f"report={'OK' if method_report is not None else 'MISSING'}"
+            f"report={'OK' if method_report is not None else 'MISSING'}, "
+            f"checkpoint={'OK' if method_checkpoint.exists() else 'MISSING'}"
         )
         _run_module(
             project,
@@ -521,7 +535,11 @@ def run(args: argparse.Namespace) -> None:
         method_report = _first_report(
             output_dir / f"05_rules_model_{method}"
         )
-        if not method_rules.exists() or method_report is None:
+        if (
+            not method_rules.exists()
+            or method_report is None
+            or not method_checkpoint.exists()
+        ):
             raise FileNotFoundError(
                 f"Heuristic {method} chạy xong nhưng thiếu rules/report."
             )
@@ -536,12 +554,23 @@ def run(args: argparse.Namespace) -> None:
             args.seed,
             args.backbone,
         )
-        if bayesian_report is not None:
+        bayesian_checkpoint = (
+            bayesian_dir / "rule_regularized_best.pth"
+        )
+        if (
+            bayesian_report is not None
+            and bayesian_checkpoint.exists()
+        ):
             print(
                 "SKIP Bayesian Stage 5: đã tìm thấy report hoàn tất",
                 bayesian_report,
             )
         else:
+            if bayesian_report is not None:
+                print(
+                    "Bayesian report cũ tồn tại nhưng thiếu checkpoint; "
+                    "cần train lại để tính metric chính xác."
+                )
             print(
                 "RESUME Bayesian Stage 5:",
                 f"MC K={args.bayesian_mc_samples}",
@@ -556,6 +585,34 @@ def run(args: argparse.Namespace) -> None:
                 raise FileNotFoundError(
                     "Bayesian Stage 5 chạy xong nhưng thiếu report."
                 )
+
+    # Metric canonical: đánh giá lại checkpoint trên test loader tái lập.
+    # Không dùng các số đã làm tròn trong classification report văn bản.
+    exact_args: List[object] = []
+    if args.include_bayesian:
+        exact_args.append("--include-bayesian")
+    _run_module(
+        project,
+        config_path,
+        "pipelines.evaluate_saved_checkpoints",
+        *exact_args,
+    )
+    exact_csv_source = output_dir / "exact_test_metrics_summary.csv"
+    exact_json_source = (
+        output_dir / "exact_test_metrics_all_methods.json"
+    )
+    if not exact_csv_source.exists() or not exact_json_source.exists():
+        raise FileNotFoundError(
+            "Đánh giá checkpoint không tạo đủ exact metrics CSV/JSON."
+        )
+    exact_csv_path = (
+        working_dir / f"seed_{args.seed}_exact_test_metrics.csv"
+    )
+    exact_json_path = (
+        working_dir / f"seed_{args.seed}_exact_test_metrics.json"
+    )
+    shutil.copy2(exact_csv_source, exact_csv_path)
+    shutil.copy2(exact_json_source, exact_json_path)
 
     counts = {"gflownet": budget}
     for method in HEURISTICS:
@@ -613,60 +670,65 @@ def run(args: argparse.Namespace) -> None:
     shutil.copy2(quality_csv_source, quality_csv_path)
     shutil.copy2(quality_json_source, quality_json_path)
 
-    baseline_accuracy, baseline_f1 = _report_metrics(baseline_report)
-    gfn_accuracy, gfn_f1 = _report_metrics(gfn_report)
+    with exact_csv_source.open(newline="", encoding="utf-8") as file:
+        exact_rows = list(csv.DictReader(file))
+    exact_by_method = {row["method"]: row for row in exact_rows}
+    expected_exact_methods = {
+        "cnn_baseline",
+        "gflownet_db",
+        *HEURISTICS,
+    }
+    if args.include_bayesian:
+        expected_exact_methods.add("gflownet_db_bayesian")
+    missing_exact = expected_exact_methods - set(exact_by_method)
+    if missing_exact:
+        raise ValueError(
+            "Exact metrics thiếu method: "
+            + ", ".join(sorted(missing_exact))
+        )
 
-    result_rows = [
-        {
-            "seed": args.seed,
-            "backbone": args.backbone,
-            "method": "cnn_baseline",
-            "n_rules_selected": 0,
-            "test_accuracy": baseline_accuracy,
-            "test_f1_macro": baseline_f1,
-        },
-        {
-            "seed": args.seed,
-            "backbone": args.backbone,
-            "method": "gflownet_db",
-            "n_rules_selected": budget,
-            "test_accuracy": gfn_accuracy,
-            "test_f1_macro": gfn_f1,
-        },
-    ]
-    heuristic_comparison_rows = []
-    for method in HEURISTICS:
-        accuracy, f1_macro = _report_metrics(heuristic_reports[method])
+    rule_counts = {
+        "cnn_baseline": 0,
+        "gflownet_db": budget,
+        **counts,
+        "gflownet_db_bayesian": "",
+    }
+    result_rows = []
+    for method in [
+        "cnn_baseline",
+        "gflownet_db",
+        *HEURISTICS,
+        *(["gflownet_db_bayesian"] if args.include_bayesian else []),
+    ]:
+        exact = exact_by_method[method]
         result_rows.append(
             {
                 "seed": args.seed,
                 "backbone": args.backbone,
                 "method": method,
-                "n_rules_selected": counts[method],
-                "test_accuracy": accuracy,
-                "test_f1_macro": f1_macro,
+                "n_rules_selected": rule_counts[method],
+                "test_accuracy": float(exact["test_accuracy"]),
+                "test_macro_precision": float(
+                    exact["test_macro_precision"]
+                ),
+                "test_macro_recall": float(
+                    exact["test_macro_recall"]
+                ),
+                "test_f1_macro": float(exact["test_f1_macro"]),
+                "test_weighted_f1": float(exact["test_weighted_f1"]),
             }
         )
+
+    heuristic_comparison_rows = []
+    for method in HEURISTICS:
+        exact = exact_by_method[method]
         heuristic_comparison_rows.append(
             {
                 "method": method,
                 "n_rules_selected": counts[method],
-                "test_accuracy": accuracy,
-                "test_f1_macro": f1_macro,
+                "test_accuracy": float(exact["test_accuracy"]),
+                "test_f1_macro": float(exact["test_f1_macro"]),
                 "save_dir": str(output_dir / f"05_rules_model_{method}"),
-            }
-        )
-
-    if bayesian_report is not None:
-        bayesian_accuracy, bayesian_f1 = _report_metrics(bayesian_report)
-        result_rows.append(
-            {
-                "seed": args.seed,
-                "backbone": args.backbone,
-                "method": "gflownet_db_bayesian",
-                "n_rules_selected": "",
-                "test_accuracy": bayesian_accuracy,
-                "test_f1_macro": bayesian_f1,
             }
         )
 
@@ -695,7 +757,10 @@ def run(args: argparse.Namespace) -> None:
             "method",
             "n_rules_selected",
             "test_accuracy",
+            "test_macro_precision",
+            "test_macro_recall",
             "test_f1_macro",
+            "test_weighted_f1",
         ],
     )
     archive = shutil.make_archive(
@@ -706,6 +771,8 @@ def run(args: argparse.Namespace) -> None:
     print("\nHoàn tất:")
     print(" -", results_path)
     print(" -", fairness_path)
+    print(" -", exact_csv_path)
+    print(" -", exact_json_path)
     print(" -", quality_csv_path)
     print(" -", quality_json_path)
     print(" -", ranking_output_csv)
