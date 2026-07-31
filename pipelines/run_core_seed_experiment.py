@@ -446,6 +446,29 @@ def run(args: argparse.Namespace) -> None:
         ],
     )
 
+    # Đánh giá trực tiếp chất lượng tập luật bằng đúng RuleSetReward và
+    # validation tensors Stage 4 đã dùng. Chạy sau matched-budget audit để
+    # bảo đảm bốn phương pháp được so sánh cùng số luật.
+    _run_module(
+        project,
+        config_path,
+        "pipelines.analyze_rule_set_quality",
+    )
+    quality_csv_source = output_dir / "rule_set_quality_comparison.csv"
+    quality_json_source = output_dir / "rule_set_quality_comparison.json"
+    if not quality_csv_source.exists() or not quality_json_source.exists():
+        raise FileNotFoundError(
+            "Phân tích chất lượng luật không tạo đủ CSV/JSON."
+        )
+    quality_csv_path = (
+        working_dir / f"seed_{args.seed}_rule_set_quality.csv"
+    )
+    quality_json_path = (
+        working_dir / f"seed_{args.seed}_rule_set_quality.json"
+    )
+    shutil.copy2(quality_csv_source, quality_csv_path)
+    shutil.copy2(quality_json_source, quality_json_path)
+
     baseline_accuracy, baseline_f1 = _report_metrics(baseline_report)
     gfn_accuracy, gfn_f1 = _report_metrics(gfn_report)
 
@@ -539,6 +562,8 @@ def run(args: argparse.Namespace) -> None:
     print("\nHoàn tất:")
     print(" -", results_path)
     print(" -", fairness_path)
+    print(" -", quality_csv_path)
+    print(" -", quality_json_path)
     print(" -", archive)
 
 
