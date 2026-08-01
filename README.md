@@ -1,5 +1,5 @@
 # Neuro-Symbolic Vietnamese Cultural Classifier — Refactored (MLOps Level 2)
-
+# Branch back
 Repo này là bản tổ chức lại của notebook `lv_gfn.ipynb`: CNN (MobileNetV3-Large)
 → trích đặc trưng → Random Forest → trích/lọc luật → GFlowNet chọn luật →
 fine-tune CNN với rule-penalty.
