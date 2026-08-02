@@ -7,7 +7,7 @@ Vì vậy ma trận này cần 10 run huấn luyện, không phải 60 notebook.
 ## 1. Chuẩn bị duy nhất một lần
 
 1. Mở `experiments/experiment_registry.csv`.
-2. Thay đường dẫn `REPLACE_DATASET_B` bằng Kaggle input path thật của dataset B.
+2. Dataset B dùng `/kaggle/working`: notebook được sinh tự tạo symlink `train`, `test`, `val` từ Fast Food Classification V2 ngay sau khi clone repository.
 3. Kiểm tra phân công tài khoản:
    - `account-1`: dataset A, seed 42/44/46.
    - `account-2`: dataset A, seed 48/50.
@@ -21,6 +21,7 @@ Vì vậy ma trận này cần 10 run huấn luyện, không phải 60 notebook.
    ```
 
 Notebook được tạo trong `generated_kaggle_notebooks/`. Không sửa logic riêng từng bản; tham số phải đến từ registry.
+Riêng năm notebook `culture-b` có thêm hai cell tự động: tắt warning/log rác và tạo ba symlink dataset. Notebook `culture-a` không có hai cell này.
 
 Sinh luôn bốn notebook đóng gói theo tài khoản:
 

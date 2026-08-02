@@ -32,6 +32,52 @@ def generate(registry_path: Path, template_path: Path, output_dir: Path, git_com
             f'RUN_ID = {row["run_id"]!r}\n',
             f'GIT_COMMIT = {git_commit!r}',
         ]
+        if row["dataset_id"] == "culture-b":
+            clone_cell_index = next(
+                index
+                for index, cell in enumerate(notebook["cells"])
+                if cell.get("cell_type") == "code"
+                and any("GITHUB_TOKEN" in line for line in cell.get("source", []))
+            )
+            dataset_b_cells = [
+                {
+                    "cell_type": "code",
+                    "execution_count": None,
+                    "metadata": {"tags": ["dataset-b-warning-control"]},
+                    "outputs": [],
+                    "source": [
+                        "import warnings\n",
+                        "import os\n",
+                        "\n",
+                        "# Tắt cảnh báo Python và log không cần thiết.\n",
+                        "warnings.filterwarnings(\"ignore\")\n",
+                        "os.environ[\"TORCH_CPP_LOG_LEVEL\"] = \"ERROR\"\n",
+                        "os.environ[\"PYTHONWARNINGS\"] = \"ignore\"\n",
+                        "os.environ[\"WANDB_SILENT\"] = \"true\"",
+                    ],
+                },
+                {
+                    "cell_type": "code",
+                    "execution_count": None,
+                    "metadata": {"tags": ["dataset-b-symlinks"]},
+                    "outputs": [],
+                    "source": [
+                        "%%bash\n",
+                        "set -e\n",
+                        "DATA_PATH=\"/kaggle/input/datasets/utkarshsaxenadn/fast-food-classification-dataset/Fast Food Classification V2\"\n",
+                        "WORK_PATH=\"/kaggle/working\"\n",
+                        "\n",
+                        "# -sfn cho phép chạy lại cell an toàn khi resume.\n",
+                        "ln -sfn \"$DATA_PATH/Train\" \"$WORK_PATH/train\"\n",
+                        "ln -sfn \"$DATA_PATH/Test\" \"$WORK_PATH/test\"\n",
+                        "ln -sfn \"$DATA_PATH/Valid\" \"$WORK_PATH/val\"\n",
+                        "ls -l \"$WORK_PATH/train\" \"$WORK_PATH/test\" \"$WORK_PATH/val\"",
+                    ],
+                },
+            ]
+            notebook["cells"][
+                clone_cell_index + 1:clone_cell_index + 1
+            ] = dataset_b_cells
         destination = output_dir / f'{row["run_id"]}.ipynb'
         destination.write_text(
             json.dumps(notebook, ensure_ascii=False, indent=1),
