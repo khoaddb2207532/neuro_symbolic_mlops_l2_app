@@ -66,17 +66,26 @@ def _safe_identifier(value: str) -> str:
 
 
 def _dataset_fingerprint(data_dir: Path) -> str:
-    """Hash metadata cây dữ liệu, không đọc toàn bộ nội dung ảnh."""
+    """Hash metadata ba split, không băm repo/output trong /kaggle/working."""
     digest = hashlib.sha256()
-    files = sorted(path for path in data_dir.rglob("*") if path.is_file())
-    for path in files:
-        stat = path.stat()
-        relative = path.relative_to(data_dir).as_posix()
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(str(stat.st_size).encode("ascii"))
-        digest.update(b"\n")
-    digest.update(f"file_count={len(files)}".encode("ascii"))
+    file_count = 0
+    for split in ("train", "val", "test"):
+        split_path = data_dir / split
+        if not split_path.exists():
+            raise FileNotFoundError(f"Thiếu split dataset: {split_path}")
+        resolved_split = split_path.resolve()
+        files = sorted(path for path in resolved_split.rglob("*") if path.is_file())
+        for path in files:
+            stat = path.stat()
+            relative = path.relative_to(resolved_split).as_posix()
+            digest.update(split.encode("utf-8"))
+            digest.update(b"/")
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(stat.st_size).encode("ascii"))
+            digest.update(b"\n")
+        file_count += len(files)
+    digest.update(f"file_count={file_count}".encode("ascii"))
     return digest.hexdigest()
 
 
@@ -240,18 +249,120 @@ def _safe_extract_tar(archive: Path, destination: Path) -> None:
         tar.extractall(destination)
 
 
-def _find_restorable_output(input_root: Path, seed: int) -> Tuple[str, Path] | None:
+def _identity_matches(
+    metadata: Dict,
+    *,
+    seed: int,
+    backbone: str,
+    dataset_id: str,
+    run_id: Optional[str] = None,
+) -> bool:
+    if int(metadata.get("seed", -1)) != seed:
+        return False
+    if metadata.get("backbone") != backbone:
+        return False
+    stored_dataset = metadata.get("dataset_id")
+    if stored_dataset and stored_dataset != dataset_id:
+        return False
+    stored_run = metadata.get("run_id")
+    if run_id and stored_run and stored_run != run_id:
+        return False
+    return True
+
+
+def _archive_identity_matches(
+    archive: Path,
+    *,
+    seed: int,
+    backbone: str,
+    dataset_id: str,
+    run_id: Optional[str],
+) -> bool:
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            candidates = [
+                member for member in tar.getmembers()
+                if Path(member.name).name in {
+                    "experiment_metadata.json", "run_manifest.json"
+                }
+            ]
+            for member in candidates:
+                stream = tar.extractfile(member)
+                if stream is None:
+                    continue
+                metadata = json.loads(stream.read().decode("utf-8"))
+                if _identity_matches(
+                    metadata,
+                    seed=seed,
+                    backbone=backbone,
+                    dataset_id=dataset_id,
+                    run_id=run_id,
+                ):
+                    return True
+    except (tarfile.TarError, OSError, json.JSONDecodeError):
+        return False
+    return False
+
+
+def _find_restorable_output(
+    input_root: Path,
+    seed: int,
+    backbone: str,
+    dataset_id: str,
+    run_id: str,
+) -> Tuple[str, Path] | None:
+    # Output managed mới: tìm bằng manifest chính xác, kể cả run bị ngắt giữa stage.
+    for manifest_path in sorted(input_root.rglob("run_manifest.json")):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        candidate = manifest_path.parent
+        has_stage_artifacts = any(
+            (candidate / name).exists()
+            for name in ("baseline_comparison", "02_features", "03_rules", "04_filtered_rules")
+        )
+        if has_stage_artifacts and _identity_matches(
+            manifest,
+            seed=seed,
+            backbone=backbone,
+            dataset_id=dataset_id,
+            run_id=run_id,
+        ):
+            return "directory", candidate
+
+    # Tương thích notebook cũ, nhưng chỉ nhận candidate có metadata phù hợp.
     directories = sorted(
         path
         for path in input_root.rglob(f"outputs_seed_{seed}")
         if path.is_dir()
     )
-    if directories:
-        return "directory", directories[0]
+    for directory in directories:
+        metadata_path = directory / "experiment_metadata.json"
+        if metadata_path.exists():
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if _identity_matches(
+                metadata,
+                seed=seed,
+                backbone=backbone,
+                dataset_id=dataset_id,
+                run_id=run_id,
+            ):
+                return "directory", directory
 
     archives = sorted(input_root.rglob(f"seed_{seed}_artifacts.tar.gz"))
-    if archives:
-        return "archive", archives[0]
+    for archive in archives:
+        if _archive_identity_matches(
+            archive,
+            seed=seed,
+            backbone=backbone,
+            dataset_id=dataset_id,
+            run_id=run_id,
+        ):
+            return "archive", archive
     return None
 
 
@@ -297,10 +408,15 @@ def _restore_if_available(
     seed: int,
     backbone: str,
     dataset_id: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> None:
     if input_root is None or not input_root.is_dir():
         return
-    source = _find_restorable_output(input_root, seed)
+    if not dataset_id or not run_id:
+        raise ValueError("Resume managed yêu cầu dataset_id và run_id.")
+    source = _find_restorable_output(
+        input_root, seed, backbone, dataset_id, run_id
+    )
     if source is None:
         print(
             f"Không tìm thấy output seed {seed} trong {input_root}; "
@@ -525,6 +641,7 @@ def run(args: argparse.Namespace) -> None:
         args.seed,
         args.backbone,
         dataset_id,
+        run_id,
     )
     _initialize_runtime_tracking(
         output_dir,
