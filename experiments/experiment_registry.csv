@@ -1,0 +1,11 @@
+run_id,dataset_id,data_dir,seed,backbone,loss_type,account_id,status,notebook_slug,kaggle_version,git_commit,output_reference
+culture-a__resnet50__db__seed_42,culture-a,/kaggle/input/datasets/dangduykhoab2207532/vietnamese-cultural-dataset/vietnamese_cultural_dataset,42,resnet50,db,account-1,pending,,,,
+culture-a__resnet50__db__seed_44,culture-a,/kaggle/input/datasets/dangduykhoab2207532/vietnamese-cultural-dataset/vietnamese_cultural_dataset,44,resnet50,db,account-1,pending,,,,
+culture-a__resnet50__db__seed_46,culture-a,/kaggle/input/datasets/dangduykhoab2207532/vietnamese-cultural-dataset/vietnamese_cultural_dataset,46,resnet50,db,account-1,pending,,,,
+culture-a__resnet50__db__seed_48,culture-a,/kaggle/input/datasets/dangduykhoab2207532/vietnamese-cultural-dataset/vietnamese_cultural_dataset,48,resnet50,db,account-2,pending,,,,
+culture-a__resnet50__db__seed_50,culture-a,/kaggle/input/datasets/dangduykhoab2207532/vietnamese-cultural-dataset/vietnamese_cultural_dataset,50,resnet50,db,account-2,pending,,,,
+culture-b__resnet50__db__seed_42,culture-b,/kaggle/working,42,resnet50,db,account-3,pending,,,,
+culture-b__resnet50__db__seed_44,culture-b,/kaggle/working,44,resnet50,db,account-3,pending,,,,
+culture-b__resnet50__db__seed_46,culture-b,/kaggle/working,46,resnet50,db,account-3,pending,,,,
+culture-b__resnet50__db__seed_48,culture-b,/kaggle/working,48,resnet50,db,account-4,pending,,,,
+culture-b__resnet50__db__seed_50,culture-b,/kaggle/working,50,resnet50,db,account-4,pending,,,,

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -47,6 +48,53 @@ SUPPORTED_BACKBONES = (
     "swin_t",
     "vit_b_16",
 )
+
+
+def _safe_identifier(value: str) -> str:
+    normalized = "".join(
+        character.lower()
+        if character.isalnum() or character in {"-", "_"}
+        else "-"
+        for character in value.strip()
+    )
+    normalized = "-".join(filter(None, normalized.split("-")))
+    if not normalized:
+        raise ValueError("Identifier không được rỗng.")
+    return normalized
+
+
+def _dataset_fingerprint(data_dir: Path) -> str:
+    """Hash metadata cây dữ liệu, không đọc toàn bộ nội dung ảnh."""
+    digest = hashlib.sha256()
+    files = sorted(path for path in data_dir.rglob("*") if path.is_file())
+    for path in files:
+        stat = path.stat()
+        relative = path.relative_to(data_dir).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(b"\n")
+    digest.update(f"file_count={len(files)}".encode("ascii"))
+    return digest.hexdigest()
+
+
+def _git_commit(project: Path) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project,
+            text=True,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "unknown"
+
+
+def _write_run_manifest(path: Path, manifest: Dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 _RUNTIME_EVENTS: List[Dict] = []
 _RUNTIME_LEDGER_PATH: Optional[Path] = None
@@ -205,7 +253,12 @@ def _find_restorable_output(input_root: Path, seed: int) -> Tuple[str, Path] | N
     return None
 
 
-def _validate_output_identity(output_dir: Path, seed: int, backbone: str) -> None:
+def _validate_output_identity(
+    output_dir: Path,
+    seed: int,
+    backbone: str,
+    dataset_id: Optional[str] = None,
+) -> None:
     metadata_path = output_dir / "experiment_metadata.json"
     if metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -214,6 +267,12 @@ def _validate_output_identity(output_dir: Path, seed: int, backbone: str) -> Non
                 "Kaggle Input không khớp thí nghiệm yêu cầu: "
                 f"metadata={metadata}, requested={{'seed': {seed}, "
                 f"'backbone': '{backbone}'}}."
+            )
+        stored_dataset = metadata.get("dataset_id")
+        if dataset_id and stored_dataset and stored_dataset != dataset_id:
+            raise ValueError(
+                "Kaggle Input thuộc dataset khác: "
+                f"stored={stored_dataset}, requested={dataset_id}."
             )
         return
 
@@ -235,6 +294,7 @@ def _restore_if_available(
     output_dir: Path,
     seed: int,
     backbone: str,
+    dataset_id: Optional[str] = None,
 ) -> None:
     if input_root is None or not input_root.is_dir():
         return
@@ -253,7 +313,7 @@ def _restore_if_available(
         shutil.copytree(path, output_dir, dirs_exist_ok=True)
     else:
         _safe_extract_tar(path, output_dir)
-    _validate_output_identity(output_dir, seed, backbone)
+    _validate_output_identity(output_dir, seed, backbone, dataset_id)
 
 
 def _restore_bayesian_if_available(
@@ -261,6 +321,7 @@ def _restore_bayesian_if_available(
     output_dir: Path,
     seed: int,
     backbone: str,
+    dataset_id: Optional[str] = None,
 ) -> Optional[Path]:
     """Khôi phục Bayesian Stage 5 từ output notebook cũ nếu có.
 
@@ -287,7 +348,9 @@ def _restore_bayesian_if_available(
         candidate_report = _first_report(candidate_bayesian)
         if candidate_report is None:
             continue
-        _validate_output_identity(candidate_root, seed, backbone)
+        _validate_output_identity(
+            candidate_root, seed, backbone, dataset_id
+        )
         print(
             "Khôi phục Bayesian Stage 5 từ output notebook cũ:",
             candidate_bayesian,
@@ -443,15 +506,53 @@ def run(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     working_dir = Path(args.working_dir)
     input_root = Path(args.kaggle_input_root) if args.kaggle_input_root else None
+    dataset_id = _safe_identifier(args.dataset_id)
+    account_id = _safe_identifier(args.account_id)
+    run_id = _safe_identifier(
+        args.run_id
+        or f"{dataset_id}__{args.backbone}__db__seed_{args.seed}"
+    )
 
     _required_dataset_splits(data_dir)
+    dataset_fingerprint = _dataset_fingerprint(data_dir)
+    git_commit = _git_commit(project)
     output_dir.mkdir(parents=True, exist_ok=True)
-    _restore_if_available(input_root, output_dir, args.seed, args.backbone)
+    _restore_if_available(
+        input_root,
+        output_dir,
+        args.seed,
+        args.backbone,
+        dataset_id,
+    )
     _initialize_runtime_tracking(
         output_dir,
         seed=args.seed,
         backbone=args.backbone,
     )
+    manifest_path = output_dir / "run_manifest.json"
+    run_manifest = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "dataset_id": dataset_id,
+        "dataset_path": str(data_dir),
+        "dataset_fingerprint": dataset_fingerprint,
+        "seed": args.seed,
+        "backbone": args.backbone,
+        "gflownet_loss": "db",
+        "account_id": account_id,
+        "git_commit": git_commit,
+        "status": "running",
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "expected_methods": [
+            "cnn_baseline",
+            "gflownet_db",
+            "gflownet_db_bayesian",
+            "random",
+            "topk_confidence",
+            "greedy_coverage",
+        ],
+    }
+    _write_run_manifest(manifest_path, run_manifest)
     config = _write_config(
         config_path,
         seed=args.seed,
@@ -461,7 +562,15 @@ def run(args: argparse.Namespace) -> None:
     )
     (output_dir / "experiment_metadata.json").write_text(
         json.dumps(
-            {"seed": args.seed, "backbone": args.backbone, "loss_type": "db"},
+            {
+                "run_id": run_id,
+                "dataset_id": dataset_id,
+                "dataset_fingerprint": dataset_fingerprint,
+                "seed": args.seed,
+                "backbone": args.backbone,
+                "loss_type": "db",
+                "git_commit": git_commit,
+            },
             ensure_ascii=False,
             indent=2,
         ),
@@ -806,6 +915,7 @@ def run(args: argparse.Namespace) -> None:
             output_dir,
             args.seed,
             args.backbone,
+            dataset_id,
         )
         bayesian_checkpoint = (
             bayesian_dir / "rule_regularized_best.pth"
@@ -1023,6 +1133,37 @@ def run(args: argparse.Namespace) -> None:
         backbone=args.backbone,
         include_bayesian=args.include_bayesian,
     )
+    export_dir = working_dir / "experiment_exports" / run_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    lightweight_exports = {
+        "results.csv": results_path,
+        "fairness.csv": fairness_path,
+        "exact_test_metrics.csv": exact_csv_path,
+        "exact_test_metrics.json": exact_json_path,
+        "rule_set_quality.csv": quality_csv_path,
+        "rule_set_quality.json": quality_json_path,
+        "rule_ranking_analysis.csv": ranking_output_csv,
+        "rule_ranking_metrics.csv": ranking_output_metrics,
+        "rule_ranking_summary.txt": ranking_output_summary,
+        "runtime_summary.csv": runtime_summary_path,
+        "runtime_events.json": runtime_events_path,
+    }
+    for export_name, source in lightweight_exports.items():
+        shutil.copy2(source, export_dir / export_name)
+    for checkpoint_output in checkpoint_eval_outputs:
+        shutil.copy2(checkpoint_output, export_dir / checkpoint_output.name)
+
+    run_manifest.update(
+        {
+            "status": "complete",
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "output_dir": str(output_dir),
+            "managed_export_dir": str(export_dir),
+            "result_rows": len(result_rows),
+        }
+    )
+    _write_run_manifest(manifest_path, run_manifest)
+    _write_run_manifest(export_dir / "run_manifest.json", run_manifest)
     archive = shutil.make_archive(
         str(working_dir / f"seed_{args.seed}_artifacts"),
         "gztar",
@@ -1040,6 +1181,8 @@ def run(args: argparse.Namespace) -> None:
     print(" -", ranking_output_summary)
     print(" -", runtime_summary_path)
     print(" -", runtime_events_path)
+    print(" -", export_dir / "run_manifest.json")
+    print(" -", export_dir)
     for checkpoint_output in checkpoint_eval_outputs:
         print(" -", checkpoint_output)
     print(" -", archive)
@@ -1049,6 +1192,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="params.yaml")
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--dataset-id", default="default_dataset")
+    parser.add_argument("--account-id", default="unassigned")
+    parser.add_argument("--run-id", default=None)
     parser.add_argument(
         "--backbone",
         default="mobilenetv3_small",
@@ -1094,4 +1240,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
-    run(build_parser().parse_args())
+    parsed_args = build_parser().parse_args()
+    try:
+        run(parsed_args)
+    except Exception as error:
+        failed_manifest_path = Path(parsed_args.output_dir) / "run_manifest.json"
+        if failed_manifest_path.exists():
+            failed_manifest = json.loads(
+                failed_manifest_path.read_text(encoding="utf-8")
+            )
+            failed_manifest.update(
+                {
+                    "status": "failed",
+                    "finished_at_utc": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                }
+            )
+            _write_run_manifest(failed_manifest_path, failed_manifest)
+        raise
