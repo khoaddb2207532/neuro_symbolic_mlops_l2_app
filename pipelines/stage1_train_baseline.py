@@ -9,9 +9,9 @@ import torch
 
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
-from src.models.cnn import CNNBaseline
+from src.models.cnn import ImageClassificationBaseline
 from src.training.trainer import train_model
-from src.utils.config import load_params
+from src.utils.config import load_params, selected_baseline_architecture
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
 
@@ -33,7 +33,14 @@ def main(params_path: str) -> None:
     save_dir = os.path.join(params["output_dir"], "01_baseline")
     os.makedirs(save_dir, exist_ok=True)
 
-    model = CNNBaseline(num_classes=params["num_classes"])
+    architecture = selected_baseline_architecture(params)
+    model = ImageClassificationBaseline(
+        architecture=architecture,
+        num_classes=params["num_classes"],
+        pretrained=params.get("baseline_comparison", {}).get(
+            "pretrained", True
+        ),
+    )
 
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],

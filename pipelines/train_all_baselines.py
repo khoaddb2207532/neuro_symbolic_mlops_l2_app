@@ -6,7 +6,7 @@ Chạy:
 Có thể ghi đè danh sách/cấu hình:
     python -m pipelines.train_all_baselines --config params.yaml \
         --models mobilenetv3_small resnet50 densenet121 \
-        efficientnet_b0 swin_t vit_b_16 --epochs 30
+        efficientnet_b0 alexnet swin_t vit_b_16 vit_b_32 --epochs 30
 """
 import argparse
 import gc

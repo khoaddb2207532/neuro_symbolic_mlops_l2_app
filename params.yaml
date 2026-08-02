@@ -23,11 +23,13 @@ baseline_comparison:
   selected_architecture: mobilenetv3_small
   architectures:
     - mobilenetv3_small
+    - alexnet
     - resnet50
     - densenet121
     - efficientnet_b0
     - swin_t
     - vit_b_16
+    - vit_b_32
   pretrained: true
 
 rules:

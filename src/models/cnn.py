@@ -14,11 +14,13 @@ from src.utils.checkpoint import load_model_weights
 
 BASELINE_ARCHITECTURES = (
     "mobilenetv3_small",
+    "alexnet",
     "resnet50",
     "densenet121",
     "efficientnet_b0",
     "swin_t",
     "vit_b_16",
+    "vit_b_32",
 )
 
 
@@ -28,11 +30,32 @@ def normalize_architecture_name(name: str) -> str:
         "efficientnet": "efficientnet_b0",
         "efficientnetb0": "efficientnet_b0",
         "swint": "swin_t",
-        "vit": "vit_b_16",
+        "swinti": "swin_t",
+        "swin_tiny": "swin_t",
+        "alex": "alexnet",
+        "vit": "vit_b_32",
         "vit_b16": "vit_b_16",
+        "vit_b32": "vit_b_32",
     }
     normalized = name.strip().lower().replace("-", "_")
     return aliases.get(normalized, normalized)
+
+
+class _FeatureClassifierBackbone(nn.Module):
+    """Ghép backbone trả feature với classifier mới, giữ interface torchvision."""
+
+    def __init__(
+        self,
+        feature_backbone: nn.Module,
+        feature_dim: int,
+        num_classes: int,
+    ):
+        super().__init__()
+        self.feature_backbone = feature_backbone
+        self.fc = nn.Linear(feature_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(self.feature_backbone(x))
 
 
 def _build_comparison_backbone(
@@ -49,6 +72,12 @@ def _build_comparison_backbone(
         old_head = backbone.classifier[-1]
         backbone.classifier[-1] = nn.Linear(old_head.in_features, num_classes)
         return backbone, backbone.classifier[-1]
+    if architecture == "alexnet":
+        backbone = models.alexnet(weights=weights)
+        old_head = backbone.classifier[-1]
+        backbone.classifier[-1] = nn.Linear(old_head.in_features, num_classes)
+        # Forward-pre-hook trên lớp cuối nhận đúng feature sau classifier[:-1].
+        return backbone, backbone.classifier[-1]
     if architecture == "resnet50":
         backbone = models.resnet50(weights=weights)
         backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)
@@ -63,14 +92,23 @@ def _build_comparison_backbone(
         backbone.classifier[-1] = nn.Linear(old_head.in_features, num_classes)
         return backbone, backbone.classifier[-1]
     if architecture == "swin_t":
-        backbone = models.swin_t(weights=weights)
-        backbone.head = nn.Linear(backbone.head.in_features, num_classes)
-        return backbone, backbone.head
+        swin = models.swin_t(weights=weights)
+        feature_dim = swin.head.in_features
+        swin.head = nn.Identity()
+        backbone = _FeatureClassifierBackbone(swin, feature_dim, num_classes)
+        return backbone, backbone.fc
     if architecture == "vit_b_16":
-        backbone = models.vit_b_16(weights=weights)
-        old_head = backbone.heads.head
-        backbone.heads.head = nn.Linear(old_head.in_features, num_classes)
-        return backbone, backbone.heads.head
+        vit = models.vit_b_16(weights=weights)
+        feature_dim = vit.hidden_dim
+        vit.heads = nn.Identity()
+        backbone = _FeatureClassifierBackbone(vit, feature_dim, num_classes)
+        return backbone, backbone.fc
+    if architecture == "vit_b_32":
+        vit = models.vit_b_32(weights=weights)
+        feature_dim = vit.hidden_dim
+        vit.heads = nn.Identity()
+        backbone = _FeatureClassifierBackbone(vit, feature_dim, num_classes)
+        return backbone, backbone.fc
 
     raise ValueError(
         f"Kiến trúc '{architecture}' không được hỗ trợ. "
@@ -90,6 +128,7 @@ class ImageClassificationBaseline(nn.Module):
         architecture: str,
         num_classes: int = 12,
         pretrained: bool = True,
+        freeze_features: bool = False,
     ):
         super().__init__()
         self.architecture = normalize_architecture_name(architecture)
@@ -98,6 +137,11 @@ class ImageClassificationBaseline(nn.Module):
         )
         self._captured_features: Optional[torch.Tensor] = None
         self.head.register_forward_pre_hook(self._capture_head_input)
+        if freeze_features:
+            head_param_ids = {id(parameter) for parameter in self.head.parameters()}
+            for parameter in self.backbone.parameters():
+                if id(parameter) not in head_param_ids:
+                    parameter.requires_grad = False
 
     def _capture_head_input(self, _module, inputs) -> None:
         self._captured_features = torch.flatten(inputs[0], 1)
@@ -115,12 +159,29 @@ class ImageClassificationBaseline(nn.Module):
         backbone_params = [
             parameter
             for parameter in self.backbone.parameters()
-            if id(parameter) not in head_param_ids
+            if id(parameter) not in head_param_ids and parameter.requires_grad
         ]
         return [
-            {"params": self.head.parameters(), "lr": lr_head, "name": "head"},
+            {
+                "params": [
+                    parameter for parameter in self.head.parameters()
+                    if parameter.requires_grad
+                ],
+                "lr": lr_head,
+                "name": "head",
+            },
             {"params": backbone_params, "lr": lr_backbone, "name": "backbone"},
         ]
+
+    def freeze_bn(self) -> None:
+        """Đóng băng BatchNorm của CNN và LayerNorm của Swin/ViT."""
+        for module in self.modules():
+            if isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)):
+                module.eval()
+                if module.weight is not None:
+                    module.weight.requires_grad = False
+                if module.bias is not None:
+                    module.bias.requires_grad = False
 
 
 def _build_mobilenet_v3(num_classes: int) -> nn.Module:

@@ -42,11 +42,13 @@ from openpyxl import load_workbook
 HEURISTICS = ("random", "topk_confidence", "greedy_coverage")
 SUPPORTED_BACKBONES = (
     "mobilenetv3_small",
+    "alexnet",
     "resnet50",
     "densenet121",
     "efficientnet_b0",
     "swin_t",
     "vit_b_16",
+    "vit_b_32",
 )
 
 
