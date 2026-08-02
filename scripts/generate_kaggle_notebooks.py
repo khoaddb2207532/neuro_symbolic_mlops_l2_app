@@ -78,7 +78,9 @@ def generate(registry_path: Path, template_path: Path, output_dir: Path, git_com
             notebook["cells"][
                 clone_cell_index + 1:clone_cell_index + 1
             ] = dataset_b_cells
-        destination = output_dir / f'{row["run_id"]}.ipynb'
+        model_output_dir = output_dir / row["backbone"]
+        model_output_dir.mkdir(parents=True, exist_ok=True)
+        destination = model_output_dir / f'{row["run_id"]}.ipynb'
         destination.write_text(
             json.dumps(notebook, ensure_ascii=False, indent=1),
             encoding="utf-8",

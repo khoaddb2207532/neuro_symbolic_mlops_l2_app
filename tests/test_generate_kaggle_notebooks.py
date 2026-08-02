@@ -14,8 +14,12 @@ def test_dataset_b_gets_two_cells_after_clone(tmp_path: Path) -> None:
     )
     template = Path("managed-experiment-runner-template.ipynb")
     generate(registry, template, tmp_path / "generated", "abc123")
-    notebook_a = json.loads((tmp_path / "generated/run-a.ipynb").read_text(encoding="utf-8"))
-    notebook_b = json.loads((tmp_path / "generated/run-b.ipynb").read_text(encoding="utf-8"))
+    notebook_a = json.loads(
+        (tmp_path / "generated/resnet50/run-a.ipynb").read_text(encoding="utf-8")
+    )
+    notebook_b = json.loads(
+        (tmp_path / "generated/resnet50/run-b.ipynb").read_text(encoding="utf-8")
+    )
 
     tags_a = [tag for cell in notebook_a["cells"] for tag in cell.get("metadata", {}).get("tags", [])]
     tags_b = [tag for cell in notebook_b["cells"] for tag in cell.get("metadata", {}).get("tags", [])]
