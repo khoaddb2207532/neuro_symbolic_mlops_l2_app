@@ -10,6 +10,8 @@ import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
+
 
 def _load_expected_candidates(
     input_root: Path, expected: set[str]
@@ -70,6 +72,7 @@ def bundle(
     runs_dir = output_dir / "runs"
     runs_dir.mkdir(exist_ok=True)
     index_rows = []
+    result_frames = []
     for run_id, (source, manifest) in sorted(candidates.items()):
         destination = runs_dir / run_id
         if destination.exists():
@@ -87,12 +90,55 @@ def bundle(
                 "status": manifest["status"],
             }
         )
+        frame = pd.read_csv(source / "results.csv")
+        if "method" not in frame.columns:
+            raise RuntimeError(f"{run_id}: results.csv has no method column")
+        frame.insert(0, "run_id", run_id)
+        frame.insert(1, "dataset_id", manifest["dataset_id"])
+        frame.insert(2, "seed", int(manifest["seed"]))
+        frame.insert(3, "backbone", backbone)
+        result_frames.append(frame)
 
     index_path = output_dir / "model_run_index.csv"
     with index_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(index_rows[0]))
         writer.writeheader()
         writer.writerows(index_rows)
+
+    all_results = pd.concat(result_frames, ignore_index=True)
+    all_results.to_csv(output_dir / "model_all_results.csv", index=False)
+    metric_columns = [
+        column
+        for column in all_results.select_dtypes(include="number").columns
+        if column != "seed"
+    ]
+    if not metric_columns:
+        raise RuntimeError("results.csv has no numeric metric columns to aggregate")
+    summary = (
+        all_results.groupby(["dataset_id", "method"])[metric_columns]
+        .agg(["mean", "std"])
+        .reset_index()
+    )
+    summary.columns = [
+        "_".join(str(part) for part in column if part).rstrip("_")
+        if isinstance(column, tuple)
+        else column
+        for column in summary.columns
+    ]
+    seed_counts = (
+        all_results.groupby(["dataset_id", "method"])["seed"]
+        .nunique()
+        .rename("n_seeds")
+        .reset_index()
+    )
+    summary = seed_counts.merge(summary, on=["dataset_id", "method"], validate="one_to_one")
+    bad_counts = summary[summary["n_seeds"] != len(seeds)]
+    if not bad_counts.empty:
+        details = bad_counts[["dataset_id", "method", "n_seeds"]].to_dict("records")
+        raise RuntimeError(
+            f"Three-seed aggregation is incomplete for {backbone}: {details}"
+        )
+    summary.to_csv(output_dir / "model_three_seed_summary.csv", index=False)
 
     bundle_manifest = {
         "schema_version": 1,
@@ -104,6 +150,9 @@ def bundle(
         "run_count": len(index_rows),
         "run_ids": [row["run_id"] for row in index_rows],
         "git_commits": sorted({row["git_commit"] for row in index_rows}),
+        "result_row_count": len(all_results),
+        "summary_row_count": len(summary),
+        "summary_file": "model_three_seed_summary.csv",
     }
     (output_dir / "model_bundle_manifest.json").write_text(
         json.dumps(bundle_manifest, ensure_ascii=False, indent=2), encoding="utf-8"

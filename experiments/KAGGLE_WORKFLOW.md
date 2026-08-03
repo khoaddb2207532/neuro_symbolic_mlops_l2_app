@@ -67,6 +67,12 @@ Notebook chỉ thành công nếu tìm thấy chính xác danh sách run mong đ
 khớp backbone/seed. Output gồm thư mục `bundle_<BACKBONE>`, index CSV, bundle
 manifest và file `.tar.gz`.
 
+Ngay sau khi bundle hoàn tất, notebook hiển thị và lưu hai bảng:
+
+- `model_all_results.csv`: kết quả chi tiết của từng seed;
+- `model_three_seed_summary.csv`: mean, sample standard deviation và `n_seeds`
+  theo từng dataset/phương pháp.
+
 ## 4. Tổng hợp chính thức
 
 Tạo notebook từ `managed-multi-dataset-aggregate.ipynb`:

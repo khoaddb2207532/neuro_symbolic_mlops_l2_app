@@ -133,8 +133,17 @@ def test_model_bundle_accepts_runs_from_multiple_accounts(tmp_path: Path) -> Non
     assert archive.exists()
     index = pd.read_csv(tmp_path / "bundle_resnet50" / "model_run_index.csv")
     assert set(index["seed"]) == {46, 48, 50}
+    all_results = pd.read_csv(tmp_path / "bundle_resnet50" / "model_all_results.csv")
+    assert len(all_results) == 3
+    summary = pd.read_csv(
+        tmp_path / "bundle_resnet50" / "model_three_seed_summary.csv"
+    )
+    assert summary.loc[0, "n_seeds"] == 3
+    assert summary.loc[0, "test_accuracy_mean"] == pytest.approx(0.8)
+    assert summary.loc[0, "test_accuracy_std"] == pytest.approx(0.0)
     manifest = json.loads(
         (tmp_path / "bundle_resnet50" / "model_bundle_manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["backbone"] == "resnet50"
     assert manifest["seeds"] == [46, 48, 50]
+    assert manifest["summary_file"] == "model_three_seed_summary.csv"
