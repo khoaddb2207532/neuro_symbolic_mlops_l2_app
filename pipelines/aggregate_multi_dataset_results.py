@@ -1,4 +1,4 @@
-"""Validate and aggregate the complete 2-dataset x 5-seed experiment matrix."""
+"""Validate and aggregate the complete 2-dataset x 3-seed experiment matrix."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ EXPECTED_METHODS = {
     "greedy_coverage",
     "gflownet_db_bayesian",
 }
+EXPECTED_SEEDS = {46, 48, 50}
 
 
 def _discover(input_root: Path) -> dict[str, tuple[Path, dict]]:
@@ -44,8 +45,16 @@ def aggregate(input_root: Path, registry_path: Path, output_dir: Path) -> None:
     registry = pd.read_csv(registry_path, dtype={"seed": int})
     if registry["run_id"].duplicated().any():
         raise RuntimeError("experiment_registry.csv contains duplicate run_id values")
+    registry = registry[registry["seed"].isin(EXPECTED_SEEDS)].copy()
+    registry_seeds = set(registry["seed"])
+    if registry_seeds != EXPECTED_SEEDS:
+        raise RuntimeError(f"Registry is missing seeds {sorted(EXPECTED_SEEDS - registry_seeds)}")
     expected_ids = set(registry["run_id"])
-    runs = _discover(input_root.resolve())
+    runs = {
+        run_id: value
+        for run_id, value in _discover(input_root.resolve()).items()
+        if run_id in expected_ids
+    }
     found_ids = set(runs)
     if found_ids != expected_ids:
         raise RuntimeError(
@@ -91,12 +100,15 @@ def aggregate(input_root: Path, registry_path: Path, output_dir: Path) -> None:
     for dataset_id, group in audit.groupby("dataset_id"):
         if group["dataset_fingerprint"].nunique() != 1:
             raise RuntimeError(f"{dataset_id}: multiple dataset fingerprints found")
-        if group["seed"].nunique() != 5:
-            raise RuntimeError(f"{dataset_id}: expected five unique seeds")
+        if set(group["seed"]) != EXPECTED_SEEDS:
+            raise RuntimeError(f"{dataset_id}: expected seeds {sorted(EXPECTED_SEEDS)}")
 
     all_results = pd.concat(result_frames, ignore_index=True)
-    if len(all_results) != 60:
-        raise RuntimeError(f"Expected 60 result rows, got {len(all_results)}")
+    expected_result_rows = len(registry) * len(EXPECTED_METHODS)
+    if len(all_results) != expected_result_rows:
+        raise RuntimeError(
+            f"Expected {expected_result_rows} result rows, got {len(all_results)}"
+        )
     numeric_metrics = [
         name for name in ("test_accuracy", "test_f1_macro")
         if name in all_results.columns

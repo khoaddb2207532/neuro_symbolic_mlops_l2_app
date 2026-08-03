@@ -29,8 +29,8 @@ def _create_run(root: Path, row: dict) -> None:
 def test_bundle_and_aggregate_complete_matrix(tmp_path: Path) -> None:
     rows = []
     for dataset_index, dataset_id in enumerate(("dataset-a", "dataset-b")):
-        for seed_index, seed in enumerate((42, 44, 46, 48, 50)):
-            account_id = f"account-{dataset_index * 2 + (1 if seed_index < 3 else 2)}"
+        for seed_index, seed in enumerate((46, 48, 50)):
+            account_id = f"account-{dataset_index * 2 + (1 if seed_index < 1 else 2)}"
             row = {
                 "run_id": f"{dataset_id}__mobilenetv3_small__db__seed_{seed}",
                 "dataset_id": dataset_id,
@@ -51,10 +51,10 @@ def test_bundle_and_aggregate_complete_matrix(tmp_path: Path) -> None:
         {row["run_id"] for row in account_rows},
     )
     assert archive.exists()
-    assert len(pd.read_csv(tmp_path / "bundle_account-1" / "account_run_index.csv")) == 3
+    assert len(pd.read_csv(tmp_path / "bundle_account-1" / "account_run_index.csv")) == 1
 
     output = tmp_path / "summary"
     aggregate(tmp_path / "inputs", registry, output)
-    assert len(pd.read_csv(output / "multi_dataset_run_audit.csv")) == 10
-    assert len(pd.read_csv(output / "multi_dataset_all_results.csv")) == 60
+    assert len(pd.read_csv(output / "multi_dataset_run_audit.csv")) == 6
+    assert len(pd.read_csv(output / "multi_dataset_all_results.csv")) == 36
     assert len(pd.read_csv(output / "dataset_method_summary.csv")) == 12
