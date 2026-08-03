@@ -22,8 +22,67 @@ def _write_run(root: Path, run_id: str, backbone: str, seed: int) -> None:
         "status": "complete",
     }
     (run_dir / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (run_dir / "results.csv").write_text(
-        f"method,seed,backbone,test_accuracy\ncnn_baseline,{seed},{backbone},0.8\n",
+    methods = [
+        "cnn_baseline",
+        "gflownet_db",
+        "gflownet_db_bayesian",
+        "random",
+        "topk_confidence",
+        "greedy_coverage",
+    ]
+    pd.DataFrame(
+        [
+            {
+                "method": method,
+                "seed": seed,
+                "backbone": backbone,
+                "test_accuracy": 0.8 + index / 100,
+                "test_f1_macro": 0.7 + index / 100,
+            }
+            for index, method in enumerate(methods)
+        ]
+    ).to_csv(run_dir / "results.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "seed": seed,
+                "backbone": backbone,
+                "gflownet": 10,
+                "random": 10,
+                "topk_confidence": 10,
+                "greedy_coverage": 10,
+            }
+        ]
+    ).to_csv(run_dir / "fairness.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "seed": seed,
+                "backbone": backbone,
+                "method": method,
+                "reward_score": 0.5 + index / 100,
+            }
+            for index, method in enumerate(
+                ("gflownet_elite", "random", "topk_confidence", "greedy_coverage")
+            )
+        ]
+    ).to_csv(run_dir / "rule_set_quality.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "seed": seed,
+                "backbone": backbone,
+                "spearman_inclusion_confidence": 0.4,
+            }
+        ]
+    ).to_csv(run_dir / "rule_ranking_metrics.csv", index=False)
+    (run_dir / "exact_test_metrics.json").write_text(
+        json.dumps(
+            [
+                {"seed": seed, "backbone": backbone, "method": method}
+                for method in methods
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -137,7 +196,7 @@ def test_model_bundle_accepts_runs_from_multiple_accounts(tmp_path: Path) -> Non
     index = pd.read_csv(tmp_path / "bundle_resnet50" / "model_run_index.csv")
     assert set(index["seed"]) == {46, 48, 50}
     all_results = pd.read_csv(tmp_path / "bundle_resnet50" / "model_all_results.csv")
-    assert len(all_results) == 3
+    assert len(all_results) == 18
     summary = pd.read_csv(
         tmp_path / "bundle_resnet50" / "model_three_seed_summary.csv"
     )
@@ -150,3 +209,6 @@ def test_model_bundle_accepts_runs_from_multiple_accounts(tmp_path: Path) -> Non
     assert manifest["backbone"] == "resnet50"
     assert manifest["seeds"] == [46, 48, 50]
     assert manifest["summary_file"] == "model_three_seed_summary.csv"
+    assert (tmp_path / "bundle_resnet50" / "official_experiment_comparison.csv").exists()
+    assert (tmp_path / "bundle_resnet50" / "paired_delta_vs_cnn.csv").exists()
+    assert (tmp_path / "bundle_resnet50" / "matched_budget_audit.csv").exists()

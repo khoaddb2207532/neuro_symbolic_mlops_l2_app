@@ -33,7 +33,7 @@ Sinh một notebook đóng gói cho mỗi mô hình. Mặc định bundle chỉ 
 
 Nếu registry hiện chỉ chứa một backbone nhưng cần tái sử dụng cùng ma trận cho nhiều
 mô hình, truyền danh sách tường minh, ví dụ
-`--backbones alexnet resnet50 swin_t vit_b_32`.
+`--backbones mobilenetv3_small alexnet resnet50 swin_t vit_b_32`.
 
 ## 2. Chạy các run notebook
 
@@ -72,6 +72,11 @@ Ngay sau khi bundle hoàn tất, notebook hiển thị và lưu hai bảng:
 - `model_all_results.csv`: kết quả chi tiết của từng seed;
 - `model_three_seed_summary.csv`: mean, sample standard deviation và `n_seeds`
   theo từng dataset/phương pháp.
+- `official_experiment_comparison.csv`: bảng chính thức từng seed kèm thống kê nhóm;
+- `paired_delta_vs_cnn.csv` và `bayesian_vs_core_methods.csv`: paired delta;
+- `matched_budget_audit.csv`: hậu kiểm fairness;
+- `rule_set_quality_mean_std.csv` và `rule_ranking_metrics_mean_std.csv`:
+  tổng hợp chất lượng/ranking của tập luật.
 
 ## 4. Tổng hợp chính thức
 
