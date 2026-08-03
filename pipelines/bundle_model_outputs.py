@@ -13,6 +13,40 @@ from pathlib import Path
 import pandas as pd
 
 
+IDENTITY_COLUMNS = ("run_id", "dataset_id", "seed", "backbone")
+
+
+def _attach_identity(frame: pd.DataFrame, run_id: str, manifest: dict) -> pd.DataFrame:
+    identity = {
+        "run_id": run_id,
+        "dataset_id": str(manifest["dataset_id"]),
+        "seed": int(manifest["seed"]),
+        "backbone": str(manifest["backbone"]),
+    }
+    for column, expected_value in identity.items():
+        if column in frame.columns:
+            observed = frame[column].dropna()
+            if column == "seed":
+                try:
+                    observed_values = set(pd.to_numeric(observed).astype(int))
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"{run_id}: results.csv contains invalid seed values"
+                    ) from exc
+                expected_values = {int(expected_value)}
+            else:
+                observed_values = set(observed.astype(str))
+                expected_values = {str(expected_value)}
+            if observed_values and observed_values != expected_values:
+                raise RuntimeError(
+                    f"{run_id}: results.csv {column}={sorted(observed_values)!r}, "
+                    f"expected {expected_value!r}"
+                )
+        frame[column] = expected_value
+    remaining = [column for column in frame.columns if column not in IDENTITY_COLUMNS]
+    return frame[[*IDENTITY_COLUMNS, *remaining]]
+
+
 def _load_expected_candidates(
     input_root: Path, expected: set[str]
 ) -> dict[str, tuple[Path, dict]]:
@@ -93,10 +127,7 @@ def bundle(
         frame = pd.read_csv(source / "results.csv")
         if "method" not in frame.columns:
             raise RuntimeError(f"{run_id}: results.csv has no method column")
-        frame.insert(0, "run_id", run_id)
-        frame.insert(1, "dataset_id", manifest["dataset_id"])
-        frame.insert(2, "seed", int(manifest["seed"]))
-        frame.insert(3, "backbone", backbone)
+        frame = _attach_identity(frame, run_id, manifest)
         result_frames.append(frame)
 
     index_path = output_dir / "model_run_index.csv"

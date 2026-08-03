@@ -22,7 +22,10 @@ def _write_run(root: Path, run_id: str, backbone: str, seed: int) -> None:
         "status": "complete",
     }
     (run_dir / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (run_dir / "results.csv").write_text("method,test_accuracy\ncnn_baseline,0.8\n", encoding="utf-8")
+    (run_dir / "results.csv").write_text(
+        f"method,seed,backbone,test_accuracy\ncnn_baseline,{seed},{backbone},0.8\n",
+        encoding="utf-8",
+    )
 
 
 def test_generate_one_bundle_per_model_with_three_seeds(tmp_path: Path) -> None:
