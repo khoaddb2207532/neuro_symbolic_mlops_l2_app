@@ -12,24 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from pipelines.aggregate_official_results import build_official_table
-
 
 IDENTITY_COLUMNS = ("run_id", "dataset_id", "seed", "backbone")
-EXPECTED_METHODS = {
-    "cnn_baseline",
-    "gflownet_db",
-    "gflownet_db_bayesian",
-    "random",
-    "topk_confidence",
-    "greedy_coverage",
-}
-RULE_QUALITY_METHODS = {
-    "gflownet_elite",
-    "random",
-    "topk_confidence",
-    "greedy_coverage",
-}
 
 
 def _attach_identity(frame: pd.DataFrame, run_id: str, manifest: dict) -> pd.DataFrame:
@@ -61,45 +45,6 @@ def _attach_identity(frame: pd.DataFrame, run_id: str, manifest: dict) -> pd.Dat
         frame[column] = expected_value
     remaining = [column for column in frame.columns if column not in IDENTITY_COLUMNS]
     return frame[[*IDENTITY_COLUMNS, *remaining]]
-
-
-def _read_csv_artifacts(
-    candidates: dict[str, tuple[Path, dict]], filename: str
-) -> pd.DataFrame:
-    frames = []
-    for run_id, (source, manifest) in sorted(candidates.items()):
-        path = source / filename
-        if not path.exists():
-            raise RuntimeError(f"{run_id}: missing required artifact {filename}")
-        frames.append(_attach_identity(pd.read_csv(path), run_id, manifest))
-    return pd.concat(frames, ignore_index=True, sort=False)
-
-
-def _mean_std_summary(
-    frame: pd.DataFrame, group_columns: list[str], excluded: set[str] | None = None
-) -> pd.DataFrame:
-    excluded = excluded or set()
-    metrics = [
-        column
-        for column in frame.select_dtypes(include="number").columns
-        if column != "seed" and column not in excluded
-    ]
-    if not metrics:
-        raise RuntimeError("No numeric metrics are available for aggregation")
-    summary = frame.groupby(group_columns)[metrics].agg(["mean", "std"]).reset_index()
-    summary.columns = [
-        "_".join(str(part) for part in column if part).rstrip("_")
-        if isinstance(column, tuple)
-        else column
-        for column in summary.columns
-    ]
-    counts = (
-        frame.groupby(group_columns)["seed"]
-        .nunique()
-        .rename("n_seeds")
-        .reset_index()
-    )
-    return counts.merge(summary, on=group_columns, validate="one_to_one")
 
 
 def _load_expected_candidates(
@@ -191,26 +136,33 @@ def bundle(
         writer.writeheader()
         writer.writerows(index_rows)
 
-    all_results = (
-        pd.concat(result_frames, ignore_index=True)
-        .drop_duplicates(["dataset_id", "seed", "backbone", "method"], keep="last")
-        .sort_values(["dataset_id", "seed", "method"])
-        .reset_index(drop=True)
-    )
-    for dataset_id, dataset_results in all_results.groupby("dataset_id"):
-        for seed in sorted(seeds):
-            present = set(dataset_results.loc[dataset_results["seed"] == seed, "method"])
-            missing = EXPECTED_METHODS - present
-            unexpected = present - EXPECTED_METHODS
-            if missing or unexpected:
-                raise RuntimeError(
-                    f"{dataset_id} seed {seed}: missing methods={sorted(missing)}, "
-                    f"unexpected methods={sorted(unexpected)}"
-                )
-
+    all_results = pd.concat(result_frames, ignore_index=True)
     all_results.to_csv(output_dir / "model_all_results.csv", index=False)
-    all_results.to_csv(output_dir / "all_seed_results.csv", index=False)
-    summary = _mean_std_summary(all_results, ["dataset_id", "backbone", "method"])
+    metric_columns = [
+        column
+        for column in all_results.select_dtypes(include="number").columns
+        if column != "seed"
+    ]
+    if not metric_columns:
+        raise RuntimeError("results.csv has no numeric metric columns to aggregate")
+    summary = (
+        all_results.groupby(["dataset_id", "method"])[metric_columns]
+        .agg(["mean", "std"])
+        .reset_index()
+    )
+    summary.columns = [
+        "_".join(str(part) for part in column if part).rstrip("_")
+        if isinstance(column, tuple)
+        else column
+        for column in summary.columns
+    ]
+    seed_counts = (
+        all_results.groupby(["dataset_id", "method"])["seed"]
+        .nunique()
+        .rename("n_seeds")
+        .reset_index()
+    )
+    summary = seed_counts.merge(summary, on=["dataset_id", "method"], validate="one_to_one")
     bad_counts = summary[summary["n_seeds"] != len(seeds)]
     if not bad_counts.empty:
         details = bad_counts[["dataset_id", "method", "n_seeds"]].to_dict("records")
@@ -218,126 +170,6 @@ def bundle(
             f"Three-seed aggregation is incomplete for {backbone}: {details}"
         )
     summary.to_csv(output_dir / "model_three_seed_summary.csv", index=False)
-    summary.to_csv(output_dir / "summary_mean_std.csv", index=False)
-
-    official_frames = []
-    for dataset_id, dataset_results in all_results.groupby("dataset_id"):
-        official = build_official_table(dataset_results, seeds)
-        official["dataset_id"] = dataset_id
-        official = official[["dataset_id", *[c for c in official if c != "dataset_id"]]]
-        official_frames.append(official)
-    official_comparison = pd.concat(official_frames, ignore_index=True)
-    official_comparison.to_csv(
-        output_dir / "official_experiment_comparison.csv", index=False
-    )
-
-    paired_rows = []
-    bayesian_rows = []
-    paired_metrics = [
-        metric for metric in ("test_accuracy", "test_f1_macro") if metric in all_results
-    ]
-    for dataset_id, dataset_results in all_results.groupby("dataset_id"):
-        for metric in paired_metrics:
-            wide = dataset_results.pivot(index="seed", columns="method", values=metric)
-            for method in sorted(EXPECTED_METHODS - {"cnn_baseline"}):
-                delta = wide[method] - wide["cnn_baseline"]
-                paired_rows.append(
-                    {
-                        "dataset_id": dataset_id,
-                        "method": method,
-                        "metric": metric,
-                        "delta_vs_cnn_mean": delta.mean(),
-                        "delta_vs_cnn_sample_std": delta.std(ddof=1),
-                        "n_seeds": len(delta),
-                    }
-                )
-            for reference in sorted(EXPECTED_METHODS - {"gflownet_db_bayesian"}):
-                delta = wide["gflownet_db_bayesian"] - wide[reference]
-                bayesian_rows.append(
-                    {
-                        "dataset_id": dataset_id,
-                        "comparison": f"gflownet_db_bayesian - {reference}",
-                        "metric": metric,
-                        "delta_mean": delta.mean(),
-                        "delta_sample_std": delta.std(ddof=1),
-                        "n_seeds": len(delta),
-                    }
-                )
-    pd.DataFrame(paired_rows).to_csv(output_dir / "paired_delta_vs_cnn.csv", index=False)
-    pd.DataFrame(bayesian_rows).to_csv(
-        output_dir / "bayesian_vs_core_methods.csv", index=False
-    )
-
-    fairness = _read_csv_artifacts(candidates, "fairness.csv").drop_duplicates(
-        ["dataset_id", "seed", "backbone"], keep="last"
-    )
-    rule_columns = ["gflownet", "random", "topk_confidence", "greedy_coverage"]
-    missing_fairness_columns = set(rule_columns) - set(fairness.columns)
-    if missing_fairness_columns:
-        raise RuntimeError(
-            f"fairness.csv is missing columns {sorted(missing_fairness_columns)}"
-        )
-    fairness["verified"] = fairness[rule_columns].nunique(axis=1).eq(1)
-    if not fairness["verified"].all():
-        raise RuntimeError("Matched-budget verification failed")
-    fairness.to_csv(output_dir / "matched_budget_audit.csv", index=False)
-
-    rule_quality = _read_csv_artifacts(candidates, "rule_set_quality.csv").drop_duplicates(
-        ["dataset_id", "seed", "backbone", "method"], keep="last"
-    )
-    for dataset_id, dataset_quality in rule_quality.groupby("dataset_id"):
-        for seed in sorted(seeds):
-            present = set(dataset_quality.loc[dataset_quality["seed"] == seed, "method"])
-            missing = RULE_QUALITY_METHODS - present
-            if missing:
-                raise RuntimeError(
-                    f"{dataset_id} seed {seed}: missing rule-quality methods {sorted(missing)}"
-                )
-    quality_summary = _mean_std_summary(
-        rule_quality, ["dataset_id", "backbone", "method"]
-    )
-    rule_quality.to_csv(output_dir / "rule_set_quality_all_seeds.csv", index=False)
-    quality_summary.to_csv(output_dir / "rule_set_quality_mean_std.csv", index=False)
-
-    ranking = _read_csv_artifacts(candidates, "rule_ranking_metrics.csv").drop_duplicates(
-        ["dataset_id", "seed", "backbone"], keep="last"
-    )
-    ranking_summary = _mean_std_summary(ranking, ["dataset_id", "backbone"])
-    ranking.to_csv(output_dir / "rule_ranking_metrics_all_seeds.csv", index=False)
-    ranking_summary.to_csv(output_dir / "rule_ranking_metrics_mean_std.csv", index=False)
-
-    exact_metrics = {}
-    for run_id, (source, manifest) in sorted(candidates.items()):
-        exact_path = source / "exact_test_metrics.json"
-        if not exact_path.exists():
-            raise RuntimeError(f"{run_id}: missing required artifact exact_test_metrics.json")
-        payload = json.loads(exact_path.read_text(encoding="utf-8"))
-        for item in payload:
-            item = dict(item)
-            item["dataset_id"] = manifest["dataset_id"]
-            item["seed"] = int(manifest["seed"])
-            item["backbone"] = backbone
-            key = (item["dataset_id"], item["seed"], str(item.get("method", "")))
-            exact_metrics[key] = item
-    (output_dir / "exact_test_metrics_all_seeds.json").write_text(
-        json.dumps(list(exact_metrics.values()), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    runtime_paths = [source / "runtime_summary.csv" for source, _ in candidates.values()]
-    if all(path.exists() for path in runtime_paths):
-        runtime = _read_csv_artifacts(candidates, "runtime_summary.csv").drop_duplicates(
-            ["dataset_id", "seed", "backbone", "stage"], keep="last"
-        )
-        measured = runtime[
-            runtime.get("runtime_status", pd.Series(index=runtime.index, dtype=str))
-            == "measured"
-        ]
-        runtime.to_csv(output_dir / "runtime_all_seeds.csv", index=False)
-        if not measured.empty:
-            _mean_std_summary(
-                measured, ["dataset_id", "backbone", "stage"]
-            ).to_csv(output_dir / "runtime_mean_std.csv", index=False)
 
     bundle_manifest = {
         "schema_version": 1,
@@ -352,7 +184,6 @@ def bundle(
         "result_row_count": len(all_results),
         "summary_row_count": len(summary),
         "summary_file": "model_three_seed_summary.csv",
-        "official_comparison_file": "official_experiment_comparison.csv",
     }
     (output_dir / "model_bundle_manifest.json").write_text(
         json.dumps(bundle_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
