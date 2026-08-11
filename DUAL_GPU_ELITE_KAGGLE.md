@@ -61,6 +61,16 @@ GPU 0: GFlowNet loss=tb -> stage5_train_rule_bayesian_elite
 GPU 1: GFlowNet loss=db -> stage5_train_rule_bayesian_elite
 ```
 
+Sau khi nhánh TB hoàn tất Bayesian Elite, GPU 0 chạy thêm stage nghiêm ngặt:
+
+```text
+GFlowNet loss=tb -> stage5_train_rule_bayesian_tb
+```
+
+Stage này dùng frozen sampler `gflownet_best_diverse.pth`, xác minh
+`gflownet_rule_order.pkl` thực sự có `loss_type=tb`, và lưu riêng tại
+`tb/05b_rules_model_bayesian/` nên không ghi đè kết quả Elite.
+
 Mỗi tiến trình chỉ thấy một GPU thông qua `CUDA_VISIBLE_DEVICES`, dùng config và
 output riêng dưới `/kaggle/working/dual_elite_seed_<seed>/{tb,db}`.
 
@@ -97,6 +107,7 @@ Các method gồm:
 - `gflownet_fixed_prior` nếu checkpoint cũ tồn tại;
 - `gflownet_tb_bayesian_elite`;
 - `gflownet_db_bayesian_elite`.
+- `gflownet_tb_bayesian` (Bayesian chuẩn, frozen diverse sampler TB).
 
 CSV có accuracy, macro precision/recall/F1, weighted F1 và delta của accuracy/F1
 so với baseline.

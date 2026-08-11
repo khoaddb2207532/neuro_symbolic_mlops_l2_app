@@ -146,6 +146,11 @@ def _prepare_branch(
     config["baseline_comparison"]["architectures"] = [args.backbone]
     config["gflownet"]["loss_type"] = loss_type
     config["gflownet"]["num_iterations"] = args.gflownet_iterations
+    config.setdefault("rule_penalty_bayesian", {})["K"] = args.mc_samples
+    config["rule_penalty_bayesian"]["sampler_checkpoint"] = (
+        "gflownet_best_diverse.pth"
+    )
+    config["rule_penalty_bayesian"]["resume"] = True
     config.setdefault("rule_penalty_bayesian_elite", {})["K"] = args.mc_samples
     config["rule_penalty_bayesian_elite"]["sampler_checkpoint"] = (
         "gflownet_best_elite.pth"
@@ -179,10 +184,16 @@ def _prepare_branch(
 
 
 def _worker(project: Path, config_path: Path, branch_dir: Path) -> None:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    loss_type = config["gflownet"]["loss_type"]
     filtered = branch_dir / "04_filtered_rules"
     elite = filtered / "gflownet_best_elite.pth"
+    diverse = filtered / "gflownet_best_diverse.pth"
     rule_order = filtered / "gflownet_rule_order.pkl"
-    if elite.exists() and rule_order.exists():
+    required_stage4 = [elite, rule_order]
+    if loss_type == "tb":
+        required_stage4.append(diverse)
+    if all(path.exists() for path in required_stage4):
         print("SKIP/RESUME Stage 4: đã có elite checkpoint + rule order.", flush=True)
     else:
         subprocess.run(
@@ -196,9 +207,10 @@ def _worker(project: Path, config_path: Path, branch_dir: Path) -> None:
             cwd=project,
             check=True,
         )
-    if not elite.exists() or not rule_order.exists():
+    if not all(path.exists() for path in required_stage4):
         raise FileNotFoundError(
-            f"Stage 4 không tạo đủ elite artefact trong {filtered}."
+            "Stage 4 không tạo đủ artefact cho branch "
+            f"{loss_type}: {required_stage4}."
         )
     subprocess.run(
         [
@@ -211,6 +223,21 @@ def _worker(project: Path, config_path: Path, branch_dir: Path) -> None:
         cwd=project,
         check=True,
     )
+    if loss_type == "tb":
+        # Additional requested stage: use the diverse frozen sampler trained
+        # with TB, while keeping its output/resume checkpoint separate from
+        # the elite variant above.
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pipelines.stage5_train_rule_bayesian_tb",
+                "--config",
+                str(config_path),
+            ],
+            cwd=project,
+            check=True,
+        )
 
 
 def _stream(pipe, prefix: str, log_file) -> None:
@@ -338,6 +365,14 @@ def _evaluate(
             / "rule_regularized_best.pth",
         )
         for loss_type in LOSSES
+    )
+    specs.append(
+        (
+            "gflownet_tb_bayesian",
+            branch_dirs["tb"]
+            / "05b_rules_model_bayesian"
+            / "rule_regularized_best.pth",
+        )
     )
     missing = [path for _, path in specs if not path.exists()]
     if missing:
