@@ -42,6 +42,35 @@ Có thể thay danh sách `--backbones` bằng bất kỳ năm model nào trong:
 `mobilenetv3_small`, `alexnet`, `resnet50`, `densenet121`, `efficientnet_b0`,
 `swin_t`, `vit_b_16`, `vit_b_32`.
 
+### Khuyến nghị mới: 5 notebook, mỗi model chạy tất cả seed
+
+Thay vì 50 notebook riêng lẻ, sinh đúng một notebook cho mỗi backbone:
+
+```powershell
+python scripts/generate_dual_gpu_elite_model_notebooks.py `
+  --git-commit <FULL_40_CHARACTER_SHA> `
+  --datasets culture-a culture-b `
+  --backbones mobilenetv3_small alexnet resnet50 densenet121 efficientnet_b0 `
+  --seeds 42 44 46 48 50
+```
+
+Kết quả gồm đúng 5 file:
+
+```text
+generated_dual_gpu_elite_model_notebooks/
+├── dual_elite_all_seeds_mobilenetv3_small.ipynb
+├── dual_elite_all_seeds_alexnet.ipynb
+├── dual_elite_all_seeds_resnet50.ipynb
+├── dual_elite_all_seeds_densenet121.ipynb
+└── dual_elite_all_seeds_efficientnet_b0.ipynb
+```
+
+Mỗi notebook tuần tự chạy mọi dataset/seed đã khai báo. Trong từng seed, hai
+worker TB/DB vẫn chiếm hai GPU song song. Output cũ được tìm theo
+`<dataset>__<backbone>__db__seed_<seed>`; DB Bayesian cũ được tái sử dụng nếu
+checkpoint đã tồn tại. Module `aggregate_dual_gpu_elite_model` tổng hợp mean/std
+qua các seed mà không cần cell import pandas/matplotlib.
+
 Generator đọc `experiments/experiment_registry.csv`. `PRIOR_RUN_ID` là run DB
 cùng dataset/backbone/seed đã chứa baseline, feature, raw rules và ba heuristic.
 
@@ -61,15 +90,17 @@ GPU 0: GFlowNet loss=tb -> stage5_train_rule_bayesian_elite
 GPU 1: GFlowNet loss=db -> stage5_train_rule_bayesian_elite
 ```
 
-Sau khi nhánh TB hoàn tất Bayesian Elite, GPU 0 chạy thêm stage nghiêm ngặt:
+Sau khi Bayesian Elite hoàn tất, mỗi GPU chạy thêm Bayesian Stage 5 chuẩn từ
+frozen diverse sampler của chính objective đó:
 
 ```text
 GFlowNet loss=tb -> stage5_train_rule_bayesian_tb
+GFlowNet loss=db -> stage5_train_rule_bayesian
 ```
 
-Stage này dùng frozen sampler `gflownet_best_diverse.pth`, xác minh
-`gflownet_rule_order.pkl` thực sự có `loss_type=tb`, và lưu riêng tại
-`tb/05b_rules_model_bayesian/` nên không ghi đè kết quả Elite.
+Hai stage dùng frozen sampler `gflownet_best_diverse.pth`. Wrapper TB xác minh
+`gflownet_rule_order.pkl` thực sự có `loss_type=tb`. Kết quả được lưu riêng tại
+`{tb,db}/05b_rules_model_bayesian/` nên không ghi đè kết quả Elite.
 
 Mỗi tiến trình chỉ thấy một GPU thông qua `CUDA_VISIBLE_DEVICES`, dùng config và
 output riêng dưới `/kaggle/working/dual_elite_seed_<seed>/{tb,db}`.
@@ -114,8 +145,9 @@ Các method gồm:
 - `greedy_coverage`;
 - `gflownet_fixed_prior` nếu checkpoint cũ tồn tại;
 - `gflownet_tb_bayesian_elite`;
-- `gflownet_db_bayesian_elite`.
-- `gflownet_tb_bayesian` (Bayesian chuẩn, frozen diverse sampler TB).
+- `gflownet_db_bayesian_elite`;
+- `gflownet_tb_bayesian` (Bayesian chuẩn, frozen diverse sampler TB);
+- `gflownet_db_bayesian` (Bayesian Stage 5 ban đầu, frozen diverse sampler DB).
 
 CSV có accuracy, macro precision/recall/F1, weighted F1 và delta của accuracy/F1
 so với baseline.

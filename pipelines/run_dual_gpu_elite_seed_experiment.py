@@ -170,6 +170,17 @@ def _prepare_branch(
     branch_dir.mkdir(parents=True, exist_ok=True)
     for name in ("baseline_comparison", "02_features", "03_rules"):
         _link_directory(prior / name, branch_dir / name)
+    if loss_type == "db":
+        # Reuse the original DB Bayesian Stage 5 when prior stages already
+        # produced it. The worker treats its checkpoint as a completion marker.
+        prior_bayesian = prior / "05b_rules_model_bayesian"
+        if (
+            prior_bayesian / "rule_regularized_best.pth"
+        ).exists():
+            _link_directory(
+                prior_bayesian,
+                branch_dir / "05b_rules_model_bayesian",
+            )
 
     config = yaml.safe_load((project / args.config).read_text(encoding="utf-8"))
     config["seed"] = args.seed
@@ -227,9 +238,9 @@ def _worker(project: Path, config_path: Path, branch_dir: Path) -> None:
     elite = filtered / "gflownet_best_elite.pth"
     diverse = filtered / "gflownet_best_diverse.pth"
     rule_order = filtered / "gflownet_rule_order.pkl"
-    required_stage4 = [elite, rule_order]
-    if loss_type == "tb":
-        required_stage4.append(diverse)
+    # Both branches run the original Bayesian stage after Elite, therefore
+    # both require the frozen diverse sampler in addition to the elite policy.
+    required_stage4 = [elite, diverse, rule_order]
     if all(path.exists() for path in required_stage4):
         print("SKIP/RESUME Stage 4: đã có elite checkpoint + rule order.", flush=True)
     else:
@@ -260,15 +271,29 @@ def _worker(project: Path, config_path: Path, branch_dir: Path) -> None:
         cwd=project,
         check=True,
     )
-    if loss_type == "tb":
-        # Additional requested stage: use the diverse frozen sampler trained
-        # with TB, while keeping its output/resume checkpoint separate from
-        # the elite variant above.
+    # Run the original Bayesian Stage 5 from the diverse frozen sampler for
+    # both objectives. TB uses a strict wrapper; DB uses the original module.
+    bayesian_module = (
+        "pipelines.stage5_train_rule_bayesian_tb"
+        if loss_type == "tb"
+        else "pipelines.stage5_train_rule_bayesian"
+    )
+    standard_checkpoint = (
+        branch_dir
+        / "05b_rules_model_bayesian"
+        / "rule_regularized_best.pth"
+    )
+    if standard_checkpoint.exists():
+        print(
+            f"SKIP Bayesian chuẩn {loss_type.upper()}: {standard_checkpoint}",
+            flush=True,
+        )
+    else:
         subprocess.run(
             [
                 sys.executable,
                 "-m",
-                "pipelines.stage5_train_rule_bayesian_tb",
+                bayesian_module,
                 "--config",
                 str(config_path),
             ],
@@ -403,13 +428,14 @@ def _evaluate(
         )
         for loss_type in LOSSES
     )
-    specs.append(
+    specs.extend(
         (
-            "gflownet_tb_bayesian",
-            branch_dirs["tb"]
+            f"gflownet_{loss_type}_bayesian",
+            branch_dirs[loss_type]
             / "05b_rules_model_bayesian"
             / "rule_regularized_best.pth",
         )
+        for loss_type in LOSSES
     )
     missing = [path for _, path in specs if not path.exists()]
     if missing:
@@ -441,6 +467,7 @@ def _evaluate(
         details.append(
             {
                 "seed": args.seed,
+                "dataset_id": args.dataset_id,
                 "backbone": args.backbone,
                 "method": method,
                 "checkpoint": str(checkpoint),
@@ -450,6 +477,7 @@ def _evaluate(
         rows.append(
             {
                 "seed": args.seed,
+                "dataset_id": args.dataset_id,
                 "backbone": args.backbone,
                 "method": method,
                 "test_accuracy": metrics["accuracy"],
