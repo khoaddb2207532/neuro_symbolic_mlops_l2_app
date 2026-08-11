@@ -60,6 +60,14 @@ rule_penalty_bayesian:
   K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
   sampler_checkpoint: "gflownet_best_diverse.pth"
 
+# Biến thể không chờ GFlowNet hội tụ: freeze policy ngay tại lần nó sinh ra
+# ruleset elite có reward cao nhất từng thấy. training_last.pth được ghi nguyên
+# tử sau mỗi epoch để resume đầy đủ khi Kaggle/session bị ngắt.
+rule_penalty_bayesian_elite:
+  K: 32
+  sampler_checkpoint: "gflownet_best_elite.pth"
+  resume: true
+
 # Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
 # GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.
 rule_ranking_analysis:

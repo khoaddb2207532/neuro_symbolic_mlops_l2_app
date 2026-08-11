@@ -85,6 +85,7 @@ stages:
     - outputs/04_filtered_rules/gflownet_rule_order.pkl
     - outputs/04_filtered_rules/gflownet_best_converged.pth
     - outputs/04_filtered_rules/gflownet_best_diverse.pth
+    - outputs/04_filtered_rules/gflownet_best_elite.pth
 
   analyze_rule_rankings:
     cmd: python -m pipelines.stage4b_analyze_rule_rankings --config params.yaml
@@ -143,6 +144,34 @@ stages:
     - outputs/05b_rules_model_bayesian/gflownet_sampling_summary.json
     metrics:
     - outputs/05b_rules_model_bayesian/dvclive_rule_regularized_bayesian/metrics.json:
+        cache: true
+
+  train_rule_regularized_bayesian_elite:
+    cmd: python -m pipelines.stage5_train_rule_bayesian_elite --config params.yaml
+    deps:
+    - pipelines/stage5_train_rule_bayesian.py
+    - pipelines/stage5_train_rule_bayesian_elite.py
+    - src/rules/bayesian_penalty.py
+    - src/gflownet/rule_ranking_analysis.py
+    - src/training/trainer.py
+    - outputs/baseline_comparison
+    - outputs/04_filtered_rules/gflownet_best_elite.pth
+    - outputs/04_filtered_rules/gflownet_rule_order.pkl
+    params:
+    - baseline_comparison.selected_architecture
+    - transfer_learning
+    - rule_penalty
+    - rule_penalty_bayesian
+    - rule_penalty_bayesian_elite
+    outs:
+    - outputs/05b_rules_model_bayesian_elite/final_model_weights.pth
+    - outputs/05b_rules_model_bayesian_elite/training_last.pth:
+        persist: true
+    - outputs/05b_rules_model_bayesian_elite/gflownet_sampled_rules.pkl
+    - outputs/05b_rules_model_bayesian_elite/gflownet_sampled_rules.xlsx
+    - outputs/05b_rules_model_bayesian_elite/gflownet_sampling_summary.json
+    metrics:
+    - outputs/05b_rules_model_bayesian_elite/dvclive_rule_regularized_bayesian_elite/metrics.json:
         cache: true
 
   train_rule_distillation:

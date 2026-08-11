@@ -6,11 +6,13 @@
 """
 import copy
 import os
+import random
 import time
 from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import numpy as np
 from dvclive import Live
 from torch.utils.data import DataLoader
 
@@ -51,6 +53,41 @@ def save_checkpoint(path: str, model: nn.Module, optimizer, epoch: int, best_acc
         },
         path,
     )
+
+
+def _rng_state(train_loader: DataLoader) -> dict:
+    state = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+    generator = getattr(train_loader, "generator", None)
+    state["train_loader_generator"] = (
+        generator.get_state() if generator is not None else None
+    )
+    return state
+
+
+def _restore_rng_state(state: dict, train_loader: DataLoader) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"].cpu())
+    if torch.cuda.is_available() and state.get("cuda") is not None:
+        torch.cuda.set_rng_state_all([item.cpu() for item in state["cuda"]])
+    generator = getattr(train_loader, "generator", None)
+    if generator is not None and state.get("train_loader_generator") is not None:
+        generator.set_state(state["train_loader_generator"].cpu())
+
+
+def _save_resume_checkpoint(path: str, state: dict) -> None:
+    """Atomically replace the last-epoch checkpoint.
+
+    A crash during ``torch.save`` leaves the previous completed epoch intact.
+    """
+    tmp_path = f"{path}.tmp"
+    torch.save(state, tmp_path)
+    os.replace(tmp_path, path)
 
 
 def train_one_epoch(
@@ -236,12 +273,95 @@ def train_model(
     }
     best_acc = 0.0
     best_weights = copy.deepcopy(model.state_dict())
+    start_epoch = 0
+    resume_enabled = bool(cfg.get("resume", False))
+    resume_path = cfg.get(
+        "resume_checkpoint_path",
+        os.path.join(cfg["save_dir"], "training_last.pth"),
+    )
+    resume_identity = cfg.get("resume_identity", {})
+
+    if resume_enabled and os.path.exists(resume_path):
+        try:
+            resume_state = torch.load(
+                resume_path, map_location=device, weights_only=False
+            )
+        except TypeError:  # PyTorch < 2.6
+            resume_state = torch.load(resume_path, map_location=device)
+        saved_identity = resume_state.get("resume_identity", {})
+        if saved_identity != resume_identity:
+            raise ValueError(
+                "Resume checkpoint belongs to a different experiment: "
+                f"saved={saved_identity}, current={resume_identity}."
+            )
+        model.load_state_dict(resume_state["model_state_dict"])
+        optimizer.load_state_dict(resume_state["optimizer_state_dict"])
+        history = resume_state["history"]
+        best_acc = float(resume_state["best_acc"])
+        best_weights = resume_state["best_weights"]
+        start_epoch = int(resume_state["epoch"])
+        stopper_state = resume_state["early_stopping"]
+        stopper.counter = int(stopper_state["counter"])
+        stopper.best_score = stopper_state["best_score"]
+        stopper.early_stop = bool(stopper_state["early_stop"])
+        if penalty_module is not None and resume_state.get("penalty_state") is not None:
+            if not hasattr(penalty_module, "load_resume_state_dict"):
+                raise TypeError(
+                    f"{type(penalty_module).__name__} cannot restore penalty state."
+                )
+            penalty_module.load_resume_state_dict(resume_state["penalty_state"])
+        _restore_rng_state(resume_state["rng_state"], train_loader)
+        logger.info(
+            "Resume training từ epoch %d/%d tại %s.",
+            start_epoch,
+            num_epochs,
+            resume_path,
+        )
+        if resume_state.get("completed", False):
+            model.load_state_dict(best_weights)
+            torch.save(
+                model.state_dict(),
+                os.path.join(cfg["save_dir"], "final_model_weights.pth"),
+            )
+            logger.info("Checkpoint resume đã hoàn tất; không train lại.")
+            return model, history
+
+    def build_resume_state(epoch: int, *, completed: bool) -> dict:
+        penalty_state = None
+        if penalty_module is not None and hasattr(
+            penalty_module, "resume_state_dict"
+        ):
+            penalty_state = penalty_module.resume_state_dict()
+        return {
+            "version": 1,
+            "epoch": epoch,
+            "completed": completed,
+            "resume_identity": resume_identity,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "best_acc": best_acc,
+            "best_weights": best_weights,
+            "history": history,
+            "early_stopping": {
+                "counter": stopper.counter,
+                "best_score": stopper.best_score,
+                "early_stop": stopper.early_stop,
+            },
+            "penalty_state": penalty_state,
+            "rng_state": _rng_state(train_loader),
+        }
+
     start_time = time.time()
+    last_completed_epoch = start_epoch
 
     # DVC itself orchestrates the pipeline.  Disabling DVCLive's implicit
     # experiment save avoids checking outputs from unrelated stages and avoids
     # repeatedly appending generated params/metrics/plots to dvc.yaml.
-    with Live(dir=cfg["dvclive_path"], save_dvc_exp=False) as live:
+    with Live(
+        dir=cfg["dvclive_path"],
+        save_dvc_exp=False,
+        resume=resume_enabled and start_epoch > 0,
+    ) as live:
         live.log_params(
             {
                 "num_epochs": num_epochs, "lr": lr, "patience": patience,
@@ -256,7 +376,7 @@ def train_model(
             }
         )
 
-        for epoch in range(num_epochs):
+        for epoch in range(start_epoch, num_epochs):
             # ---- Ủ nhiệt độ khớp luật: mềm ở epoch đầu -> cứng dần về cuối ----
             if penalty_module is not None:
                 penalty_module.update_temperature(epoch)
@@ -339,12 +459,23 @@ def train_model(
                 live.log_metric("best_val_acc", best_acc)
                 live.log_metric(f"best_{monitor_metric}", monitor_value)
 
-            if early_stop_enabled and stopper.early_stop:
+            should_stop = early_stop_enabled and stopper.early_stop
+            if should_stop:
                 logger.info("Early stopping triggered.")
                 live.log_metric("early_stop", 1)
-                break
 
             live.next_step()
+            last_completed_epoch = epoch + 1
+            if resume_enabled:
+                _save_resume_checkpoint(
+                    resume_path,
+                    build_resume_state(
+                        last_completed_epoch,
+                        completed=should_stop or last_completed_epoch >= num_epochs,
+                    ),
+                )
+            if should_stop:
+                break
 
     elapsed = time.time() - start_time
     if penalty_module is not None:
@@ -360,4 +491,9 @@ def train_model(
     model.load_state_dict(best_weights)
     final_weight_path = os.path.join(cfg["save_dir"], "final_model_weights.pth")
     torch.save(model.state_dict(), final_weight_path)
+    if resume_enabled:
+        _save_resume_checkpoint(
+            resume_path,
+            build_resume_state(last_completed_epoch, completed=True),
+        )
     return model, history

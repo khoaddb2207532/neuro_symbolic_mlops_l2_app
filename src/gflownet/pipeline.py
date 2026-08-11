@@ -44,18 +44,58 @@ class _EliteTracker:
     hiện tại có tốt hơn hay không. Đây là phần biến GFlowNet thành một công
     cụ tìm kiếm tổ hợp (elitist), tách biệt khỏi việc train sampler."""
 
-    def __init__(self) -> None:
+    def __init__(self, ckpt_path: Optional[str] = None) -> None:
         self.best_log_reward = float("-inf")
         self.best_selected: List[Rule] = []
+        self.best_mask: Optional[torch.Tensor] = None
+        self.ckpt_path = ckpt_path
 
-    def update(self, val_trajectories: list, valid_rules: List[Rule]) -> None:
+    def update(self, val_trajectories: list, valid_rules: List[Rule]) -> bool:
+        improved = False
         for vt in val_trajectories:
             r = vt.log_rewards
             idx = r.argmax().item()
             if r[idx].item() > self.best_log_reward:
                 self.best_log_reward = r[idx].item()
                 mask = vt.terminating_states.tensor[idx].bool().cpu()
+                self.best_mask = mask.clone()
                 self.best_selected = [valid_rules[i] for i in torch.where(mask)[0].tolist()]
+                improved = True
+        return improved
+
+    def save_checkpoint(
+        self,
+        gflownet,
+        *,
+        iteration: int,
+        n_valid: int,
+        max_rules: int,
+    ) -> None:
+        """Save the policy at the instant it produced the best ruleset seen.
+
+        Unlike convergence/diversity checkpoints, this role depends only on
+        elite ruleset reward and therefore never requires policy convergence.
+        """
+        if self.ckpt_path is None or self.best_mask is None:
+            return
+        checkpoint = {
+            "iteration": iteration,
+            "model": {
+                key: value.cpu().clone()
+                for key, value in gflownet.state_dict().items()
+            },
+            "best_log_reward": self.best_log_reward,
+            "elite_mask": self.best_mask.clone(),
+            "n_rules": n_valid,
+            "max_rules": max_rules,
+            "checkpoint_role": "elite",
+        }
+        tmp_path = f"{self.ckpt_path}.tmp"
+        torch.save(
+            checkpoint,
+            tmp_path,
+        )
+        os.replace(tmp_path, self.ckpt_path)
 
 
 class _CheckpointTracker:
@@ -283,7 +323,9 @@ class BaseGFlowNetPipeline(abc.ABC):
         output_dir: str,
         live: Optional["Live"] = None, # type: ignore
     ) -> List[Rule]:
-        elite = _EliteTracker()
+        elite = _EliteTracker(
+            os.path.join(output_dir, "gflownet_best_elite.pth")
+        )
         ckpt = _CheckpointTracker(
             os.path.join(output_dir, "gflownet_best_converged.pth")
         )
@@ -326,7 +368,13 @@ class BaseGFlowNetPipeline(abc.ABC):
                 scheduler.step(tb_residual)
 
                 sampler_ckpt.update(avg_val, dist_metrics, gflownet, it + 1, n_valid, max_rules, early_stop_delta)
-                elite.update(all_vt, valid_rules)
+                if elite.update(all_vt, valid_rules):
+                    elite.save_checkpoint(
+                        gflownet,
+                        iteration=it + 1,
+                        n_valid=n_valid,
+                        max_rules=max_rules,
+                    )
 
 
                 if live is not None:
@@ -371,7 +419,19 @@ class BaseGFlowNetPipeline(abc.ABC):
 
         if log_rs[best_idx].item() > elite.best_log_reward:
             # nếu 20 mẫu cuối tình cờ tốt hơn cả lịch sử -> cập nhật
-            final_selected = [valid_rules[i] for i in torch.where(term_states[best_idx])[0].tolist()]
+            elite.best_log_reward = log_rs[best_idx].item()
+            elite.best_mask = term_states[best_idx].clone()
+            elite.best_selected = [
+                valid_rules[i]
+                for i in torch.where(elite.best_mask)[0].tolist()
+            ]
+            elite.save_checkpoint(
+                gflownet,
+                iteration=num_iterations,
+                n_valid=n_valid,
+                max_rules=max_rules,
+            )
+            final_selected = elite.best_selected
         else:
             final_selected = elite.best_selected
 
