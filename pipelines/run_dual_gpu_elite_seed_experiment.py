@@ -44,6 +44,43 @@ def _write_csv(path: Path, rows: Iterable[Dict]) -> None:
         writer.writerows(rows)
 
 
+def _write_comparison_report(
+    run_root: Path, seed: int, rows: Iterable[Dict]
+) -> Path:
+    """Print and persist the final comparison without notebook-side imports."""
+    ranked = sorted(rows, key=lambda row: row["test_f1_macro"], reverse=True)
+    print(f"\nSEED {seed} - EXACT TEST COMPARISON", flush=True)
+    print(
+        f"{'Method':<34} {'Accuracy':>10} {'Macro-F1':>10} "
+        f"{'Delta Acc':>11} {'Delta F1':>11}",
+        flush=True,
+    )
+    report_lines = [
+        f"# Seed {seed} exact test comparison",
+        "",
+        "| Method | Accuracy | Macro-F1 | Delta Acc vs baseline | Delta F1 vs baseline |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for row in ranked:
+        print(
+            f"{row['method']:<34} "
+            f"{row['test_accuracy']:>10.4f} "
+            f"{row['test_f1_macro']:>10.4f} "
+            f"{row['accuracy_delta_vs_baseline']:>+11.4f} "
+            f"{row['f1_delta_vs_baseline']:>+11.4f}",
+            flush=True,
+        )
+        report_lines.append(
+            f"| {row['method']} | {row['test_accuracy']:.4f} | "
+            f"{row['test_f1_macro']:.4f} | "
+            f"{row['accuracy_delta_vs_baseline']:+.4f} | "
+            f"{row['f1_delta_vs_baseline']:+.4f} |"
+        )
+    report_path = run_root / f"seed_{seed}_dual_elite_comparison.md"
+    report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+    return report_path
+
+
 def _required_prior_paths(prior: Path, backbone: str) -> list[Path]:
     paths = [
         prior / "baseline_comparison" / backbone / "baseline_best.pth",
@@ -327,7 +364,7 @@ def _evaluate(
     prior: Path,
     branch_dirs: Dict[str, Path],
     run_root: Path,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     # Import only after both training processes release their GPU contexts.
     import torch
 
@@ -440,7 +477,8 @@ def _evaluate(
     json_path.write_text(
         json.dumps(details, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    return csv_path, json_path
+    report_path = _write_comparison_report(run_root, args.seed, rows)
+    return csv_path, json_path, report_path
 
 
 def run(args: argparse.Namespace) -> None:
@@ -474,7 +512,9 @@ def run(args: argparse.Namespace) -> None:
         for loss in LOSSES
     }
     _launch_workers(project, branch_configs, branch_dirs, run_root)
-    csv_path, json_path = _evaluate(args, prior, branch_dirs, run_root)
+    csv_path, json_path, report_path = _evaluate(
+        args, prior, branch_dirs, run_root
+    )
 
     manifest.update(
         {
@@ -482,6 +522,7 @@ def run(args: argparse.Namespace) -> None:
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),
             "comparison_csv": str(csv_path),
             "details_json": str(json_path),
+            "comparison_report": str(report_path),
         }
     )
     manifest_path.write_text(
@@ -495,6 +536,7 @@ def run(args: argparse.Namespace) -> None:
     print("\nHoàn tất dual-GPU Bayesian Elite:")
     print(" -", csv_path)
     print(" -", json_path)
+    print(" -", report_path)
     print(" -", manifest_path)
     print(" -", archive)
 

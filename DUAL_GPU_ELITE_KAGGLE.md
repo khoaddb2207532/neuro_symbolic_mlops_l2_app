@@ -92,10 +92,18 @@ mới rồi Run All. Runner tìm `dual_elite_manifest.json`, copy trạng thái 
 
 ## 5. Kết quả so sánh
 
-Notebook hiển thị bảng và biểu đồ từ:
+Module của repo xuất bảng so sánh từ:
 
 ```text
 seed_<seed>_dual_elite_comparison.csv
+```
+
+Notebook không có cell cuối import `pandas`, `matplotlib` hoặc `IPython`.
+Module `pipelines.run_dual_gpu_elite_seed_experiment` tự in bảng xếp hạng vào
+log của cell chạy chính và lưu thêm báo cáo Markdown:
+
+```text
+seed_<seed>_dual_elite_comparison.md
 ```
 
 Các method gồm:
