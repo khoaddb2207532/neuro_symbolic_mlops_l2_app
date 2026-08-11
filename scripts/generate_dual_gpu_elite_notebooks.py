@@ -6,7 +6,20 @@ import argparse
 import csv
 import json
 import re
+from itertools import product
 from pathlib import Path
+
+
+SUPPORTED_BACKBONES = {
+    "mobilenetv3_small",
+    "alexnet",
+    "resnet50",
+    "densenet121",
+    "efficientnet_b0",
+    "swin_t",
+    "vit_b_16",
+    "vit_b_32",
+}
 
 
 def _dataset_setup(dataset_id: str, data_dir: str) -> list[str]:
@@ -35,6 +48,10 @@ def generate(
     template_path: Path,
     output_dir: Path,
     git_commit: str,
+    *,
+    backbones: list[str] | None = None,
+    seeds: list[int] | None = None,
+    datasets: list[str] | None = None,
 ) -> None:
     if not re.fullmatch(r"[0-9a-fA-F]{40}", git_commit):
         raise ValueError("--git-commit phải là full 40-character commit SHA đã push.")
@@ -42,16 +59,32 @@ def generate(
     with registry_path.open(newline="", encoding="utf-8") as file:
         rows = list(csv.DictReader(file))
 
-    seen = set()
+    dataset_config = {}
     for row in rows:
-        # One notebook launches both objectives; DB registry rows are the
-        # canonical prior-stage identity and prevent duplicate TB/DB launchers.
-        if row.get("loss_type", "db") != "db":
-            continue
-        identity = (row["dataset_id"], row["backbone"], int(row["seed"]))
-        if identity in seen:
-            continue
-        seen.add(identity)
+        dataset_config.setdefault(row["dataset_id"], row["data_dir"])
+    selected_datasets = datasets or sorted(dataset_config)
+    unknown_datasets = set(selected_datasets) - set(dataset_config)
+    if unknown_datasets:
+        raise ValueError(f"Dataset chưa có data_dir trong registry: {sorted(unknown_datasets)}")
+    selected_backbones = backbones or sorted({row["backbone"] for row in rows})
+    unknown_backbones = set(selected_backbones) - SUPPORTED_BACKBONES
+    if unknown_backbones:
+        raise ValueError(f"Backbone không được hỗ trợ: {sorted(unknown_backbones)}")
+    selected_seeds = seeds or sorted({int(row["seed"]) for row in rows})
+
+    generated_count = 0
+    for dataset_id, backbone, seed in product(
+        selected_datasets, selected_backbones, selected_seeds
+    ):
+        data_dir = dataset_config[dataset_id]
+        run_id = f"{dataset_id}__{backbone}__db__seed_{seed}"
+        row = {
+            "dataset_id": dataset_id,
+            "data_dir": data_dir,
+            "seed": seed,
+            "backbone": backbone,
+            "run_id": run_id,
+        }
         if "REPLACE_" in row["data_dir"]:
             raise ValueError(f"Run {row['run_id']} chưa có data_dir thật.")
 
@@ -88,6 +121,15 @@ def generate(
             encoding="utf-8",
         )
         print(destination)
+        generated_count += 1
+    expected = len(selected_datasets) * len(selected_backbones) * len(selected_seeds)
+    if generated_count != expected:
+        raise RuntimeError(f"Sinh thiếu notebook: {generated_count}/{expected}")
+    print(
+        f"Generated {generated_count} notebooks = "
+        f"{len(selected_datasets)} datasets x {len(selected_backbones)} backbones "
+        f"x {len(selected_seeds)} seeds."
+    )
 
 
 if __name__ == "__main__":
@@ -96,10 +138,16 @@ if __name__ == "__main__":
     parser.add_argument("--template", default="dual-gpu-elite-seed-template.ipynb")
     parser.add_argument("--output-dir", default="generated_dual_gpu_elite_notebooks")
     parser.add_argument("--git-commit", required=True)
+    parser.add_argument("--backbones", nargs="+", choices=sorted(SUPPORTED_BACKBONES))
+    parser.add_argument("--seeds", nargs="+", type=int)
+    parser.add_argument("--datasets", nargs="+")
     args = parser.parse_args()
     generate(
         Path(args.registry),
         Path(args.template),
         Path(args.output_dir),
         args.git_commit,
+        backbones=args.backbones,
+        seeds=args.seeds,
+        datasets=args.datasets,
     )

@@ -28,6 +28,20 @@ Notebook được ghi vào:
 generated_dual_gpu_elite_notebooks/<dataset_id>/<backbone>/dual_elite_seed_<seed>.ipynb
 ```
 
+Để sinh 50 notebook cho 2 dataset × 5 backbone × 5 seed:
+
+```powershell
+python scripts/generate_dual_gpu_elite_notebooks.py `
+  --git-commit <FULL_40_CHARACTER_SHA> `
+  --datasets culture-a culture-b `
+  --backbones mobilenetv3_small alexnet resnet50 densenet121 efficientnet_b0 `
+  --seeds 42 44 46 48 50
+```
+
+Có thể thay danh sách `--backbones` bằng bất kỳ năm model nào trong:
+`mobilenetv3_small`, `alexnet`, `resnet50`, `densenet121`, `efficientnet_b0`,
+`swin_t`, `vit_b_16`, `vit_b_32`.
+
 Generator đọc `experiments/experiment_registry.csv`. `PRIOR_RUN_ID` là run DB
 cùng dataset/backbone/seed đã chứa baseline, feature, raw rules và ba heuristic.
 
