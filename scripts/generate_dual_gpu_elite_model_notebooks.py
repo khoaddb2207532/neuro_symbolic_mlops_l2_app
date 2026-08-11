@@ -8,8 +8,18 @@ import json
 import re
 from pathlib import Path
 
-from scripts.generate_dual_gpu_elite_notebooks import SUPPORTED_BACKBONES
+# from scripts.generate_dual_gpu_elite_notebooks import SUPPORTED_BACKBONES
 
+SUPPORTED_BACKBONES = {
+    "mobilenetv3_small",
+    "alexnet",
+    "resnet50",
+    "densenet121",
+    "efficientnet_b0",
+    "swin_t",
+    "vit_b_16",
+    "vit_b_32",
+}
 
 def generate(
     registry_path: Path,
