@@ -44,6 +44,11 @@ STAGE4_FILES = (
 )
 
 
+def _resume_enabled(run: dict[str, Any]) -> bool:
+    """Whether this run may restore and resume artifacts from an older session."""
+    return bool(run.get("resume", True))
+
+
 def partition_runs(runs: list[dict[str, Any]], gpu_count: int = 2) -> list[list[dict[str, Any]]]:
     """Deterministically assign runs round-robin to fixed GPU queues."""
     if gpu_count != 2:
@@ -160,12 +165,13 @@ def _prepare_config(
     config["baseline_comparison"]["architectures"] = [args.backbone]
     config["gflownet"]["loss_type"] = "tb"
     config["gflownet"]["num_iterations"] = args.gflownet_iterations
-    config.setdefault("rule_penalty", {})["resume"] = True
+    resume = _resume_enabled(run)
+    config.setdefault("rule_penalty", {})["resume"] = resume
     bayesian = config.setdefault("rule_penalty_bayesian", {})
     bayesian.update(
         K=args.mc_samples,
         sampler_checkpoint="gflownet_best_diverse.pth",
-        resume=True,
+        resume=resume,
     )
     destination = run_dir / "params_tb.yaml"
     destination.write_text(
@@ -190,7 +196,13 @@ def _train_seed(args: argparse.Namespace, run: dict[str, Any], gpu_index: int) -
         / args.backbone
         / f"seed_{int(run['seed'])}"
     )
-    _restore_run(args, run, run_dir)
+    if _resume_enabled(run):
+        _restore_run(args, run, run_dir)
+    else:
+        print(
+            f"Seed {run['seed']} chạy mới: bỏ qua restore từ Kaggle Input.",
+            flush=True,
+        )
     prior = _resolve_prior(args, run, run_dir)
     config = _prepare_config(args, run, prior, run_dir)
     manifest_path = run_dir / "tb_run_manifest.json"

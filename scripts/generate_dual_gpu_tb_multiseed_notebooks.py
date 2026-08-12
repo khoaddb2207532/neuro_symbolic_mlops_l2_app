@@ -39,6 +39,8 @@ def generate(
     backbones: list[str] | tuple[str, ...] = DEFAULT_BACKBONES,
     seeds: list[int] | tuple[int, ...] = (42, 44, 46, 48, 50),
     datasets: list[str] | tuple[str, ...] | None = None,
+    filename_prefix: str = "dual_gpu_tb_multiseed",
+    resume: bool = True,
 ) -> list[Path]:
     if not git_ref.strip():
         raise ValueError("--git-ref không được rỗng.")
@@ -64,6 +66,7 @@ def generate(
                 "data_dir": data_dirs[dataset_id],
                 "seed": int(seed),
                 "prior_run_id": f"{dataset_id}__{backbone}__db__seed_{int(seed)}",
+                "resume": resume,
             }
             for dataset_id in selected_datasets
             for seed in seeds
@@ -84,7 +87,7 @@ def generate(
             "NUM_EPOCHS = 100\n",
             "PATIENCE = 5",
         ]
-        destination = output_dir / f"dual_gpu_tb_multiseed_{backbone}.ipynb"
+        destination = output_dir / f"{filename_prefix}_{backbone}.ipynb"
         destination.write_text(
             json.dumps(notebook, ensure_ascii=False, indent=1), encoding="utf-8"
         )
