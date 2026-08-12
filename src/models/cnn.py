@@ -14,6 +14,7 @@ from src.utils.checkpoint import load_model_weights
 
 BASELINE_ARCHITECTURES = (
     "mobilenetv3_small",
+    "shufflenet_v2_x1_0",
     "alexnet",
     "resnet50",
     "densenet121",
@@ -27,6 +28,9 @@ BASELINE_ARCHITECTURES = (
 def normalize_architecture_name(name: str) -> str:
     aliases = {
         "mobilenet_v3_small": "mobilenetv3_small",
+        "shufflenet": "shufflenet_v2_x1_0",
+        "shufflenetv2": "shufflenet_v2_x1_0",
+        "shufflenetv2_x1_0": "shufflenet_v2_x1_0",
         "efficientnet": "efficientnet_b0",
         "efficientnetb0": "efficientnet_b0",
         "swint": "swin_t",
@@ -72,6 +76,10 @@ def _build_comparison_backbone(
         old_head = backbone.classifier[-1]
         backbone.classifier[-1] = nn.Linear(old_head.in_features, num_classes)
         return backbone, backbone.classifier[-1]
+    if architecture == "shufflenet_v2_x1_0":
+        backbone = models.shufflenet_v2_x1_0(weights=weights)
+        backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)
+        return backbone, backbone.fc
     if architecture == "alexnet":
         backbone = models.alexnet(weights=weights)
         old_head = backbone.classifier[-1]

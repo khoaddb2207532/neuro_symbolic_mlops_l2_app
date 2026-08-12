@@ -9,6 +9,7 @@ from pathlib import Path
 
 SUPPORTED_BACKBONES = {
     "mobilenetv3_small",
+    "shufflenet_v2_x1_0",
     "alexnet",
     "resnet50",
     "densenet121",
@@ -21,6 +22,7 @@ SUPPORTED_BACKBONES = {
 
 DEFAULT_BACKBONES = (
     "mobilenetv3_small",
+    "shufflenet_v2_x1_0",
     "alexnet",
     "resnet50",
     "densenet121",

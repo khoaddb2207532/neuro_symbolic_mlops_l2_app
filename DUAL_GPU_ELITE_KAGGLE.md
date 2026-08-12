@@ -39,7 +39,7 @@ python scripts/generate_dual_gpu_elite_notebooks.py `
 ```
 
 Có thể thay danh sách `--backbones` bằng bất kỳ năm model nào trong:
-`mobilenetv3_small`, `alexnet`, `resnet50`, `densenet121`, `efficientnet_b0`,
+`mobilenetv3_small`, `shufflenet_v2_x1_0`, `alexnet`, `resnet50`, `densenet121`, `efficientnet_b0`,
 `swin_t`, `vit_b_16`, `vit_b_32`.
 
 ### Khuyến nghị mới: 5 notebook, mỗi model chạy tất cả seed

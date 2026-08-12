@@ -17,7 +17,7 @@ def test_partition_runs_uses_two_stable_round_robin_queues():
     ]
 
 
-def test_generator_includes_vit_b32_swin_and_tb_stages(tmp_path: Path):
+def test_generator_includes_shufflenet_vit_b32_swin_and_tb_stages(tmp_path: Path):
     registry = tmp_path / "registry.csv"
     registry.write_text(
         "run_id,dataset_id,data_dir,seed,backbone\n"
@@ -29,18 +29,19 @@ def test_generator_includes_vit_b32_swin_and_tb_stages(tmp_path: Path):
         Path("dual-gpu-tb-multiseed-template.ipynb"),
         tmp_path / "notebooks",
         git_ref="main",
-        backbones=("vit_b_32", "swin_t"),
+        backbones=("shufflenet_v2_x1_0", "vit_b_32", "swin_t"),
         seeds=(42, 44),
         datasets=("culture-a",),
     )
     assert [path.name for path in generated] == [
+        "dual_gpu_tb_multiseed_shufflenet_v2_x1_0.ipynb",
         "dual_gpu_tb_multiseed_vit_b_32.ipynb",
         "dual_gpu_tb_multiseed_swin_t.ipynb",
     ]
     source = json.dumps(json.loads(generated[0].read_text(encoding="utf-8")))
     assert "pipelines.run_dual_gpu_tb_multi_seed_experiment" in source
     assert "comparison-table" in source
-    assert "vit_b_32" in source
+    assert "shufflenet_v2_x1_0" in source
 
 
 def test_aggregate_writes_detail_and_mean_std_tables(tmp_path: Path):

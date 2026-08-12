@@ -23,6 +23,7 @@ baseline_comparison:
   selected_architecture: mobilenetv3_small
   architectures:
     - mobilenetv3_small
+    - shufflenet_v2_x1_0
     - alexnet
     - resnet50
     - densenet121
