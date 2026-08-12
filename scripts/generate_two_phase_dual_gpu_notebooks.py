@@ -55,7 +55,24 @@ assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=PROJECT, text=T
 import torch
 assert torch.cuda.device_count() >= 2, 'Hãy chọn Kaggle Accelerator: GPU T4 x2'
 '''
-    return [_code(clone, "checkout"), _code(setup, "dependencies")]
+    warning_control = '''import logging
+import os
+import warnings
+
+warnings.filterwarnings('ignore')
+os.environ['PYTHONWARNINGS'] = 'ignore'
+os.environ['DISABLE_DVCLIVE'] = '1'
+os.environ['DVCLIVE_LOGLEVEL'] = 'ERROR'
+os.environ['DVC_NO_ANALYTICS'] = '1'
+logging.getLogger('dvclive').setLevel(logging.ERROR)
+logging.getLogger('dvc').setLevel(logging.ERROR)
+print('Dual-GPU mode: DVCLive disabled; warnings suppressed.')
+'''
+    return [
+        _code(clone, "checkout"),
+        _code(setup, "dependencies"),
+        _code(warning_control, "warning-control"),
+    ]
 
 
 def _dataset_setup(datasets: str | list[str]) -> dict:

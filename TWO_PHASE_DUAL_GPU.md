@@ -28,6 +28,14 @@ có run tương ứng làm Kaggle Input. Hai GPU lấy việc động từ cùng
 
 Không chạy TB fixed-prior, TB Bayesian hoặc TB Bayesian Elite.
 
+## DVCLive trong chế độ dual-GPU
+
+Các worker đặt `DISABLE_DVCLIVE=1`. DVCLive không được khởi tạo trong trainer
+CNN hoặc GFlowNet, tránh nhiều process cùng tương tác với một DVC repository.
+Checkpoint, history, exact metrics, CSV/JSON và log riêng của từng worker vẫn
+được lưu. `PYTHONWARNINGS=ignore`, `DVCLIVE_LOGLEVEL=ERROR` và
+`DVC_NO_ANALYTICS=1` cũng được truyền trực tiếp xuống subprocess.
+
 ## Sinh notebook
 
 ```powershell

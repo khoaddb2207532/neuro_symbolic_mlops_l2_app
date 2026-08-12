@@ -24,6 +24,28 @@ from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+
+class _NoOpLive:
+    """DVCLive-compatible no-op used by concurrent dual-GPU workers."""
+
+    def __init__(self):
+        self.summary = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def log_params(self, *_args, **_kwargs):
+        return None
+
+    def log_metric(self, *_args, **_kwargs):
+        return None
+
+    def next_step(self):
+        return None
+
 # Đăng ký "càng cao càng tốt" (max) hay "càng thấp càng tốt" (min) cho từng
 # metric có thể theo dõi — thêm metric mới (vd "val_f1") chỉ cần thêm 1 dòng
 # ở đây, không phải sửa logic so sánh trong EarlyStopping hay vòng lặp train.
@@ -357,11 +379,15 @@ def train_model(
     # DVC itself orchestrates the pipeline.  Disabling DVCLive's implicit
     # experiment save avoids checking outputs from unrelated stages and avoids
     # repeatedly appending generated params/metrics/plots to dvc.yaml.
-    with Live(
+    disable_dvclive = os.environ.get("DISABLE_DVCLIVE", "").lower() in {
+        "1", "true", "yes",
+    }
+    live_context = _NoOpLive() if disable_dvclive else Live(
         dir=cfg["dvclive_path"],
         save_dvc_exp=False,
         resume=resume_enabled and start_epoch > 0,
-    ) as live:
+    )
+    with live_context as live:
         live.log_params(
             {
                 "num_epochs": num_epochs, "lr": lr, "patience": patience,

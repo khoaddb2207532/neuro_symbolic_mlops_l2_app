@@ -594,7 +594,10 @@ class BaseGFlowNetPipeline(abc.ABC):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.7, patience=10, threshold=1e-4, min_lr=1e-6)
 
         live = None
-        if use_dvc:
+        disable_dvclive = os.environ.get("DISABLE_DVCLIVE", "").lower() in {
+            "1", "true", "yes",
+        }
+        if use_dvc and not disable_dvclive:
             if Live is None:
                 logger.warning(
                     "use_dvc=True nhưng chưa cài dvclive (`pip install dvclive`) — bỏ qua tracking DVC."

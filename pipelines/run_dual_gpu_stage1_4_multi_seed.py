@@ -62,6 +62,10 @@ def _worker(
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
         env["PYTHONUNBUFFERED"] = "1"
+        env["DISABLE_DVCLIVE"] = "1"
+        env["PYTHONWARNINGS"] = "ignore"
+        env["DVCLIVE_LOGLEVEL"] = "ERROR"
+        env["DVC_NO_ANALYTICS"] = "1"
         print(
             f"[GPU {gpu}] Stage 1-4: {run_id}", flush=True
         )

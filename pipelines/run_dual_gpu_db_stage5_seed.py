@@ -132,6 +132,10 @@ def _gpu_worker(
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
         env["PYTHONUNBUFFERED"] = "1"
+        env["DISABLE_DVCLIVE"] = "1"
+        env["PYTHONWARNINGS"] = "ignore"
+        env["DVCLIVE_LOGLEVEL"] = "ERROR"
+        env["DVC_NO_ANALYTICS"] = "1"
         log_path = output / f"stage5_{method}.log"
         print(f"[GPU {gpu}] START {method}", flush=True)
         with log_path.open("a", encoding="utf-8") as log:
@@ -245,6 +249,10 @@ def run(args: argparse.Namespace) -> None:
         raise RuntimeError(f"Stage 5 failures: {failures}")
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0"
+    env["DISABLE_DVCLIVE"] = "1"
+    env["PYTHONWARNINGS"] = "ignore"
+    env["DVCLIVE_LOGLEVEL"] = "ERROR"
+    env["DVC_NO_ANALYTICS"] = "1"
     subprocess.run(
         [
             sys.executable, "-m", "pipelines.evaluate_saved_checkpoints",
