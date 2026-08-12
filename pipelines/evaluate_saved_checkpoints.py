@@ -31,6 +31,7 @@ def _checkpoint_specs(
     output_dir: Path,
     backbone: str,
     include_bayesian: bool,
+    include_bayesian_elite: bool = False,
 ) -> List[Tuple[str, Path, Path]]:
     specs = [
         (
@@ -70,6 +71,15 @@ def _checkpoint_specs(
                 output_dir / "05b_rules_model_bayesian"
                 / "rule_regularized_best.pth",
                 output_dir / "05b_rules_model_bayesian",
+            )
+        )
+    if include_bayesian_elite:
+        specs.append(
+            (
+                "gflownet_db_bayesian_elite",
+                output_dir / "05b_rules_model_bayesian_elite"
+                / "rule_regularized_best.pth",
+                output_dir / "05b_rules_model_bayesian_elite",
             )
         )
     return specs
@@ -161,7 +171,11 @@ def _write_csv(path: Path, rows: Iterable[Dict]) -> None:
         writer.writerows(rows)
 
 
-def run(config_path: str, include_bayesian: bool) -> Tuple[Path, Path]:
+def run(
+    config_path: str,
+    include_bayesian: bool,
+    include_bayesian_elite: bool = False,
+) -> Tuple[Path, Path]:
     params = load_params(config_path)
     set_seed(int(params["seed"]))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -175,7 +189,9 @@ def run(config_path: str, include_bayesian: bool) -> Tuple[Path, Path]:
         seed=params["seed"],
     )
 
-    specs = _checkpoint_specs(output_dir, backbone, include_bayesian)
+    specs = _checkpoint_specs(
+        output_dir, backbone, include_bayesian, include_bayesian_elite
+    )
     missing = [checkpoint for _, checkpoint, _ in specs if not checkpoint.exists()]
     if missing:
         raise FileNotFoundError(
@@ -255,9 +271,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="params.yaml")
     parser.add_argument("--include-bayesian", action="store_true")
+    parser.add_argument("--include-bayesian-elite", action="store_true")
     return parser
 
 
 if __name__ == "__main__":
     arguments = build_parser().parse_args()
-    run(arguments.config, arguments.include_bayesian)
+    run(
+        arguments.config,
+        arguments.include_bayesian,
+        arguments.include_bayesian_elite,
+    )

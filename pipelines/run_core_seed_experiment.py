@@ -795,6 +795,33 @@ def run(args: argparse.Namespace) -> None:
                 "Stage 4 chạy xong nhưng thiếu rules/rule-order/checkpoint."
             )
 
+    if args.stop_after_stage4:
+        elite_checkpoint = gfn_rules_dir / "gflownet_best_elite.pth"
+        if not elite_checkpoint.exists():
+            raise FileNotFoundError(
+                "Stage 1-4 prior cần gflownet_best_elite.pth để Stage 5 "
+                "chạy DB Bayesian Elite."
+            )
+        run_manifest.update(
+            {
+                "status": "prior_complete",
+                "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+                "output_dir": str(output_dir),
+                "completed_through_stage": 4,
+                "expected_methods": [],
+            }
+        )
+        _write_run_manifest(manifest_path, run_manifest)
+        archive = shutil.make_archive(
+            str(working_dir / f"seed_{args.seed}_stage1_4_prior"),
+            "gztar",
+            root_dir=output_dir,
+        )
+        print("\nHoàn tất Stage 1-4 prior:")
+        print(" -", manifest_path)
+        print(" -", archive)
+        return
+
     budget = _xlsx_row_count(gfn_rules_xlsx)
     if budget <= 0:
         raise RuntimeError("GFlowNet không chọn luật nào.")
@@ -1334,6 +1361,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-bayesian",
         action="store_true",
         help="Chạy/resume Bayesian Stage 5 sau ba heuristic.",
+    )
+    parser.add_argument(
+        "--stop-after-stage4",
+        action="store_true",
+        help="Dừng sau DB-GFlowNet Stage 4 và xuất prior cho notebook Stage 5.",
     )
     parser.add_argument(
         "--bayesian-mc-samples",
