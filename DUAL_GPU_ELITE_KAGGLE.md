@@ -86,9 +86,13 @@ cùng dataset/backbone/seed đã chứa baseline, feature, raw rules và ba heur
 Hai tiến trình chạy đồng thời:
 
 ```text
-GPU 0: GFlowNet loss=tb -> stage5_train_rule_bayesian_elite
-GPU 1: GFlowNet loss=db -> stage5_train_rule_bayesian_elite
+GPU 0: GFlowNet loss=tb -> fixed-prior TB -> stage5_train_rule_bayesian_elite
+GPU 1: GFlowNet loss=db -> fixed-prior DB -> stage5_train_rule_bayesian_elite
 ```
+
+Fixed-prior dùng `stage5_train_rule_regularized` với `selected_rules.pkl` riêng
+của từng objective. Nhánh DB tái sử dụng `05_rules_model` từ core run nếu đã có;
+nhánh TB tạo `tb/05_rules_model/` mới và resume theo `training_last.pth`.
 
 Sau khi Bayesian Elite hoàn tất, mỗi GPU chạy thêm Bayesian Stage 5 chuẩn từ
 frozen diverse sampler của chính objective đó:
@@ -121,6 +125,19 @@ mới rồi Run All. Runner tìm `dual_elite_manifest.json`, copy trạng thái 
 - resume Stage 5 từ epoch hoàn tất gần nhất;
 - từ chối resume nếu seed/backbone/checkpoint/rule-order không khớp.
 
+### Chính sách tiết kiệm dung lượng
+
+Runner không còn tạo `seed_<seed>_dual_elite_artifacts.tar.gz` sau mỗi seed.
+Khi bắt đầu/resume, runner xóa các file `*.tmp` do lần ghi checkpoint bị ngắt và
+xóa archive đầy đủ cũ của đúng seed nếu còn tồn tại.
+
+`training_last.pth` chỉ được giữ khi run chưa hoàn tất để có thể resume. Sau khi
+hai worker chạy xong và bảng so sánh được tạo thành công, runner xóa
+`training_last.pth` và `final_model_weights.pth` trong các thư mục Stage 5 cục bộ,
+nhưng luôn giữ `rule_regularized_best.pth`. Thư mục symlink tới Kaggle Input không
+bị sửa hoặc xóa. Chi tiết dung lượng đã dọn được ghi trong trường `disk_cleanup`
+của `dual_elite_manifest.json`.
+
 ## 5. Kết quả so sánh
 
 Module của repo xuất bảng so sánh từ:
@@ -143,7 +160,9 @@ Các method gồm:
 - `random`;
 - `topk_confidence`;
 - `greedy_coverage`;
-- `gflownet_fixed_prior` nếu checkpoint cũ tồn tại;
+- `gflownet_fixed_prior` (tên tương thích cũ của DB; tái sử dụng checkpoint core
+  nếu đã tồn tại);
+- `gflownet_tb_fixed_prior` (tập luật cố định do GFlowNet-TB chọn);
 - `gflownet_tb_bayesian_elite`;
 - `gflownet_db_bayesian_elite`;
 - `gflownet_tb_bayesian` (Bayesian chuẩn, frozen diverse sampler TB);

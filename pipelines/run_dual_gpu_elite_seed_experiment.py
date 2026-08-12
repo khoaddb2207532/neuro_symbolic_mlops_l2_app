@@ -14,7 +14,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tarfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +30,72 @@ from pipelines.run_core_seed_experiment import (
 
 
 LOSSES = ("tb", "db")
+STAGE5_OUTPUT_DIRS = (
+    "05_rules_model",
+    "05b_rules_model_bayesian",
+    "05b_rules_model_bayesian_elite",
+)
+REDUNDANT_COMPLETED_CHECKPOINTS = (
+    "training_last.pth",
+    "final_model_weights.pth",
+)
+
+
+def _unlink_local_file(path: Path) -> Optional[int]:
+    """Delete one regular local file and return the released byte count."""
+    if path.is_symlink() or not path.is_file():
+        return None
+    size = path.stat().st_size
+    path.unlink()
+    return size
+
+
+def _remove_stale_tmp_files(run_root: Path) -> tuple[list[str], int]:
+    """Remove interrupted atomic-save files without traversing input symlinks."""
+    removed = []
+    removed_bytes = 0
+    if not run_root.is_dir() or run_root.is_symlink():
+        return removed, removed_bytes
+    for current_root, _, filenames in os.walk(run_root, followlinks=False):
+        current = Path(current_root)
+        for filename in filenames:
+            if not filename.endswith(".tmp"):
+                continue
+            path = current / filename
+            size = _unlink_local_file(path)
+            if size is not None:
+                removed.append(str(path.relative_to(run_root)))
+                removed_bytes += size
+    return removed, removed_bytes
+
+
+def _remove_legacy_seed_archive(run_root: Path, seed: int) -> tuple[list[str], int]:
+    """Remove the old full archive that duplicated the live per-seed output."""
+    archive = run_root.parent / f"seed_{seed}_dual_elite_artifacts.tar.gz"
+    size = _unlink_local_file(archive)
+    return ([str(archive)] if size is not None else []), size or 0
+
+
+def _cleanup_completed_run(run_root: Path) -> Dict[str, object]:
+    """Keep best weights/metrics, dropping checkpoints needed only for resume."""
+    removed, removed_bytes = _remove_stale_tmp_files(run_root)
+    for loss_type in LOSSES:
+        for stage_name in STAGE5_OUTPUT_DIRS:
+            stage_dir = run_root / loss_type / stage_name
+            # A completed DB Bayesian stage may point into read-only Kaggle Input.
+            if stage_dir.is_symlink() or not stage_dir.is_dir():
+                continue
+            for filename in REDUNDANT_COMPLETED_CHECKPOINTS:
+                path = stage_dir / filename
+                size = _unlink_local_file(path)
+                if size is not None:
+                    removed.append(str(path.relative_to(run_root)))
+                    removed_bytes += size
+    return {
+        "removed_files": sorted(removed),
+        "removed_bytes": removed_bytes,
+        "kept_checkpoint": "rule_regularized_best.pth",
+    }
 
 
 def _write_csv(path: Path, rows: Iterable[Dict]) -> None:
@@ -171,16 +236,12 @@ def _prepare_branch(
     for name in ("baseline_comparison", "02_features", "03_rules"):
         _link_directory(prior / name, branch_dir / name)
     if loss_type == "db":
-        # Reuse the original DB Bayesian Stage 5 when prior stages already
-        # produced it. The worker treats its checkpoint as a completion marker.
-        prior_bayesian = prior / "05b_rules_model_bayesian"
-        if (
-            prior_bayesian / "rule_regularized_best.pth"
-        ).exists():
-            _link_directory(
-                prior_bayesian,
-                branch_dir / "05b_rules_model_bayesian",
-            )
+        # Core runs use DB, so reuse their completed fixed-prior and Bayesian
+        # outputs. TB gets independent Stage 5 outputs from its own rule set.
+        for stage_name in ("05_rules_model", "05b_rules_model_bayesian"):
+            prior_stage = prior / stage_name
+            if (prior_stage / "rule_regularized_best.pth").exists():
+                _link_directory(prior_stage, branch_dir / stage_name)
 
     config = yaml.safe_load((project / args.config).read_text(encoding="utf-8"))
     config["seed"] = args.seed
@@ -204,6 +265,7 @@ def _prepare_branch(
         "gflownet_best_elite.pth"
     )
     config["rule_penalty_bayesian_elite"]["resume"] = True
+    config.setdefault("rule_penalty", {})["resume"] = True
     config_path = branch_dir / f"params_{loss_type}.yaml"
     config_path.write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
@@ -238,9 +300,10 @@ def _worker(project: Path, config_path: Path, branch_dir: Path) -> None:
     elite = filtered / "gflownet_best_elite.pth"
     diverse = filtered / "gflownet_best_diverse.pth"
     rule_order = filtered / "gflownet_rule_order.pkl"
+    selected_rules = filtered / "selected_rules.pkl"
     # Both branches run the original Bayesian stage after Elite, therefore
     # both require the frozen diverse sampler in addition to the elite policy.
-    required_stage4 = [elite, diverse, rule_order]
+    required_stage4 = [elite, diverse, rule_order, selected_rules]
     if all(path.exists() for path in required_stage4):
         print("SKIP/RESUME Stage 4: đã có elite checkpoint + rule order.", flush=True)
     else:
@@ -260,17 +323,48 @@ def _worker(project: Path, config_path: Path, branch_dir: Path) -> None:
             "Stage 4 không tạo đủ artefact cho branch "
             f"{loss_type}: {required_stage4}."
         )
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pipelines.stage5_train_rule_bayesian_elite",
-            "--config",
-            str(config_path),
-        ],
-        cwd=project,
-        check=True,
+    fixed_checkpoint = (
+        branch_dir / "05_rules_model" / "rule_regularized_best.pth"
     )
+    if fixed_checkpoint.exists():
+        print(
+            f"SKIP fixed-prior {loss_type.upper()}: {fixed_checkpoint}",
+            flush=True,
+        )
+    else:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pipelines.stage5_train_rule_regularized",
+                "--config",
+                str(config_path),
+            ],
+            cwd=project,
+            check=True,
+        )
+    elite_checkpoint = (
+        branch_dir
+        / "05b_rules_model_bayesian_elite"
+        / "rule_regularized_best.pth"
+    )
+    if elite_checkpoint.exists():
+        print(
+            f"SKIP Bayesian Elite {loss_type.upper()}: {elite_checkpoint}",
+            flush=True,
+        )
+    else:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pipelines.stage5_train_rule_bayesian_elite",
+                "--config",
+                str(config_path),
+            ],
+            cwd=project,
+            check=True,
+        )
     # Run the original Bayesian Stage 5 from the diverse frozen sampler for
     # both objectives. TB uses a strict wrapper; DB uses the original module.
     bayesian_module = (
@@ -416,9 +510,20 @@ def _evaluate(
             for method in HEURISTICS
         ],
     ]
-    fixed_gfn = prior / "05_rules_model" / "rule_regularized_best.pth"
-    if fixed_gfn.exists():
-        specs.append(("gflownet_fixed_prior", fixed_gfn))
+    # Keep the legacy DB label so CSVs from already completed seeds remain
+    # comparable; TB is the newly added independent fixed-prior method.
+    specs.extend(
+        (
+            method,
+            branch_dirs[loss_type]
+            / "05_rules_model"
+            / "rule_regularized_best.pth",
+        )
+        for loss_type, method in (
+            ("db", "gflownet_fixed_prior"),
+            ("tb", "gflownet_tb_fixed_prior"),
+        )
+    )
     specs.extend(
         (
             f"gflownet_{loss_type}_bayesian_elite",
@@ -514,6 +619,17 @@ def run(args: argparse.Namespace) -> None:
     run_root = Path(args.output_dir).resolve()
     _restore_partial_dual_run(args, run_root)
     run_root.mkdir(parents=True, exist_ok=True)
+    stale_tmp_files, stale_tmp_bytes = _remove_stale_tmp_files(run_root)
+    old_archives, old_archive_bytes = _remove_legacy_seed_archive(
+        run_root, args.seed
+    )
+    if stale_tmp_files or old_archives:
+        print(
+            "Removed stale temporary files/archive: "
+            f"{len(stale_tmp_files) + len(old_archives)} file(s), "
+            f"{stale_tmp_bytes + old_archive_bytes} bytes.",
+            flush=True,
+        )
     prior = _resolve_prior(args, run_root)
     manifest_path = run_root / "dual_elite_manifest.json"
     manifest = {
@@ -556,17 +672,25 @@ def run(args: argparse.Namespace) -> None:
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    archive = shutil.make_archive(
-        str(run_root.parent / f"seed_{args.seed}_dual_elite_artifacts"),
-        "gztar",
-        root_dir=run_root,
+    cleanup = _cleanup_completed_run(run_root)
+    cleanup["removed_files"] = sorted(
+        stale_tmp_files + old_archives + cleanup["removed_files"]
+    )
+    cleanup["removed_bytes"] += stale_tmp_bytes + old_archive_bytes
+    manifest["disk_cleanup"] = cleanup
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print("\nHoàn tất dual-GPU Bayesian Elite:")
     print(" -", csv_path)
     print(" -", json_path)
     print(" -", report_path)
     print(" -", manifest_path)
-    print(" -", archive)
+    print(
+        " - Removed redundant checkpoints:",
+        f"{len(cleanup['removed_files'])} file(s) / "
+        f"{cleanup['removed_bytes']} bytes",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
