@@ -171,6 +171,17 @@ def _write_csv(path: Path, rows: Iterable[Dict]) -> None:
         writer.writerows(rows)
 
 
+def _method_metrics_path(output_dir: Path, method: str) -> Path:
+    """Return a writable result path independent from checkpoint storage.
+
+    Stage-5 runs may expose prior-stage directories through symlinks into a
+    read-only Kaggle input dataset.  Checkpoints should remain readable from
+    those directories, while all newly generated metrics belong to the current
+    run's output directory.
+    """
+    return output_dir / "exact_test_metrics_by_method" / f"{method}.json"
+
+
 def run(
     config_path: str,
     include_bayesian: bool,
@@ -201,7 +212,7 @@ def run(
 
     detailed_results = []
     summary_rows = []
-    for method, checkpoint, method_dir in specs:
+    for method, checkpoint, _method_dir in specs:
         model = ImageClassificationBaseline(
             architecture=backbone,
             num_classes=params["num_classes"],
@@ -219,8 +230,9 @@ def run(
             **metrics,
         }
         detailed_results.append(result)
-        method_dir.mkdir(parents=True, exist_ok=True)
-        (method_dir / "exact_test_metrics.json").write_text(
+        method_metrics_path = _method_metrics_path(output_dir, method)
+        method_metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        method_metrics_path.write_text(
             json.dumps(result, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )

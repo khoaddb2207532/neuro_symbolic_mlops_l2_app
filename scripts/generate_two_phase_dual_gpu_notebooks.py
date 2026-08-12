@@ -30,21 +30,44 @@ def _markdown(source: str) -> dict:
 
 
 def _base_cells(git_commit: str) -> list[dict]:
-    clone = f'''import subprocess
+    clone = f'''import os
+import shutil
+import subprocess
 from pathlib import Path
 
 GIT_COMMIT = {git_commit!r}
 PROJECT = Path('/kaggle/working/neuro_symbolic_mlops_l2_app')
-if not PROJECT.exists():
-    clone_url = {REPO_URL!r}
+if not (PROJECT / '.git').exists():
+    if PROJECT.exists():
+        # Chỉ dọn đúng thư mục clone dở của notebook trước đó.
+        shutil.rmtree(PROJECT)
+    git_env = os.environ.copy()
     try:
         from kaggle_secrets import UserSecretsClient
         token = UserSecretsClient().get_secret('GITHUB_TOKEN')
-        if token:
-            clone_url = clone_url.replace('https://', f'https://{{token}}@')
-    except Exception:
-        pass
-    subprocess.run(['git', 'clone', '--filter=blob:none', clone_url, str(PROJECT)], check=True)
+    except Exception as error:
+        token = None
+        print('Không đọc được Kaggle secret GITHUB_TOKEN:', type(error).__name__)
+    if token:
+        # Truyền auth qua environment để token không xuất hiện trong command/traceback.
+        git_env['GIT_CONFIG_COUNT'] = '1'
+        git_env['GIT_CONFIG_KEY_0'] = 'http.extraHeader'
+        git_env['GIT_CONFIG_VALUE_0'] = f'Authorization: Bearer {{token}}'
+        print('GitHub authentication: Kaggle secret GITHUB_TOKEN')
+    else:
+        print('GitHub authentication: none (chỉ hoạt động nếu repo public)')
+    clone = subprocess.run(
+        ['git', 'clone', '--filter=blob:none', {REPO_URL!r}, str(PROJECT)],
+        env=git_env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if clone.returncode:
+        raise RuntimeError(
+            'git clone thất bại. Hãy bật Kaggle Internet và cấu hình '
+            'GITHUB_TOKEN nếu repo private. Git stderr: ' + clone.stderr.strip()
+        )
 subprocess.run(['git', 'fetch', 'origin', GIT_COMMIT, '--depth', '1'], cwd=PROJECT, check=True)
 subprocess.run(['git', 'checkout', '--detach', GIT_COMMIT], cwd=PROJECT, check=True)
 assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=PROJECT, text=True).strip() == GIT_COMMIT
