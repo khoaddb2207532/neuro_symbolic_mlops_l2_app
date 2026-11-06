@@ -25,7 +25,11 @@ def main(params_path: str) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     dataloaders, _, _, _ = create_dataloaders(
-        params["data_dir"], batch_size=params["batch_size"], num_workers=params["num_workers"], seed=params["seed"]
+        params["data_dir"],
+        batch_size=params["batch_size"],
+        num_workers=params["num_workers"],
+        seed=params["seed"],
+        include_val2=True,
     )
     architecture = selected_baseline_architecture(params)
     trained_model_path = selected_baseline_checkpoint(params)

@@ -60,6 +60,15 @@ rule_penalty_bayesian:
   K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
   sampler_checkpoint: "gflownet_best_diverse.pth"
 
+# Stage 5C: Bayesian marginalization trên các state do EliteTracker quan sát.
+# states_path để trống => ưu tiên output đã restore, rồi quét input_roots và
+# /kaggle/input. Nếu có nhiều file ứng viên, pipeline bắt buộc chọn rõ path.
+rule_penalty_bayesian_elite:
+  K: 32
+  states_path: null
+  input_roots: []
+  reward_temperature: 1.0
+
 # Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
 # GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.
 rule_ranking_analysis:

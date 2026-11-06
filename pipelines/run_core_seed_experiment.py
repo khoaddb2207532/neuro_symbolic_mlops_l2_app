@@ -66,10 +66,10 @@ def _safe_identifier(value: str) -> str:
 
 
 def _dataset_fingerprint(data_dir: Path) -> str:
-    """Hash metadata ba split, không băm repo/output trong /kaggle/working."""
+    """Hash metadata bốn split, không băm repo/output trong /kaggle/working."""
     digest = hashlib.sha256()
     file_count = 0
-    for split in ("train", "val", "test"):
+    for split in ("train", "val", "test", "val2"):
         split_path = data_dir / split
         if not split_path.exists():
             raise FileNotFoundError(f"Thiếu split dataset: {split_path}")
@@ -530,7 +530,11 @@ def _report_metrics(path: Path) -> Tuple[float, float]:
 
 
 def _required_dataset_splits(data_dir: Path) -> None:
-    missing = [name for name in ("train", "val", "test") if not (data_dir / name).is_dir()]
+    missing = [
+        name
+        for name in ("train", "val", "test", "val2")
+        if not (data_dir / name).is_dir()
+    ]
     if missing:
         raise FileNotFoundError(f"{data_dir} thiếu các split: {missing}")
 
@@ -725,7 +729,7 @@ def run(args: argparse.Namespace) -> None:
     features_dir = output_dir / "02_features"
     required_features = [
         features_dir / f"{split}_{kind}.pt"
-        for split in ("train", "val", "test")
+        for split in ("train", "val", "test", "val2")
         for kind in ("features", "labels")
     ]
     missing_features = [path for path in required_features if not path.exists()]

@@ -14,6 +14,16 @@ Test:
 curl -X POST http://localhost:8000/predict -F "file=@sample.jpg"
 curl http://localhost:8000/health
 ```
+
+`POST /predict` trả thêm hai trường phục vụ giải thích không gian:
+
+- `rule_regions`: danh sách bounding box, màu, độ quan trọng và luật tương ứng.
+- `annotated_image_base64`: ảnh PNG (base64, không có data-URL prefix) đã vẽ box.
+
+Các box dùng **rule-aware occlusion**, không dùng Grad-CAM: service che lần lượt
+từng ô trên ảnh đầu vào và đo mức giảm độ thỏa của chính luật đang khớp. Vì luật
+được học trên vector đặc trưng toàn cục, đây là phép định vị xấp xỉ theo đóng góp,
+không phải nhãn object-detection ground truth.
 Docs tương tác (Swagger UI): http://localhost:8000/docs
 
 ## 2. Demo UI (Gradio)
@@ -21,6 +31,17 @@ Docs tương tác (Swagger UI): http://localhost:8000/docs
 python -m app.demo_gradio
 # mở http://localhost:7860
 ```
+
+Demo so sánh cùng một ảnh trên ba sản phẩm:
+
+| Sản phẩm | Checkpoint | Luật giải thích |
+|---|---|---|
+| Baseline | `outputs/baseline_comparison/<architecture>/baseline_best.pth` hoặc `outputs/01_baseline/final_model_weights.pth` | Không dùng luật |
+| Điều chuẩn theo luật | `outputs/05_rules_model/final_model_weights.pth` | `outputs/04_filtered_rules/selected_rules.pkl` |
+| Tổng hợp đa tập luật | `outputs/05b_rules_model_bayesian/final_model_weights.pth` | `outputs/05b_rules_model_bayesian/gflownet_sampled_rules.pkl` |
+
+Checkpoint chưa tồn tại được hiển thị là “Thiếu artifact”; các mô hình còn lại
+vẫn chạy bình thường. API tương ứng: `POST /compare`.
 
 ## 3. Đóng gói Docker (production)
 ```bash

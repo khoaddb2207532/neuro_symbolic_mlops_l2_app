@@ -1,11 +1,11 @@
 """Lọc luật dựa trên support/confidence, vector hoá trên GPU.
 
-Chỉ còn 1 phương thức lọc luật: `validate()`, dùng trên val set (tập ảnh CNN
-chưa từng thấy khi train) — xem giải thích quyết định trong README.md, mục
+Chỉ còn 1 phương thức lọc luật: `validate()`, dùng trên split validation
+(val2 trong pipeline chính) — xem giải thích quyết định trong README.md, mục
 "Lọc luật (rule validation)". Trước đây có thêm `validate_crossval()` tự train
 lại K RandomForest trên các fold của TRAIN, gây trùng lặp với việc train RF đã
 làm trong `train_and_save_rf()` và không có gì đảm bảo tổng quát hoá tốt hơn
-val set thật — đã bỏ.
+validation set — đã bỏ.
 """
 from typing import List
 

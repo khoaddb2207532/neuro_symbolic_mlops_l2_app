@@ -10,7 +10,7 @@ from typing import Iterable
 import pandas as pd
 
 
-DEFAULT_SEEDS = (46, 48, 50)
+DEFAULT_SEEDS = (42, 44, 46, 48, 50)
 
 
 def generate(

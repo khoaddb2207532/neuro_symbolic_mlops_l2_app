@@ -28,26 +28,23 @@ def main(params_path: str) -> None:
     with open(os.path.join(rules_dir, "raw_rules.pkl"), "rb") as f:
         raw_rules = pickle.load(f)
 
-    # train_features = torch.load(f"{features_dir}/train_features.pt").to(device)
-    # train_labels = torch.load(f"{features_dir}/train_labels.pt").to(device)
-    val_features = torch.load(f"{features_dir}/val_features.pt").to(device)
-    val_labels = torch.load(f"{features_dir}/val_labels.pt").to(device)
+    val2_features = torch.load(f"{features_dir}/val2_features.pt").to(device)
+    val2_labels = torch.load(f"{features_dir}/val2_labels.pt").to(device)
 
     # Lọc luật + build cover/correct/rule_len TRONG MỘT LẦN QUÉT DUY NHẤT.
-    # Các tensor này được dùng lại y hệt bởi RuleSetReward — không quét lại
-    # val set lần hai trong pipeline.
+    # Các tensor từ val2 được dùng lại bởi RuleSetReward.
     validator = RuleValidator(
         min_supp=params["rules"]["min_support"],
         min_conf=params["rules"]["min_confidence"],
     )
     valid_rule_set, cover, correct, rule_len = validator.validate_and_build_tensors(
-        raw_rules, val_features, val_labels, store_device=device
+        raw_rules, val2_features, val2_labels, store_device=device
     )
     with open(os.path.join(output_dir, "valid_rules.pkl"), "wb") as f:
         pickle.dump(valid_rule_set, f)
 
     valid_rules = list(valid_rule_set.rules)
-    logger.info("Số luật hợp lệ sau khi lọc bằng val set: %d", len(valid_rules))
+    logger.info("Số luật hợp lệ sau khi lọc bằng val2: %d", len(valid_rules))
 
     gfn_cfg = params["gflownet"]
     pipeline = RuleExtractionPipeline(
@@ -64,7 +61,7 @@ def main(params_path: str) -> None:
         cover=cover,
         correct=correct,
         rule_len=rule_len,
-        labels=val_labels,
+        labels=val2_labels,
         max_rules=gfn_cfg["max_rules"],
         output_dir=output_dir,
         gfnet_hidden_dim=gfn_cfg["hidden_dim"],

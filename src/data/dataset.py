@@ -74,10 +74,19 @@ class NeuroSymbolicDataset(Dataset):
         )
 
 
-def create_dataloaders(data_dir: str, batch_size: int = 32, num_workers: int = 4, seed: int = 42):
-    """Tạo dataloaders cho train/val/test với seeding đầy đủ (reproducibility)."""
+def create_dataloaders(
+    data_dir: str,
+    batch_size: int = 32,
+    num_workers: int = 4,
+    seed: int = 42,
+    include_val2: bool = False,
+):
+    """Tạo dataloaders; val2 chỉ được nạp khi được yêu cầu."""
     dataloaders = {}
-    for split in ["train", "val", "test"]:
+    splits = ["train", "val", "test"]
+    if include_val2:
+        splits.append("val2")
+    for split in splits:
         dataset = NeuroSymbolicDataset(
             data_dir=data_dir, split=split, transform=NeuroSymbolicDataset.get_transforms(split)
         )

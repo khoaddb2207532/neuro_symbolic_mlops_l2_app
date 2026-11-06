@@ -167,9 +167,10 @@ def bundle(
     if not bad_counts.empty:
         details = bad_counts[["dataset_id", "method", "n_seeds"]].to_dict("records")
         raise RuntimeError(
-            f"Three-seed aggregation is incomplete for {backbone}: {details}"
+            f"Seed aggregation is incomplete for {backbone}: {details}"
         )
-    summary.to_csv(output_dir / "model_three_seed_summary.csv", index=False)
+    summary_file = "model_seed_summary.csv"
+    summary.to_csv(output_dir / summary_file, index=False)
 
     bundle_manifest = {
         "schema_version": 1,
@@ -183,7 +184,7 @@ def bundle(
         "git_commits": sorted({row["git_commit"] for row in index_rows}),
         "result_row_count": len(all_results),
         "summary_row_count": len(summary),
-        "summary_file": "model_three_seed_summary.csv",
+        "summary_file": summary_file,
     }
     (output_dir / "model_bundle_manifest.json").write_text(
         json.dumps(bundle_manifest, ensure_ascii=False, indent=2), encoding="utf-8"

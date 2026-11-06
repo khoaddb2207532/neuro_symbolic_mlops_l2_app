@@ -14,6 +14,7 @@ _train_gflownet giờ chỉ còn orchestrate 3 phần trên theo đúng thứ t�
 không thay đổi bất kỳ hành vi/số liệu nào so với bản gốc.
 """
 import abc
+import hashlib
 import os
 import pickle
 import random
@@ -44,18 +45,78 @@ class _EliteTracker:
     hiện tại có tốt hơn hay không. Đây là phần biến GFlowNet thành một công
     cụ tìm kiếm tổ hợp (elitist), tách biệt khỏi việc train sampler."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_states: int = 2048) -> None:
+        if max_states < 1:
+            raise ValueError("max_states phải >= 1.")
+        self.max_states = max_states
         self.best_log_reward = float("-inf")
         self.best_selected: List[Rule] = []
+        self._states: Dict[bytes, Tuple[torch.Tensor, float]] = {}
 
     def update(self, val_trajectories: list, valid_rules: List[Rule]) -> None:
         for vt in val_trajectories:
-            r = vt.log_rewards
+            r = vt.log_rewards.detach().cpu().flatten()
+            states = vt.terminating_states.tensor.detach().bool().cpu()
+            if states.ndim == 1:
+                states = states.unsqueeze(0)
+            if states.shape[0] != r.numel():
+                raise ValueError(
+                    "Số terminating states không khớp số log-reward trong EliteTracker."
+                )
+            for state, reward in zip(states, r):
+                key = state.numpy().tobytes()
+                score = float(reward.item())
+                previous = self._states.get(key)
+                if previous is None or score > previous[1]:
+                    self._states[key] = (state.clone(), score)
+
+            # Giữ archive hữu hạn; việc cắt tỉa không ảnh hưởng best state.
+            if len(self._states) > self.max_states * 2:
+                best = sorted(
+                    self._states.values(), key=lambda item: item[1], reverse=True
+                )[: self.max_states]
+                self._states = {
+                    state.numpy().tobytes(): (state, score)
+                    for state, score in best
+                }
+
             idx = r.argmax().item()
             if r[idx].item() > self.best_log_reward:
                 self.best_log_reward = r[idx].item()
-                mask = vt.terminating_states.tensor[idx].bool().cpu()
+                mask = states[idx]
                 self.best_selected = [valid_rules[i] for i in torch.where(mask)[0].tolist()]
+
+    @staticmethod
+    def _rule_order_fingerprint(valid_rules: List[Rule]) -> str:
+        payload = "\n".join(repr(rule) for rule in valid_rules).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def save(self, path: str, valid_rules: List[Rule]) -> None:
+        """Lưu các state tốt nhất để Stage 5C có thể nạp từ output/input.
+
+        State luôn dùng đúng thứ tự ``valid_rules`` sau permutation của Stage 4.
+        ``log_rewards`` đi kèm cho phép Stage 5C lấy mẫu theo trọng số thay vì
+        coi mọi state trong archive là ngang nhau.
+        """
+        ranked = sorted(
+            self._states.values(), key=lambda item: item[1], reverse=True
+        )[: self.max_states]
+        if not ranked:
+            raise RuntimeError("EliteTracker chưa quan sát state nào để lưu.")
+        states = torch.stack([item[0] for item in ranked]).bool()
+        log_rewards = torch.tensor([item[1] for item in ranked], dtype=torch.float32)
+        torch.save(
+            {
+                "schema_version": 1,
+                "states": states,
+                "log_rewards": log_rewards,
+                "n_rules": len(valid_rules),
+                "rule_order_fingerprint": self._rule_order_fingerprint(valid_rules),
+                "best_log_reward": float(log_rewards.max().item()),
+                "source": "gflownet_elite_tracker",
+            },
+            path,
+        )
 
 
 class _CheckpointTracker:
@@ -362,6 +423,7 @@ class BaseGFlowNetPipeline(abc.ABC):
         ckpt.restore_best(gflownet, self.device)
 
         final_trajs = gflownet.sample_trajectories(env, n=20, save_logprobs=True)
+        elite.update([final_trajs], valid_rules)
         term_states = final_trajs.terminating_states.tensor.bool().cpu()
         log_rs = final_trajs.log_rewards.cpu()
         best_idx = log_rs.argmax().item()
@@ -396,6 +458,12 @@ class BaseGFlowNetPipeline(abc.ABC):
                         "max_rules": max_rules,
                         "checkpoint_role": "diverse_fallback_to_converged"},
                     sampler_ckpt.ckpt_path)
+
+        elite_states_path = os.path.join(output_dir, "gflownet_elite_states.pt")
+        elite.save(elite_states_path, valid_rules)
+        logger.info(
+            "Đã lưu archive elite states cho Stage 5C tại %s.", elite_states_path
+        )
 
         return final_selected
 
