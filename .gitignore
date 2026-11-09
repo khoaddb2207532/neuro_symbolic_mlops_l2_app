@@ -234,3 +234,5 @@ output/
 tests/
 tmp/
 design-system/
+generated_dual_gpu_elite_notebooks/
+generated_dual_gpu_elite_model_notebooks/

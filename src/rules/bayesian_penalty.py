@@ -148,6 +148,45 @@ class BayesianRuleMarginalization(nn.Module):
         self._last_rule_sat: Optional[torch.Tensor] = None
         self._last_masks: Optional[torch.Tensor] = None
 
+    def resume_state_dict(self) -> dict:
+        """Return audit/annealing state needed for an exact epoch resume.
+
+        Frozen GFlowNet weights are intentionally excluded: the stage rebuilds
+        them from the immutable sampler checkpoint before loading this state.
+        """
+        return {
+            "temperature": self._temperature.detach().cpu(),
+            "sample_counts": self._sample_counts.detach().cpu(),
+            "sampled_ruleset_count": self._sampled_ruleset_count.detach().cpu(),
+            "sampled_rule_count": self._sampled_rule_count.detach().cpu(),
+            "contribution_sum": self._contribution_sum.detach().cpu(),
+            "normalized_weight_sum": self._normalized_weight_sum.detach().cpu(),
+            "contribution_step_count": self._contribution_step_count.detach().cpu(),
+        }
+
+    @torch.no_grad()
+    def load_resume_state_dict(self, state: dict) -> None:
+        """Restore cumulative Bayesian sampling statistics after interruption."""
+        fields = {
+            "temperature": self._temperature,
+            "sample_counts": self._sample_counts,
+            "sampled_ruleset_count": self._sampled_ruleset_count,
+            "sampled_rule_count": self._sampled_rule_count,
+            "contribution_sum": self._contribution_sum,
+            "normalized_weight_sum": self._normalized_weight_sum,
+            "contribution_step_count": self._contribution_step_count,
+        }
+        for name, target in fields.items():
+            if name not in state:
+                raise KeyError(f"Bayesian resume checkpoint missing '{name}'.")
+            source = state[name].to(device=target.device, dtype=target.dtype)
+            if source.shape != target.shape:
+                raise ValueError(
+                    f"Bayesian resume shape mismatch for {name}: "
+                    f"{tuple(source.shape)} != {tuple(target.shape)}"
+                )
+            target.copy_(source)
+
     def update_temperature(self, epoch: int) -> None:
         """Cùng lịch cố định với ``VectorizedRulePenalty``."""
         new_temp = geometric_temperature(

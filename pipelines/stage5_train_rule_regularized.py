@@ -7,6 +7,7 @@ bây giờ là tinh chỉnh sâu hơn có ràng buộc luật dựa trên nhữn
 học được.
 """
 import argparse
+import hashlib
 import os
 import pickle
 
@@ -27,6 +28,14 @@ from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
 
 logger = get_logger(__name__)
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main(params_path: str) -> None:
@@ -71,6 +80,24 @@ def main(params_path: str) -> None:
         "monitor_metric": params.get("monitor_metric", "val_acc"),
         "dvclive_path": os.path.join(save_dir, "dvclive_rule_regularized"),
         "save_dir": save_dir,
+        "resume": bool(params["rule_penalty"].get("resume", False)),
+        "resume_checkpoint_path": os.path.join(save_dir, "training_last.pth"),
+        "resume_identity": {
+            "stage": "stage5_train_rule_regularized",
+            "seed": params["seed"],
+            "architecture": architecture,
+            "gflownet_loss_type": params.get("gflownet", {}).get("loss_type"),
+            "selected_rules_sha256": _sha256_file(
+                os.path.join(filtered_dir, "selected_rules.pkl")
+            ),
+            "batch_size": params["batch_size"],
+            "optimizer": {
+                "lr_backbone": params["transfer_learning"]["lr_backbone"],
+                "lr_head": params["transfer_learning"]["lr_head"],
+                "weight_decay": params["weight_decay"],
+            },
+            "rule_penalty": dict(params["rule_penalty"]),
+        },
     }
 
     model, history = train_model(

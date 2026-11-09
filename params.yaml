@@ -23,6 +23,7 @@ baseline_comparison:
   selected_architecture: mobilenetv3_small
   architectures:
     - mobilenetv3_small
+    - shufflenet_v2_x1_0
     - alexnet
     - resnet50
     - densenet121
@@ -60,14 +61,13 @@ rule_penalty_bayesian:
   K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
   sampler_checkpoint: "gflownet_best_diverse.pth"
 
-# Stage 5C: Bayesian marginalization trên các state do EliteTracker quan sát.
-# states_path để trống => ưu tiên output đã restore, rồi quét input_roots và
-# /kaggle/input. Nếu có nhiều file ứng viên, pipeline bắt buộc chọn rõ path.
+# Biến thể không chờ GFlowNet hội tụ: freeze policy ngay tại lần nó sinh ra
+# ruleset elite có reward cao nhất từng thấy. training_last.pth được ghi nguyên
+# tử sau mỗi epoch để resume đầy đủ khi Kaggle/session bị ngắt.
 rule_penalty_bayesian_elite:
   K: 32
-  states_path: null
-  input_roots: []
-  reward_temperature: 1.0
+  sampler_checkpoint: "gflownet_best_elite.pth"
+  resume: true
 
 # Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
 # GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.

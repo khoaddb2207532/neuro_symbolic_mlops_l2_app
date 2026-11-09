@@ -6,12 +6,17 @@ import json
 from pathlib import Path
 
 
-def generate(registry_path: Path, template_path: Path, output_dir: Path, git_commit: str) -> None:
+DEFAULT_DATASET_DIRS = {
+    "culture-a": "/kaggle/input/datasets/dangduykhoab2207532/"
+    "vietnamese-cultural-dataset/vietnamese_cultural_dataset",
+    "culture-b": "/kaggle/working",
+}
+
+
+def _generate_rows(rows, template_path: Path, output_dir: Path, git_commit: str) -> list[Path]:
     template = json.loads(template_path.read_text(encoding="utf-8"))
     output_dir.mkdir(parents=True, exist_ok=True)
-    with registry_path.open(newline="", encoding="utf-8") as file:
-        rows = list(csv.DictReader(file))
-
+    generated = []
     for row in rows:
         if "REPLACE_" in row["data_dir"]:
             raise ValueError(
@@ -85,7 +90,52 @@ def generate(registry_path: Path, template_path: Path, output_dir: Path, git_com
             json.dumps(notebook, ensure_ascii=False, indent=1),
             encoding="utf-8",
         )
+        generated.append(destination)
         print(destination)
+    return generated
+
+
+def generate(registry_path: Path, template_path: Path, output_dir: Path, git_commit: str) -> list[Path]:
+    with registry_path.open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    return _generate_rows(rows, template_path, output_dir, git_commit)
+
+
+def generate_matrix(
+    template_path: Path,
+    output_dir: Path,
+    git_commit: str,
+    *,
+    backbones: list[str],
+    seeds: list[int],
+    datasets: list[str],
+    dataset_dirs: dict[str, str] | None = None,
+    account_id: str = "account-1",
+) -> list[Path]:
+    """Sinh trực tiếp ma trận core-prior, không cần experiment registry CSV."""
+    resolved_dirs = {**DEFAULT_DATASET_DIRS, **(dataset_dirs or {})}
+    unknown = sorted(set(datasets) - set(resolved_dirs))
+    if unknown:
+        raise ValueError(f"Thiếu data_dir cho dataset: {unknown}")
+    rows = [
+        {
+            "run_id": f"{dataset}__{backbone}__db__seed_{seed}",
+            "dataset_id": dataset,
+            "data_dir": resolved_dirs[dataset],
+            "seed": seed,
+            "backbone": backbone,
+            "account_id": account_id,
+        }
+        for backbone in backbones
+        for dataset in datasets
+        for seed in seeds
+    ]
+    generated = _generate_rows(rows, template_path, output_dir, git_commit)
+    expected = len(backbones) * len(datasets) * len(seeds)
+    if len(generated) != expected:
+        raise RuntimeError(f"Sinh thiếu notebook: {len(generated)}/{expected}")
+    print(f"Generated {len(generated)} core-prior notebooks without CSV.")
+    return generated
 
 
 if __name__ == "__main__":
@@ -94,10 +144,42 @@ if __name__ == "__main__":
     parser.add_argument("--template", default="managed-experiment-runner-template.ipynb")
     parser.add_argument("--output-dir", default="generated_kaggle_notebooks")
     parser.add_argument("--git-commit", required=True)
-    args = parser.parse_args()
-    generate(
-        Path(args.registry),
-        Path(args.template),
-        Path(args.output_dir),
-        args.git_commit,
+    parser.add_argument("--matrix", action="store_true", help="Sinh ma trận trực tiếp, không đọc CSV.")
+    parser.add_argument("--backbones", nargs="+")
+    parser.add_argument("--seeds", nargs="+", type=int)
+    parser.add_argument("--datasets", nargs="+")
+    parser.add_argument("--account-id", default="account-1")
+    parser.add_argument(
+        "--dataset-dir",
+        action="append",
+        default=[],
+        metavar="DATASET=PATH",
+        help="Ghi đè data_dir mặc định; có thể truyền nhiều lần.",
     )
+    args = parser.parse_args()
+    if args.matrix:
+        if not args.backbones or not args.seeds or not args.datasets:
+            parser.error("--matrix yêu cầu --backbones, --seeds và --datasets")
+        overrides = {}
+        for item in args.dataset_dir:
+            if "=" not in item:
+                parser.error(f"--dataset-dir phải có dạng DATASET=PATH: {item!r}")
+            dataset, path = item.split("=", 1)
+            overrides[dataset] = path
+        generate_matrix(
+            Path(args.template),
+            Path(args.output_dir),
+            args.git_commit,
+            backbones=args.backbones,
+            seeds=args.seeds,
+            datasets=args.datasets,
+            dataset_dirs=overrides,
+            account_id=args.account_id,
+        )
+    else:
+        generate(
+            Path(args.registry),
+            Path(args.template),
+            Path(args.output_dir),
+            args.git_commit,
+        )

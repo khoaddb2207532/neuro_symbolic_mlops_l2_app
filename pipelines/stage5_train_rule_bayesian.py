@@ -16,6 +16,7 @@ Vẫn dùng chung `train_model()`/`train_one_epoch()` ở `src/training/trainer.
 `train_model` tự build từ `rule_set`).
 """
 import argparse
+import hashlib
 import os
 
 import torch
@@ -38,18 +39,33 @@ from src.utils.seed import set_seed
 logger = get_logger(__name__)
 
 
-def main(params_path: str) -> None:
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main(params_path: str, variant: str = "diverse") -> None:
+    if variant not in {"diverse", "elite"}:
+        raise ValueError(f"Bayesian variant không hợp lệ: {variant}")
     params = load_params(params_path)
     set_seed(params["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     filtered_dir = os.path.join(params["output_dir"], "04_filtered_rules")
-    bayes_cfg = params.get("rule_penalty_bayesian", {})
-    checkpoint_name = bayes_cfg.get(
-        "sampler_checkpoint", "gflownet_best_diverse.pth"
+    bayes_cfg = dict(params.get("rule_penalty_bayesian", {}))
+    if variant == "elite":
+        bayes_cfg.update(params.get("rule_penalty_bayesian_elite", {}))
+    default_checkpoint = (
+        "gflownet_best_elite.pth"
+        if variant == "elite"
+        else "gflownet_best_diverse.pth"
     )
+    checkpoint_name = bayes_cfg.get("sampler_checkpoint", default_checkpoint)
     ckpt_path = os.path.join(filtered_dir, checkpoint_name)
-    if not os.path.exists(ckpt_path):
+    if not os.path.exists(ckpt_path) and variant != "elite":
         fallback_name = "gflownet_best_converged.pth"
         logger.warning(
             "Chưa có %s — fallback sang %s.",
@@ -57,6 +73,20 @@ def main(params_path: str) -> None:
             fallback_name,
         )
         ckpt_path = os.path.join(filtered_dir, fallback_name)
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(
+            f"Không tìm thấy elite sampler checkpoint: {ckpt_path}. "
+            "Hãy chạy lại Stage 4 để tạo gflownet_best_elite.pth."
+        )
+
+    elite_obj = None
+    if variant == "elite":
+        elite_obj = torch.load(ckpt_path, map_location="cpu")
+        if elite_obj.get("checkpoint_role") != "elite":
+            raise ValueError(
+                f"{ckpt_path} không phải elite checkpoint "
+                f"(role={elite_obj.get('checkpoint_role')!r})."
+            )
 
     # ---- 1) Nạp lại policy GFlowNet đã train làm FROZEN SAMPLER (không
     # train lại bất kỳ tham số nào của nó) ----
@@ -91,7 +121,12 @@ def main(params_path: str) -> None:
         n for n, _ in sorted(NeuroSymbolicDataset(params["data_dir"], "test").class_to_idx.items(), key=lambda x: x[1])
     ]
 
-    save_dir = os.path.join(params["output_dir"], "05b_rules_model_bayesian")
+    save_subdir = (
+        "05b_rules_model_bayesian_elite"
+        if variant == "elite"
+        else "05b_rules_model_bayesian"
+    )
+    save_dir = os.path.join(params["output_dir"], save_subdir)
     os.makedirs(save_dir, exist_ok=True)
 
     architecture = selected_baseline_architecture(params)
@@ -109,8 +144,39 @@ def main(params_path: str) -> None:
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "dvclive_path": os.path.join(save_dir, "dvclive_rule_regularized_bayesian"),
+        "dvclive_path": os.path.join(
+            save_dir,
+            (
+                "dvclive_rule_regularized_bayesian_elite"
+                if variant == "elite"
+                else "dvclive_rule_regularized_bayesian"
+            ),
+        ),
         "save_dir": save_dir,
+        "resume": bool(bayes_cfg.get("resume", variant == "elite")),
+        "resume_checkpoint_path": os.path.join(save_dir, "training_last.pth"),
+        "resume_identity": {
+            "stage": "stage5_train_rule_bayesian",
+            "variant": variant,
+            "seed": params["seed"],
+            "architecture": architecture,
+            "sampler_checkpoint": checkpoint_name,
+            "sampler_sha256": _sha256_file(ckpt_path),
+            "rule_order_sha256": _sha256_file(
+                os.path.join(filtered_dir, "gflownet_rule_order.pkl")
+            ),
+            "sampler_iteration": (
+                int(elite_obj["iteration"]) if elite_obj is not None else None
+            ),
+            "K": K,
+            "batch_size": params["batch_size"],
+            "optimizer": {
+                "lr_backbone": params["transfer_learning"]["lr_backbone"],
+                "lr_head": params["transfer_learning"]["lr_head"],
+                "weight_decay": params["weight_decay"],
+            },
+            "rule_penalty": dict(params["rule_penalty"]),
+        },
     }
 
     model, history = train_model(
@@ -163,5 +229,8 @@ def main(params_path: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="params.yaml")
+    parser.add_argument(
+        "--variant", choices=["diverse", "elite"], default="diverse"
+    )
     args = parser.parse_args()
-    main(args.config)
+    main(args.config, variant=args.variant)
