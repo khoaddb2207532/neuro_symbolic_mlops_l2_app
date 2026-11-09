@@ -59,11 +59,14 @@ def _wrap_with_concepts(
     concept_names = None
 
     if annotations_path and os.path.exists(annotations_path):
-        concept_annotations, concept_names, n_concepts = load_concept_annotations(
-            annotations_path
-        )
+        res = load_concept_annotations(annotations_path, class_names=class_names)
+        concept_annotations = res[0]
+        concept_names = res[1]
+        n_concepts = res[2]
+        if len(res) > 3 and res[3] is not None:
+            class_to_concepts = res[3]
         logger.info(
-            "Loaded per-image concept annotations: %d images, %d concepts.",
+            "Loaded per-image concept annotations: %d sample keys, %d concepts.",
             len(concept_annotations), n_concepts,
         )
     elif matrix_path and os.path.exists(matrix_path):
