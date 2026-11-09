@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.inference import InferenceService
-from app.schemas import HealthResponse, PredictionResponse
+from app.schemas import ComparisonResponse, HealthResponse, PredictionResponse
 
 app = FastAPI(
     title="Vietnamese Cultural Image Classifier — Neuro-Symbolic API",
@@ -42,6 +42,7 @@ def health() -> HealthResponse:
         device=str(_service.device),
         num_classes=len(_service.class_names),
         num_rules=len(_service.rule_set),
+        models=_service.model_statuses(),
     )
 
 
@@ -58,3 +59,19 @@ async def predict(file: UploadFile = File(...)) -> PredictionResponse:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail=f"Không xử lý được ảnh: {exc}") from exc
     return PredictionResponse(**result)
+
+
+@app.post("/compare", response_model=ComparisonResponse)
+async def compare(file: UploadFile = File(...)) -> ComparisonResponse:
+    """Run every available product on one image for side-by-side comparison."""
+    if _service is None:
+        raise HTTPException(status_code=503, detail="Model chưa sẵn sàng.")
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File phải là ảnh (jpg/png/...).")
+
+    image_bytes = await file.read()
+    try:
+        result = _service.compare(image_bytes)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"Không xử lý được ảnh: {exc}") from exc
+    return ComparisonResponse(**result)

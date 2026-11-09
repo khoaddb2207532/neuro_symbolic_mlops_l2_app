@@ -1,24 +1,7 @@
-"""Kiến trúc CNN + chiến lược transfer learning được chọn cho bài toán này.
+"""Các kiến trúc phân loại ảnh dùng trong pipeline.
 
-CHIẾN LƯỢC ĐÃ CHỌN (xem giải thích đầy đủ trong README.md, mục "Transfer Learning"):
-    "Freeze Backbone + Freeze BatchNorm"  ➜  "Differential / Layer-wise LR"
-    ➜  "Progressive Unfreezing" theo giai đoạn (staged fine-tuning).
-
-Lý do ngắn gọn: dataset ảnh văn hóa Việt Nam có domain lệch khá nhiều so với
-ImageNet, kích thước dataset vừa/nhỏ, và các đặc trưng (features) trích ra từ
-CNN này còn được downstream dùng để train Random Forest + GFlowNet — nên đặc
-trưng cần ổn định (không "trôi" quá mạnh ngay từ epoch đầu). Vì vậy:
-  Giai đoạn 1 (freeze_stage="head_only"): đóng băng toàn bộ backbone + BatchNorm,
-      chỉ train classifier head → ổn định nhanh, tránh phá vỡ pretrained features.
-  Giai đoạn 2 (freeze_stage="last_block"): mở block cuối của backbone với LR nhỏ
-      hơn nhiều so với head (differential LR) → thích nghi domain mà không
-      catastrophic forgetting.
-  Giai đoạn 3 (freeze_stage="full"): mở toàn bộ mạng với layer-wise LR decay,
-      dùng khi có đủ dữ liệu / cần accuracy tối đa.
-
-GHI CHÚ: CHỈ MỘT class CNN duy nhất (`CNNBaseline`) được dùng xuyên suốt toàn
-bộ pipeline (baseline training, rule-regularized fine-tuning, app serving).
-Trước đây có alias `CNNWithFeatures` trùng lặp không cần thiết — đã gộp lại.
+MobileNetV3-Large được fine-tune toàn bộ ngay từ đầu. Backbone và classifier
+dùng learning rate riêng nhưng cố định trong suốt quá trình huấn luyện.
 """
 from typing import Optional, Tuple
 
@@ -28,7 +11,185 @@ from torchvision import models
 
 from src.utils.checkpoint import load_model_weights
 
-FreezeStage = str  # "head_only" | "last_block" | "full"
+
+BASELINE_ARCHITECTURES = (
+    "mobilenetv3_small",
+    "shufflenet_v2_x1_0",
+    "alexnet",
+    "resnet50",
+    "densenet121",
+    "efficientnet_b0",
+    "swin_t",
+    "vit_b_16",
+    "vit_b_32",
+)
+
+
+def normalize_architecture_name(name: str) -> str:
+    aliases = {
+        "mobilenet_v3_small": "mobilenetv3_small",
+        "shufflenet": "shufflenet_v2_x1_0",
+        "shufflenetv2": "shufflenet_v2_x1_0",
+        "shufflenetv2_x1_0": "shufflenet_v2_x1_0",
+        "efficientnet": "efficientnet_b0",
+        "efficientnetb0": "efficientnet_b0",
+        "swint": "swin_t",
+        "swinti": "swin_t",
+        "swin_tiny": "swin_t",
+        "alex": "alexnet",
+        "vit": "vit_b_32",
+        "vit_b16": "vit_b_16",
+        "vit_b32": "vit_b_32",
+    }
+    normalized = name.strip().lower().replace("-", "_")
+    return aliases.get(normalized, normalized)
+
+
+class _FeatureClassifierBackbone(nn.Module):
+    """Ghép backbone trả feature với classifier mới, giữ interface torchvision."""
+
+    def __init__(
+        self,
+        feature_backbone: nn.Module,
+        feature_dim: int,
+        num_classes: int,
+    ):
+        super().__init__()
+        self.feature_backbone = feature_backbone
+        self.fc = nn.Linear(feature_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(self.feature_backbone(x))
+
+
+def _build_comparison_backbone(
+    architecture: str,
+    num_classes: int,
+    pretrained: bool,
+) -> Tuple[nn.Module, nn.Linear]:
+    """Tạo torchvision model và trả về model cùng classifier cuối."""
+    architecture = normalize_architecture_name(architecture)
+    weights = "DEFAULT" if pretrained else None
+
+    if architecture == "mobilenetv3_small":
+        backbone = models.mobilenet_v3_small(weights=weights)
+        old_head = backbone.classifier[-1]
+        backbone.classifier[-1] = nn.Linear(old_head.in_features, num_classes)
+        return backbone, backbone.classifier[-1]
+    if architecture == "shufflenet_v2_x1_0":
+        backbone = models.shufflenet_v2_x1_0(weights=weights)
+        backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)
+        return backbone, backbone.fc
+    if architecture == "alexnet":
+        backbone = models.alexnet(weights=weights)
+        old_head = backbone.classifier[-1]
+        backbone.classifier[-1] = nn.Linear(old_head.in_features, num_classes)
+        # Forward-pre-hook trên lớp cuối nhận đúng feature sau classifier[:-1].
+        return backbone, backbone.classifier[-1]
+    if architecture == "resnet50":
+        backbone = models.resnet50(weights=weights)
+        backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)
+        return backbone, backbone.fc
+    if architecture == "densenet121":
+        backbone = models.densenet121(weights=weights)
+        backbone.classifier = nn.Linear(backbone.classifier.in_features, num_classes)
+        return backbone, backbone.classifier
+    if architecture == "efficientnet_b0":
+        backbone = models.efficientnet_b0(weights=weights)
+        old_head = backbone.classifier[-1]
+        backbone.classifier[-1] = nn.Linear(old_head.in_features, num_classes)
+        return backbone, backbone.classifier[-1]
+    if architecture == "swin_t":
+        swin = models.swin_t(weights=weights)
+        feature_dim = swin.head.in_features
+        swin.head = nn.Identity()
+        backbone = _FeatureClassifierBackbone(swin, feature_dim, num_classes)
+        return backbone, backbone.fc
+    if architecture == "vit_b_16":
+        vit = models.vit_b_16(weights=weights)
+        feature_dim = vit.hidden_dim
+        vit.heads = nn.Identity()
+        backbone = _FeatureClassifierBackbone(vit, feature_dim, num_classes)
+        return backbone, backbone.fc
+    if architecture == "vit_b_32":
+        vit = models.vit_b_32(weights=weights)
+        feature_dim = vit.hidden_dim
+        vit.heads = nn.Identity()
+        backbone = _FeatureClassifierBackbone(vit, feature_dim, num_classes)
+        return backbone, backbone.fc
+
+    raise ValueError(
+        f"Kiến trúc '{architecture}' không được hỗ trợ. "
+        f"Các lựa chọn: {', '.join(BASELINE_ARCHITECTURES)}"
+    )
+
+
+class ImageClassificationBaseline(nn.Module):
+    """Baseline đa kiến trúc, trả về ``(logits, penultimate_features)``.
+
+    Hook chỉ đọc input của classifier cuối để lấy đặc trưng; nó không thay đổi
+    forward/backward của torchvision model.
+    """
+
+    def __init__(
+        self,
+        architecture: str,
+        num_classes: int = 12,
+        pretrained: bool = True,
+        freeze_features: bool = False,
+    ):
+        super().__init__()
+        self.architecture = normalize_architecture_name(architecture)
+        self.backbone, self.head = _build_comparison_backbone(
+            self.architecture, num_classes, pretrained
+        )
+        self._captured_features: Optional[torch.Tensor] = None
+        self.head.register_forward_pre_hook(self._capture_head_input)
+        if freeze_features:
+            head_param_ids = {id(parameter) for parameter in self.head.parameters()}
+            for parameter in self.backbone.parameters():
+                if id(parameter) not in head_param_ids:
+                    parameter.requires_grad = False
+
+    def _capture_head_input(self, _module, inputs) -> None:
+        self._captured_features = torch.flatten(inputs[0], 1)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        logits = self.backbone(x)
+        if self._captured_features is None:
+            raise RuntimeError("Không lấy được đặc trưng đầu vào classifier.")
+        features = self._captured_features
+        self._captured_features = None
+        return logits, features
+
+    def trainable_param_groups(self, lr_head: float, lr_backbone: float):
+        head_param_ids = {id(parameter) for parameter in self.head.parameters()}
+        backbone_params = [
+            parameter
+            for parameter in self.backbone.parameters()
+            if id(parameter) not in head_param_ids and parameter.requires_grad
+        ]
+        return [
+            {
+                "params": [
+                    parameter for parameter in self.head.parameters()
+                    if parameter.requires_grad
+                ],
+                "lr": lr_head,
+                "name": "head",
+            },
+            {"params": backbone_params, "lr": lr_backbone, "name": "backbone"},
+        ]
+
+    def freeze_bn(self) -> None:
+        """Đóng băng BatchNorm của CNN và LayerNorm của Swin/ViT."""
+        for module in self.modules():
+            if isinstance(module, (nn.BatchNorm2d, nn.LayerNorm)):
+                module.eval()
+                if module.weight is not None:
+                    module.weight.requires_grad = False
+                if module.bias is not None:
+                    module.bias.requires_grad = False
 
 
 def _build_mobilenet_v3(num_classes: int) -> nn.Module:
@@ -48,10 +209,9 @@ class CNNBaseline(nn.Module):
     alias trùng tên.
     """
 
-    def __init__(self, num_classes: int = 12, freeze_stage: FreezeStage = "head_only"):
+    def __init__(self, num_classes: int = 12):
         super().__init__()
         self.backbone = _build_mobilenet_v3(num_classes)
-        self.set_freeze_stage(freeze_stage)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.backbone.features(x)
@@ -61,61 +221,12 @@ class CNNBaseline(nn.Module):
         logits = self.backbone.classifier[3](features)
         return logits, features
 
-    # ------------------------------------------------------------------ #
-    #  Chiến lược transfer learning theo giai đoạn (progressive unfreeze) #
-    # ------------------------------------------------------------------ #
-    def set_freeze_stage(self, stage: FreezeStage) -> None:
-        """Áp dụng đóng băng theo giai đoạn được chọn. Gọi lại mỗi khi chuyển stage."""
-        if stage == "head_only":
-            for p in self.backbone.features.parameters():
-                p.requires_grad = False
-            for p in self.backbone.classifier.parameters():
-                p.requires_grad = True
-        elif stage == "last_block":
-            n_feature_blocks = len(self.backbone.features)
-            last_block_start = max(0, n_feature_blocks - 3)  # 3 block cuối
-            for i, block in enumerate(self.backbone.features):
-                requires_grad = i >= last_block_start
-                for p in block.parameters():
-                    p.requires_grad = requires_grad
-            for p in self.backbone.classifier.parameters():
-                p.requires_grad = True
-        elif stage == "full":
-            for p in self.backbone.parameters():
-                p.requires_grad = True
-        else:
-            raise ValueError(f"freeze_stage phải là 'head_only'|'last_block'|'full', nhận '{stage}'")
-        self.freeze_bn()  # BatchNorm luôn được giữ đóng băng cho tới stage 'full'
-        self._current_stage = stage
-
-    def freeze_bn(self) -> None:
-        """Đóng băng running stats + affine params của mọi BatchNorm2d.
-
-        Quan trọng khi dataset/batch size nhỏ: BN dễ làm lệch running_mean/var
-        và gây training không ổn định.
-        """
-        freeze = getattr(self, "_current_stage", "head_only") != "full"
-        for m in self.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                if freeze:
-                    m.eval()
-                    m.weight.requires_grad = False
-                    m.bias.requires_grad = False
-                else:
-                    # m.weight.requires_grad = True
-                    # m.bias.requires_grad = True
-                    m.eval()                        # tạm thời khóa BN tất cả stage
-                    m.weight.requires_grad = False 
-                    m.bias.requires_grad = False
-
     def trainable_param_groups(self, lr_head: float, lr_backbone: float):
-        """Trả về param groups cho optimizer, áp dụng Differential Learning Rate."""
-        head_params = [p for p in self.backbone.classifier.parameters() if p.requires_grad]
-        backbone_params = [p for p in self.backbone.features.parameters() if p.requires_grad]
-        groups = [{"params": head_params, "lr": lr_head, "name": "head"}]
-        if backbone_params:
-            groups.append({"params": backbone_params, "lr": lr_backbone, "name" : "backbone"})
-        return groups
+        """Trả về hai nhóm tham số với learning rate cố định."""
+        return [
+            {"params": self.backbone.classifier.parameters(), "lr": lr_head, "name": "head"},
+            {"params": self.backbone.features.parameters(), "lr": lr_backbone, "name": "backbone"},
+        ]
 
 
 class FeatureExtractor(nn.Module):

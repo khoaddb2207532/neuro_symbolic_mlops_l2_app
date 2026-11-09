@@ -33,13 +33,17 @@ from sklearn.metrics import f1_score
 
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
-from src.models.cnn import CNNBaseline
+from src.models.cnn import ImageClassificationBaseline
 from src.rules.io import save_rules_excel
 from src.rules.rule_types import Rule, RuleSet
 from src.rules.validator import RuleValidator
 from src.training.trainer import train_model
 from src.utils.checkpoint import load_model_weights
-from src.utils.config import load_params
+from src.utils.config import (
+    load_params,
+    selected_baseline_architecture,
+    selected_baseline_checkpoint,
+)
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
 
@@ -50,7 +54,9 @@ SelectFn = Callable[[List[Rule], torch.Tensor, torch.Tensor, torch.Tensor, int],
 
 # --------------------------------------------------------------------------
 # 3 thuật toán chọn luật — cùng chữ ký (valid_rules, cover, correct, rule_len,
-# max_rules) -> List[int], để dùng thay thế lẫn nhau trong select_rules().
+# selection_budget) -> List[int], để dùng thay thế lẫn nhau trong
+# select_rules(). Ngân sách này phải bằng số luật GFlowNet thực sự chọn khi
+# chạy thí nghiệm matched-budget.
 # --------------------------------------------------------------------------
 def random_selection(
     valid_rules: List[Rule],
@@ -95,7 +101,9 @@ def greedy_coverage(
 ) -> List[int]:
     """Greedy submodular don gian: lap `max_rules` lan, moi lan chon luat
     lam tang so mau MOI duoc phu (chua tung duoc phu boi cac luat da chon)
-    nhieu nhat. Dung lai neu khong con luat nao tang duoc coverage.
+    nhieu nhat. Neu khong con luat nao tang coverage, van tiep tuc chon theo
+    tie-break deterministic cua ``torch.argmax`` cho den du matched budget.
+    Dieu nay dam bao so sanh cong bang voi GFlowNet ve so luong luat.
     Vector hoa tren GPU/CPU bang tensor `cover` (n_rules, n_val) bool,
     khong dung vong lap python long qua tung luat trong moi vong (chi
     vong lap ngoai qua `max_rules` buoc, moi buoc 1 phep tinh tensor)."""
@@ -112,8 +120,6 @@ def greedy_coverage(
         gains = (cover_bool & ~covered.unsqueeze(0)).sum(dim=1).float()
         gains[selected_mask] = -1.0
         best_idx = int(torch.argmax(gains).item())
-        if gains[best_idx].item() <= 0:
-            break
         selected.append(best_idx)
         selected_mask[best_idx] = True
         covered |= cover_bool[best_idx]
@@ -154,17 +160,42 @@ def select_rules(
         pickle.dump(valid_rule_set, f)
 
     valid_rules = list(valid_rule_set.rules)
-    max_rules = params["gflownet"]["max_rules"]
-    selected_indices = select_fn(valid_rules, cover, correct, rule_len, max_rules)
+    # Trong thí nghiệm matched-budget, notebook/orchestrator đặt
+    # ``selection_budget`` bằng đúng số luật GFlowNet thực sự chọn. Fallback
+    # về gflownet.max_rules giữ tương thích ngược cho các lần chạy cũ.
+    selection_budget = params.get(
+        "selection_budget",
+        params["gflownet"]["max_rules"],
+    )
+    if not isinstance(selection_budget, int) or selection_budget <= 0:
+        raise ValueError(
+            "selection_budget phải là số nguyên dương, nhận "
+            f"{selection_budget!r}."
+        )
+
+    selected_indices = select_fn(
+        valid_rules,
+        cover,
+        correct,
+        rule_len,
+        selection_budget,
+    )
     selected_rules = valid_rule_set.filter_rules(selected_indices).rules  # List[Rule]
+
+    expected_count = min(selection_budget, len(valid_rules))
+    if len(selected_rules) != expected_count:
+        raise RuntimeError(
+            f"[{method_name}] Vi phạm matched-budget: chọn "
+            f"{len(selected_rules)} luật, kỳ vọng {expected_count}."
+        )
 
     with open(os.path.join(output_dir, "selected_rules.pkl"), "wb") as f:
         pickle.dump(selected_rules, f)
     save_rules_excel(selected_rules, os.path.join(output_dir, "selected_rules.xlsx"))
 
     logger.info(
-        "[%s] Đã chọn %d/%d luật hợp lệ (max_rules=%d).",
-        method_name, len(selected_rules), len(valid_rules), max_rules,
+        "[%s] Đã chọn %d/%d luật hợp lệ (selection_budget=%d).",
+        method_name, len(selected_rules), len(valid_rules), selection_budget,
     )
     return selected_rules
 
@@ -194,23 +225,22 @@ def train_and_evaluate(
             "giống hệt baseline không có luật.", method_name,
         )
 
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="last_block")
+    architecture = selected_baseline_architecture(params)
+    model = ImageClassificationBaseline(
+        architecture=architecture,
+        num_classes=params["num_classes"],
+        pretrained=False,
+    )
     # Nạp lại đúng trọng số baseline (stage1) cho CẢ 3 phương pháp — đảm bảo
     # chênh lệch cuối cùng CHỈ đến từ cách chọn luật, không phải từ 3 baseline
     # xuất phát khác nhau.
     load_model_weights(model, baseline_ckpt, device, required=True)
 
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule_stage2"].items()}
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
-        "freeze_bn": params["transfer_learning"]["freeze_bn"],
-        "freeze_schedule": freeze_schedule,
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "use_scheduler": True,
-        "scheduler_factor": 0.1,
-        "scheduler_patience": 3,
         "dvclive_path": os.path.join(save_dir, f"dvclive_rule_regularized_{method_name}"),
         "save_dir": save_dir,
     }
@@ -228,6 +258,9 @@ def train_and_evaluate(
         smoothing=params["rule_penalty"]["smoothing"],
         initial_temp=params["rule_penalty"]["initial_temp"],
         final_temp=params["rule_penalty"]["final_temp"],
+        temp_warmup_epochs=params["rule_penalty"].get("temp_warmup_epochs", 2),
+        temp_anneal_epochs=params["rule_penalty"].get("temp_anneal_epochs", 10),
+        min_epochs_before_early_stop=params["rule_penalty"].get("min_epochs_before_early_stop", 12),
         num_classes=params["num_classes"],
         config=train_cfg,
     )
@@ -272,7 +305,7 @@ def main(params_path: str, methods: List[str], random_seed: int) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- Kiểm tra điều kiện tiên quyết: stage1-3 phải đã chạy xong ---
-    baseline_ckpt = os.path.join(params["output_dir"], "01_baseline", "baseline_best.pth")
+    baseline_ckpt = selected_baseline_checkpoint(params)
     features_dir = os.path.join(params["output_dir"], "02_features")
     raw_rules_path = os.path.join(params["output_dir"], "03_rules", "raw_rules.pkl")
     required_paths = [

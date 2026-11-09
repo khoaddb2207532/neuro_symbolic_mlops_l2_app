@@ -222,3 +222,17 @@ __marimo__/
 #dvc
 kaggle/working/
 outputs/
+outputs_seed_42/
+outputs_seed_44/
+outputs_seed_46/
+report/
+generated_kaggle_notebooks/
+.dvc/
+.vscode/
+.work/
+output/
+tests/
+tmp/
+design-system/
+generated_dual_gpu_elite_notebooks/
+generated_dual_gpu_elite_model_notebooks/

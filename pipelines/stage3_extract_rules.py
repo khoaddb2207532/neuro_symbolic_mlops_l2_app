@@ -38,7 +38,18 @@ def main(params_path: str) -> None:
     with open(raw_rules_path, "wb") as f:
         pickle.dump(raw_rules, f)
 
-    save_rules_excel(raw_rules.rules, os.path.join(output_dir, "raw_rules.xlsx"))
+    feature_names = None
+    names_path = os.path.join(features_dir, "feature_names.json")
+    if os.path.exists(names_path):
+        import json
+        with open(names_path, "r", encoding="utf-8") as f:
+            feature_names = json.load(f)
+
+    save_rules_excel(
+        raw_rules.rules,
+        os.path.join(output_dir, "raw_rules.xlsx"),
+        feature_names=feature_names,
+    )
     
     logger.info("Stage 3 hoàn thành. Kết quả tại %s", output_dir)
 

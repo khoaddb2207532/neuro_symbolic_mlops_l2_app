@@ -1,4 +1,4 @@
-"""DVC Stage 1 — Huấn luyện CNN baseline với chiến lược progressive unfreezing.
+"""DVC Stage 1 — Huấn luyện CNN baseline bằng full fine-tuning.
 
 Chạy: python -m pipelines.stage1_train_baseline --config params.yaml
 """
@@ -9,9 +9,9 @@ import torch
 
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
-from src.models.cnn import CNNBaseline
+from src.models.cnn import ImageClassificationBaseline
 from src.training.trainer import train_model
-from src.utils.config import load_params
+from src.utils.config import load_params, selected_baseline_architecture
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
 
@@ -33,22 +33,20 @@ def main(params_path: str) -> None:
     save_dir = os.path.join(params["output_dir"], "01_baseline")
     os.makedirs(save_dir, exist_ok=True)
 
-    model = CNNBaseline(num_classes=params["num_classes"], freeze_stage="head_only")
-
-    # freeze_schedule đến trực tiếp từ params.yaml -> đây là "chiến lược transfer
-    # learning" được cấu hình khai báo (declarative), không hard-code trong code.
-    freeze_schedule = {int(k): v for k, v in params["transfer_learning"]["freeze_schedule"].items()}
+    architecture = selected_baseline_architecture(params)
+    model = ImageClassificationBaseline(
+        architecture=architecture,
+        num_classes=params["num_classes"],
+        pretrained=params.get("baseline_comparison", {}).get(
+            "pretrained", True
+        ),
+    )
 
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
-        "freeze_bn": params["transfer_learning"]["freeze_bn"],
-        "freeze_schedule": freeze_schedule,
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "use_scheduler": True,
-        "scheduler_factor": 0.1,
-        "scheduler_patience": 3,
         "dvclive_path": os.path.join(save_dir, "dvclive_baseline"),
         "save_dir": save_dir,
     }

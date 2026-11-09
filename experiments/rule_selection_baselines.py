@@ -9,7 +9,7 @@ CAP NHAT (so sanh CONG BANG voi GFlowNet) - 2 thay doi chinh so voi ban dau
 ============================================================================
 1) THUOC DO CHINH DE SO SANH gio la `reward_score` (= gia tri tra ve boi
    chinh `RuleSetReward.score()` trong `src/gflownet/reward.py`, dung
-   CUNG cong thuc + CUNG trong so w_acc/w_cov/w_red/w_comp/beta ma GFlowNet
+   CUNG cong thuc + CUNG trong so w_acc/w_cov/w_conflict/beta ma GFlowNet
    duoc huan luyen de toi da hoa) - KHONG con dung `f1_like` de ket luan
    "phuong phap nao tot hon" nua, vi `f1_like` (trong `evaluate_run`) la
    mot cong thuc KHAC (thien ve coverage) khong phai thu GFlowNet duoc
@@ -362,15 +362,24 @@ def main(params_path: str = "params.yaml") -> None:
     # 1 reward_module DUY NHAT dung chung cho TAT CA phuong phap/budget, de
     # dam bao cham diem cong bang tren CUNG mot thuoc do/CUNG thu tu
     # valid_rules (xem gia dinh trong docstring dau file).
+    # LUU Y: RuleSetReward (src/gflownet/reward.py) da bo w_red/w_comp (khong
+    # con phat "trung lap cung target" / so luong luat) va doi thanh w_conflict
+    # (chi phat cap luat KHAC target cung phu 1 vung) + yeu cau `targets`
+    # (target_class cua tung luat) de tach trung lap vo hai khoi xung dot that.
+    targets = torch.tensor([r.target_class for r in valid_rules], device=device)
+    confidences = torch.tensor([r.confidence for r in valid_rules], device=device)
     shared_reward_module = RuleSetReward(
         cover=cover,
         correct=correct,
         rule_len=rule_len,
         max_rules=max_rules_full,
+        targets=targets,
+        labels=val_labels,
+        confidences=confidences,
         w_acc=gfn_cfg.get("w_acc", 1.0),
         w_cov=gfn_cfg.get("w_cov", 0.5),
-        w_red=gfn_cfg.get("w_red", 0.3),
-        w_comp=gfn_cfg.get("w_comp", 0.2),
+        w_wrong=gfn_cfg.get("w_wrong", 0.75),
+        w_conflict=gfn_cfg.get("w_conflict", 0.1),
         beta=gfn_cfg.get("beta", 3.0),
     )
 
@@ -384,8 +393,8 @@ def main(params_path: str = "params.yaml") -> None:
         device=device,
         w_acc=gfn_cfg.get("w_acc", 1.0),
         w_cov=gfn_cfg.get("w_cov", 0.5),
-        w_red=gfn_cfg.get("w_red", 0.3),
-        w_comp=gfn_cfg.get("w_comp", 0.2),
+        w_wrong=gfn_cfg.get("w_wrong", 0.75),
+        w_conflict=gfn_cfg.get("w_conflict", 0.1),
         beta=gfn_cfg.get("beta", 3.0),
     )
 
@@ -395,6 +404,7 @@ def main(params_path: str = "params.yaml") -> None:
             cover=cover,
             correct=correct,
             rule_len=rule_len,
+            labels=val_labels,
             max_rules=max_rules_full,
             output_dir=gfn_output_dir,
             gfnet_hidden_dim=gfn_cfg["hidden_dim"],

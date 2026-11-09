@@ -14,7 +14,7 @@ LỊCH SỬ THIẾT KẾ (đọc để hiểu vì sao có 2 lần đổi hướn
     luật hơn. Khớp mềm bằng sigmoid làm `rule_sat` trở thành hàm khả vi theo
     `features`, nên rule-penalty giờ thực sự regularize được không gian biểu
     diễn (representation), không chỉ quyết định phân loại ở lớp cuối. Nhiệt
-    độ ủ dần cao→thấp qua các epoch để "mềm" lúc đầu (dễ tối ưu, gradient
+    độ ủ dần thấp→cao qua các epoch để "mềm" lúc đầu (dễ tối ưu, gradient
     mượt) rồi "cứng" dần về cuối (khớp luật gần đúng nghĩa boolean thật).
   - `GPUFastRuleValidator.validate()` (dùng ở stage3 để tính support/confidence
     của luật) VẪN dùng so khớp CỨNG — đây là lựa chọn có chủ đích khác: thống
@@ -31,6 +31,7 @@ import torch
 import torch.nn as nn
 
 from src.rules.rule_types import RuleSet
+from src.rules.temperature import geometric_temperature
 
 
 class BinaryTransformer:
@@ -78,6 +79,8 @@ class VectorizedRulePenalty(nn.Module):
         num_classes: int = 12,
         initial_temp: float = 2.0,
         final_temp: float = 15.0,
+        temp_warmup_epochs: int = 2,
+        temp_anneal_epochs: int = 10,
         active_threshold: float = 1.0,
     ):
         super().__init__()
@@ -88,6 +91,8 @@ class VectorizedRulePenalty(nn.Module):
         self.num_classes = num_classes
         self.initial_temp = initial_temp
         self.final_temp = final_temp
+        self.temp_warmup_epochs = temp_warmup_epochs
+        self.temp_anneal_epochs = temp_anneal_epochs
         # Ngưỡng (trên tổng rule_sat của cả batch) để coi 1 luật là "active"
         # trong batch đó — xem last_coverage_stats(). Mặc định 1.0 tương
         # đương "ít nhất khoảng 1 sample khớp gần như hoàn toàn" theo thang
@@ -96,19 +101,48 @@ class VectorizedRulePenalty(nn.Module):
         # Buffer (không phải Parameter): nhiệt độ được lịch trình hoá theo
         # epoch bởi trainer, không học qua backprop.
         self.register_buffer("_temperature", torch.tensor(float(initial_temp)))
+
+        # Biểu diễn tensor của rule-set là bất biến trong suốt quá trình train.
+        # Tạo một lần trên CPU rồi đăng ký buffer để nn.Module tự chuyển chúng
+        # cùng device với model, thay vì cấp phát và gán từng phần tử ở mỗi batch.
+        R = len(self.rule_set.rules)
+        max_conds = max((len(rule.conditions) for rule in self.rule_set.rules), default=1)
+        feat_idx = torch.zeros(R, max_conds, dtype=torch.long)
+        thresholds = torch.zeros(R, max_conds, dtype=torch.float)
+        ops = torch.zeros(R, max_conds, dtype=torch.bool)
+        valid_m = torch.zeros(R, max_conds, dtype=torch.bool)
+        targets = torch.zeros(R, dtype=torch.long)
+        confs = torch.zeros(R, dtype=torch.float)
+        for i, rule in enumerate(self.rule_set.rules):
+            targets[i] = rule.target_class
+            confs[i] = rule.confidence
+            for j, cond in enumerate(rule.conditions):
+                feat_idx[i, j] = cond.feature_index
+                thresholds[i, j] = cond.threshold
+                ops[i, j] = cond.operator == ">"
+                valid_m[i, j] = True
+
+        self.register_buffer("feat_idx", feat_idx)
+        self.register_buffer("thresholds", thresholds)
+        self.register_buffer("ops", ops)
+        self.register_buffer("valid_m", valid_m)
+        self.register_buffer("targets", targets)
+        self.register_buffer("confs", confs)
         # Không phải buffer/parameter — chỉ là chỗ lưu tạm rule_sat của lần
         # forward() gần nhất để đọc cho mục đích observability (không tham
         # gia checkpoint, không cần đồng bộ device đặc biệt vì luôn được ghi
         # đè ngay sau forward() tiếp theo).
         self._last_rule_sat: Optional[torch.Tensor] = None
 
-    def update_temperature(self, epoch: int, total_epochs: int) -> None:
-        """Gọi mỗi epoch (từ trainer.py) để ủ nhiệt độ tuyến tính: mềm lúc đầu
-        (gradient mượt, dễ tối ưu) -> cứng dần về cuối (khớp luật gần đúng
-        boolean thật)."""
-        progress = epoch / max(total_epochs - 1, 1)
-        progress = min(max(progress, 0.0), 1.0)
-        new_temp = self.initial_temp * (1 - progress) + self.final_temp * progress
+    def update_temperature(self, epoch: int) -> None:
+        """Ủ theo lịch cố định, không phụ thuộc giới hạn ``num_epochs``."""
+        new_temp = geometric_temperature(
+            epoch,
+            self.initial_temp,
+            self.final_temp,
+            self.temp_warmup_epochs,
+            self.temp_anneal_epochs,
+        )
         self._temperature.fill_(new_temp)
 
     def forward(self, features: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
@@ -116,40 +150,24 @@ class VectorizedRulePenalty(nn.Module):
         if R == 0:
             self._last_rule_sat = None
             return torch.tensor(0.0, device=features.device)
-        device = features.device
         batch_size = features.size(0)
-        max_conds = max(len(r.conditions) for r in self.rule_set.rules)
-
-        feat_idx = torch.zeros(R, max_conds, dtype=torch.long, device=device)
-        thresholds = torch.zeros(R, max_conds, dtype=torch.float, device=device)
-        ops = torch.zeros(R, max_conds, dtype=torch.bool, device=device)
-        valid_m = torch.zeros(R, max_conds, dtype=torch.bool, device=device)
-        targets = torch.tensor([r.target_class for r in self.rule_set.rules], device=device)
-        confs = torch.tensor([r.confidence for r in self.rule_set.rules], device=device)
-
-        for i, rule in enumerate(self.rule_set.rules):
-            for j, cond in enumerate(rule.conditions):
-                feat_idx[i, j] = cond.feature_index
-                thresholds[i, j] = cond.threshold
-                ops[i, j] = cond.operator == ">"
-                valid_m[i, j] = True
 
         # ---- Khớp luật MỀM (thay cho so khớp cứng trước đây) ----
-        sel = features[:, feat_idx]  # (batch, R, max_conds)
+        sel = features[:, self.feat_idx]  # (batch, R, max_conds)
         temp = self._temperature
-        sat_le = torch.sigmoid(temp * (thresholds - sel))  # điều kiện "<="
-        sat_gt = torch.sigmoid(temp * (sel - thresholds))  # điều kiện ">"
-        cond_sat = torch.where(ops, sat_gt, sat_le)
+        sat_le = torch.sigmoid(temp * (self.thresholds - sel))  # điều kiện "<="
+        sat_gt = torch.sigmoid(temp * (sel - self.thresholds))  # điều kiện ">"
+        cond_sat = torch.where(self.ops, sat_gt, sat_le)
         # Điều kiện "không tồn tại" (do padding max_conds) không được ảnh
         # hưởng tới tích AND-mềm -> gán 1.0 (trung tính).
-        cond_sat = torch.where(valid_m, cond_sat, torch.ones_like(cond_sat))
+        cond_sat = torch.where(self.valid_m, cond_sat, torch.ones_like(cond_sat))
         rule_sat = cond_sat.prod(dim=-1)  # AND mềm = tích các điều kiện, (batch, R) trong (0,1)
         # Lưu lại (detach, không giữ graph) để last_coverage_stats() đọc được
         # — mục đích observability, KHÔNG dùng lại giá trị này khi backward().
         self._last_rule_sat = rule_sat.detach()
 
         log_probs = torch.log_softmax(logits, dim=1)
-        tgt_log_probs = log_probs.gather(1, targets.unsqueeze(0).expand(batch_size, -1))
+        tgt_log_probs = log_probs.gather(1, self.targets.unsqueeze(0).expand(batch_size, -1))
         sum_log_probs = log_probs.sum(dim=1, keepdim=True).expand(-1, R)
 
         log_loss = -(
@@ -160,7 +178,7 @@ class VectorizedRulePenalty(nn.Module):
         n_matched = rule_sat.sum(dim=0) + 1e-9  # "số sample khớp" giờ là tổng liên tục, không phải đếm nguyên
         avg_loss = weighted.sum(dim=0) / n_matched
         if self.use_confidence:
-            avg_loss = avg_loss * confs
+            avg_loss = avg_loss * self.confs
         return self.penalty_weight * avg_loss.mean()
 
     def last_coverage_stats(self) -> dict:

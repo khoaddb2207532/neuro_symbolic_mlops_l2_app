@@ -10,30 +10,31 @@ output_dir: "outputs"
 num_classes: 12
 batch_size: 64
 num_workers: 4
-num_epochs: 5
+num_epochs: 100
 patience: 5
 weight_decay: !!float 1e-4
 monitor_metric: "val_loss"
 
-# --------------------------------------------------------------
-# CHIẾN LƯỢC TRANSFER LEARNING ĐÃ CHỌN:
-#   "Freeze Backbone + Freeze BatchNorm" -> "Differential LR" ->
-#   "Progressive Unfreezing" .
-# --------------------------------------------------------------
 transfer_learning:
-  lr_head: !!float 1e-4          # classifier học nhanh
-  lr_backbone: !!float 1e-5       # backbone (khi mở) học chậm hơn 10x
-  freeze_bn: true          # BatchNorm luôn đóng băng cho tới stage "full"
-  # Stage 1 (baseline, cell gốc "01_baseline"): warm-up head, sau đó mở dần.
-  freeze_schedule:
-    0: "head_only"    # epoch 0-4: chỉ train classifier
-    5: "last_block"   # epoch 5-14: mở 3 block cuối của backbone
-    15: "full"         # epoch 15+: mở toàn bộ (nếu dataset đủ lớn)
-  # Stage 2 (rule-regularized fine-tuning, "05_rules_model"): tiếp tục từ
-  # baseline đã hội tụ nên có thể mở sớm hơn, không cần warm-up dài.
-  freeze_schedule_stage2:
-    0: "last_block"
-    10: "full"
+  lr_head: !!float 1e-4
+  lr_backbone: !!float 1e-4
+
+baseline_comparison:
+  selected_architecture: mobilenetv3_small
+  architectures:
+    - mobilenetv3_small
+    - shufflenet_v2_x1_0
+    - alexnet
+    - resnet50
+    - densenet121
+    - efficientnet_b0
+    - swin_t
+    - vit_b_16
+    - vit_b_32
+  pretrained: true
+
+features:
+  source: "cbm"                        # "cbm" (concept probabilities) hoặc "baseline" (latent)
 
 rules:
   min_support: 0.01
@@ -41,24 +42,71 @@ rules:
 
 
 rule_penalty:
+  target_model: "cbm"                  # "cbm" hoặc "baseline"
   weight: 0.1
   smoothing: 0.1
   initial_temp: 2.0
-  final_temp: 15.0
+  final_temp: 12.0
+  temp_warmup_epochs: 2
+  temp_anneal_epochs: 10
+  min_epochs_before_early_stop: 12
+
+# Student khởi tạo từ ImageNet; teacher baseline đóng băng chỉ tạo feature để
+# các luật đã chọn bỏ phiếu thành soft targets.
+rule_distillation:
+  weight: 0.1
+  temperature: 2.0
+  use_confidence: true
+
+# Dùng bởi pipelines/stage5_train_rule_bayesian.py — regularization kiểu
+# Bayesian marginalization (frozen GFlowNet sampler, resample K tập luật MỚI
+# mỗi bước train CNN, xem src/rules/bayesian_penalty.py).
+rule_penalty_bayesian:
+  K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
+  sampler_checkpoint: "gflownet_best_diverse.pth"
+
+# Biến thể không chờ GFlowNet hội tụ: freeze policy ngay tại lần nó sinh ra
+# ruleset elite có reward cao nhất từng thấy. training_last.pth được ghi nguyên
+# tử sau mỗi epoch để resume đầy đủ khi Kaggle/session bị ngắt.
+rule_penalty_bayesian_elite:
+  K: 32
+  sampler_checkpoint: "gflownet_best_elite.pth"
+  resume: true
+
+# Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
+# GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.
+rule_ranking_analysis:
+  K: 300                       # số trajectory sample từ policy đã train
+  checkpoint: "gflownet_best_diverse.pth"
+
+# Concept Bottleneck Model — ép feature vector về n_concepts chiều (sigmoid),
+# mỗi chiều là xác suất xuất hiện của 1 concept.  Concept loss (BCE) ép các
+# giá trị này khớp với nhãn concept, giúp mô hình có thể giải thích được.
+# Xem src/models/cbm.py và pipelines/stage1b_train_cbm.py.
+cbm:
+  n_concepts: 30                          # số concept — phải << feature_dim gốc
+  concept_weight: 1.0                     # λ: trọng số concept loss trong total loss
+  freeze_backbone: false                  # true = chỉ train concept layer + predictor
+  smoothing: 0.1
+  # Đường dẫn file concept annotations (chọn 1 trong 2):
+  # concept_annotations_path: "data/concept_annotations.json"   # per-image
+  # class_concept_matrix_path: "data/class_concepts.json"        # per-class
+  # baseline_checkpoint: "outputs/baseline_comparison/mobilenetv3_small/baseline_best.pth"
 
 gflownet:
-  max_rules: 48
+  max_rules: 120
   hidden_dim: 256
-  num_iterations: 1000
+  num_iterations: 5000
   batch_size: 256
-  lr: !!float 1e-4
+  lr: !!float 1e-3
   logZ_lr: 0.1
   validation_interval: 100
-  loss_type: "tb"          # "tb" | "db" | "fm"
+  loss_type: "db"          # "tb" | "db" | "fm"
   logZ_warmup_steps: 50
-  val_samples: 48
+  val_samples: 140
   w_acc: 1.0
   w_cov: 0.5
-  w_red: 0.3
-  w_comp: 0.2
+  w_wrong: 0.75
+  w_conflict: 0.1
   beta: 3.0
+  grad_clip_max_norm : 5.0

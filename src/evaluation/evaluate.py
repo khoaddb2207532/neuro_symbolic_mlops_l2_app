@@ -30,7 +30,8 @@ def evaluate_model_performance(
     with torch.no_grad():
         for images, labels in dataloader:
             images, labels = images.to(device), labels.to(device)
-            logits, _ = model(images)
+            outputs = model(images)
+            logits = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
             preds = torch.argmax(logits, dim=1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())

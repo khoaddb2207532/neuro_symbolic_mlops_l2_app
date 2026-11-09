@@ -28,41 +28,40 @@ def main(params_path: str) -> None:
     with open(os.path.join(rules_dir, "raw_rules.pkl"), "rb") as f:
         raw_rules = pickle.load(f)
 
-    # train_features = torch.load(f"{features_dir}/train_features.pt").to(device)
-    # train_labels = torch.load(f"{features_dir}/train_labels.pt").to(device)
-    val_features = torch.load(f"{features_dir}/val_features.pt").to(device)
-    val_labels = torch.load(f"{features_dir}/val_labels.pt").to(device)
+    val2_features = torch.load(f"{features_dir}/val2_features.pt").to(device)
+    val2_labels = torch.load(f"{features_dir}/val2_labels.pt").to(device)
 
     # Lọc luật + build cover/correct/rule_len TRONG MỘT LẦN QUÉT DUY NHẤT.
-    # Các tensor này được dùng lại y hệt bởi RuleSetReward — không quét lại
-    # val set lần hai trong pipeline.
+    # Các tensor từ val2 được dùng lại bởi RuleSetReward.
     validator = RuleValidator(
         min_supp=params["rules"]["min_support"],
         min_conf=params["rules"]["min_confidence"],
     )
     valid_rule_set, cover, correct, rule_len = validator.validate_and_build_tensors(
-        raw_rules, val_features, val_labels, store_device=device
+        raw_rules, val2_features, val2_labels, store_device=device
     )
     with open(os.path.join(output_dir, "valid_rules.pkl"), "wb") as f:
         pickle.dump(valid_rule_set, f)
 
     valid_rules = list(valid_rule_set.rules)
-    logger.info("Số luật hợp lệ sau khi lọc bằng val set: %d", len(valid_rules))
+    logger.info("Số luật hợp lệ sau khi lọc bằng val2: %d", len(valid_rules))
 
     gfn_cfg = params["gflownet"]
     pipeline = RuleExtractionPipeline(
         device=device,
         w_acc=gfn_cfg.get("w_acc", 1.0),
         w_cov=gfn_cfg.get("w_cov", 0.5),
-        w_red=gfn_cfg.get("w_red", 0.3),
-        w_comp=gfn_cfg.get("w_comp", 0.2),
+        w_wrong=gfn_cfg.get("w_wrong", 0.75),
+        w_conflict=gfn_cfg.get("w_conflict", 0.1),
         beta=gfn_cfg.get("beta", 3.0),
+        grad_clip_max_norm=gfn_cfg.get("grad_clip_max_norm", 5.0),
     )
     selected_rules = pipeline.run(
         valid_rules=valid_rules,
         cover=cover,
         correct=correct,
         rule_len=rule_len,
+        labels=val2_labels,
         max_rules=gfn_cfg["max_rules"],
         output_dir=output_dir,
         gfnet_hidden_dim=gfn_cfg["hidden_dim"],
@@ -79,7 +78,19 @@ def main(params_path: str) -> None:
 
     with open(os.path.join(output_dir, "selected_rules.pkl"), "wb") as f:
         pickle.dump(selected_rules, f)
-    save_rules_excel(selected_rules, os.path.join(output_dir, "selected_rules.xlsx"))
+
+    feature_names = None
+    names_path = os.path.join(features_dir, "feature_names.json")
+    if os.path.exists(names_path):
+        import json
+        with open(names_path, "r", encoding="utf-8") as f:
+            feature_names = json.load(f)
+
+    save_rules_excel(
+        selected_rules,
+        os.path.join(output_dir, "selected_rules.xlsx"),
+        feature_names=feature_names,
+    )
     logger.info("Stage 4 hoàn thành. %d luật được GFlowNet chọn.", len(selected_rules))
 
 
