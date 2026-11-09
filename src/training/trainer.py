@@ -146,7 +146,11 @@ def train_one_epoch(
         optimizer.zero_grad()
 
         outputs = model(images)
-        logits, features = outputs if isinstance(outputs, (tuple, list)) and len(outputs) == 2 else (outputs, None)
+        if isinstance(outputs, (tuple, list)):
+            logits = outputs[0]
+            features = outputs[1]
+        else:
+            logits, features = outputs, None
 
         ce_loss = criterion(logits, labels)
         if penalty_module is None:

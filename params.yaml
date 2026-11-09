@@ -33,12 +33,16 @@ baseline_comparison:
     - vit_b_32
   pretrained: true
 
+features:
+  source: "cbm"                        # "cbm" (concept probabilities) hoặc "baseline" (latent)
+
 rules:
   min_support: 0.01
   min_confidence: 0.7
 
 
 rule_penalty:
+  target_model: "cbm"                  # "cbm" hoặc "baseline"
   weight: 0.1
   smoothing: 0.1
   initial_temp: 2.0
@@ -74,6 +78,20 @@ rule_penalty_bayesian_elite:
 rule_ranking_analysis:
   K: 300                       # số trajectory sample từ policy đã train
   checkpoint: "gflownet_best_diverse.pth"
+
+# Concept Bottleneck Model — ép feature vector về n_concepts chiều (sigmoid),
+# mỗi chiều là xác suất xuất hiện của 1 concept.  Concept loss (BCE) ép các
+# giá trị này khớp với nhãn concept, giúp mô hình có thể giải thích được.
+# Xem src/models/cbm.py và pipelines/stage1b_train_cbm.py.
+cbm:
+  n_concepts: 30                          # số concept — phải << feature_dim gốc
+  concept_weight: 1.0                     # λ: trọng số concept loss trong total loss
+  freeze_backbone: false                  # true = chỉ train concept layer + predictor
+  smoothing: 0.1
+  # Đường dẫn file concept annotations (chọn 1 trong 2):
+  # concept_annotations_path: "data/concept_annotations.json"   # per-image
+  # class_concept_matrix_path: "data/class_concepts.json"        # per-class
+  # baseline_checkpoint: "outputs/baseline_comparison/mobilenetv3_small/baseline_best.pth"
 
 gflownet:
   max_rules: 120

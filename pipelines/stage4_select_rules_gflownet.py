@@ -78,7 +78,19 @@ def main(params_path: str) -> None:
 
     with open(os.path.join(output_dir, "selected_rules.pkl"), "wb") as f:
         pickle.dump(selected_rules, f)
-    save_rules_excel(selected_rules, os.path.join(output_dir, "selected_rules.xlsx"))
+
+    feature_names = None
+    names_path = os.path.join(features_dir, "feature_names.json")
+    if os.path.exists(names_path):
+        import json
+        with open(names_path, "r", encoding="utf-8") as f:
+            feature_names = json.load(f)
+
+    save_rules_excel(
+        selected_rules,
+        os.path.join(output_dir, "selected_rules.xlsx"),
+        feature_names=feature_names,
+    )
     logger.info("Stage 4 hoàn thành. %d luật được GFlowNet chọn.", len(selected_rules))
 
 

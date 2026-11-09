@@ -1,9 +1,8 @@
-# Quy trình Kaggle bundle: 2 dataset × 3 seed × 6 phương pháp
+# Quy trình Kaggle bundle: 2 dataset × 5 seed × 6 phương pháp
 
 Mỗi seed là **một run notebook** và bên trong run đó thực hiện đủ sáu phương pháp:
 `baseline`, `gflownet_elite`, `random`, `topk_confidence`, `greedy_coverage`, `bayesian`.
-Bundle của mỗi mô hình chỉ lấy 6 run thuộc ba seed `46`, `48`, `50`; các seed
-khác trong registry không được đưa vào bundle.
+Bundle của mỗi mô hình lấy 10 run thuộc năm seed `42`, `44`, `46`, `48`, `50`.
 
 ## 1. Chuẩn bị duy nhất một lần
 
@@ -24,8 +23,8 @@ khác trong registry không được đưa vào bundle.
 Notebook được tạo trong `generated_kaggle_notebooks/<backbone>/`, ví dụ `generated_kaggle_notebooks/resnet50/`. Không sửa logic riêng từng bản; tham số phải đến từ registry. Nếu registry có nhiều model, script tự tách mỗi model thành một thư mục để không ghi đè hoặc trộn notebook.
 Các notebook `culture-b` có thêm hai cell tự động: tắt warning/log rác và tạo ba symlink dataset. Notebook `culture-a` không có hai cell này.
 
-Sinh một notebook đóng gói cho mỗi mô hình. Mặc định bundle chỉ lấy ba seed
-`46`, `48`, `50` (ở cả hai dataset):
+Sinh một notebook đóng gói cho mỗi mô hình. Mặc định bundle lấy năm seed
+`42`, `44`, `46`, `48`, `50` (ở cả hai dataset):
 
    ```bash
    python scripts/generate_kaggle_bundle_notebooks.py --git-commit <SHA>
@@ -59,7 +58,7 @@ Các completion marker được kiểm tra riêng cho từng stage, nên stage �
 
 Mỗi mô hình dùng notebook `bundle_<backbone>.ipynb` vừa sinh:
 
-1. Add Input output của các run thuộc mô hình đó với seed 46, 48 và 50.
+1. Add Input output của các run thuộc mô hình đó với seed 42, 44, 46, 48 và 50.
 2. Xác nhận `BACKBONE`, `SEEDS`, `EXPECTED_RUN_IDS` và `GIT_COMMIT` đã được điền tự động.
 3. Run All, rồi Save Version.
 
@@ -70,7 +69,7 @@ manifest và file `.tar.gz`.
 Ngay sau khi bundle hoàn tất, notebook hiển thị và lưu hai bảng:
 
 - `model_all_results.csv`: kết quả chi tiết của từng seed;
-- `model_three_seed_summary.csv`: mean, sample standard deviation và `n_seeds`
+- `model_seed_summary.csv`: mean, sample standard deviation và `n_seeds`
   theo từng dataset/phương pháp.
 
 ## 4. Tổng hợp chính thức
@@ -84,15 +83,15 @@ Tạo notebook từ `managed-multi-dataset-aggregate.ipynb`:
 Notebook sẽ dừng nếu không đủ:
 
 - 2 dataset;
-- 3 seed (46, 48, 50) riêng biệt cho mỗi dataset;
-- 6 run;
+- 5 seed (42, 44, 46, 48, 50) riêng biệt cho mỗi dataset;
+- 10 run;
 - đúng 6 phương pháp mỗi run;
-- tổng cộng 36 hàng kết quả.
+- tổng cộng 60 hàng kết quả.
 
 Các file chính:
 
-- `multi_dataset_run_audit.csv`: kiểm toán danh tính 6 run;
-- `multi_dataset_all_results.csv`: 36 kết quả đầy đủ;
+- `multi_dataset_run_audit.csv`: kiểm toán danh tính 10 run;
+- `multi_dataset_all_results.csv`: 60 kết quả đầy đủ;
 - `dataset_method_summary.csv`: mean và sample standard deviation theo từng dataset;
 - `dataset_paired_deltas.csv`: paired delta so với baseline và Bayesian so với GFlowNet elite;
 - `multi_dataset_aggregate_manifest.json`: xác nhận tổng hợp hoàn tất.

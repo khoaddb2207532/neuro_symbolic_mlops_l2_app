@@ -1,4 +1,4 @@
-"""Validate and aggregate the complete 2-dataset x 3-seed experiment matrix."""
+"""Validate and aggregate the complete 2-dataset x 5-seed experiment matrix."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ EXPECTED_METHODS = {
     "greedy_coverage",
     "gflownet_db_bayesian",
 }
-EXPECTED_SEEDS = {46, 48, 50}
+EXPECTED_SEEDS = {42, 44, 46, 48, 50}
 
 
 def _discover(input_root: Path) -> dict[str, tuple[Path, dict]]:
@@ -161,6 +161,7 @@ def aggregate(input_root: Path, registry_path: Path, output_dir: Path) -> None:
         "dataset_count": int(audit["dataset_id"].nunique()),
         "run_count": len(audit),
         "result_row_count": len(all_results),
+        "seeds": sorted(EXPECTED_SEEDS),
         "methods": sorted(EXPECTED_METHODS),
         "note": "Statistics are computed per dataset; datasets are never pooled.",
     }

@@ -100,10 +100,23 @@ python -m pipelines.stage2_extract_features --config params.yaml
 python -m pipelines.stage3_extract_rules --config params.yaml
 python -m pipelines.stage4_select_rules_gflownet --config params.yaml
 python -m pipelines.stage5_train_rule_regularized --config params.yaml
+python -m pipelines.stage5_train_rule_bayesian --config params.yaml
+python -m pipelines.stage5c_train_rule_bayesian_elite --config params.yaml
 
 # Test
 pytest tests/ -v
 ```
+
+Stage 5C dùng `gflownet_elite_states.pt` do EliteTracker ở Stage 4 lưu. Nếu
+artifact chưa nằm trong `outputs/04_filtered_rules`, stage sẽ tìm lần lượt ở
+`rule_penalty_bayesian_elite.input_roots` và `/kaggle/input`; khi có nhiều
+artifact ứng viên, đặt `rule_penalty_bayesian_elite.states_path` để chọn rõ
+file cần dùng.
+
+Thư mục dữ liệu cần có các split `train`, `val`, `test`, `val2`, mỗi split
+chứa thư mục con theo lớp. Stage 1 tiếp tục dùng `val` để theo dõi CNN; Stage 2
+trích đặc trưng cho cả bốn split; RF được train trên `train` và đánh giá trên
+`val2`, còn stage 4 dùng `val2` để lọc luật và đánh giá GFlowNet.
 
 ## 5. Muốn thử nghiệm chiến lược freeze khác?
 
@@ -121,26 +134,17 @@ transfer_learning:
 
 ## 6. Lọc luật (rule validation) — đã bỏ cross-validation train-RF
 
-Trước đây có 3 chỗ liên quan đến "train RF + trích/lọc luật" chồng chéo nhau:
-`train_and_save_rf()` train 1 RF nhưng luật trích ra từ nó không được dùng;
-`GPUFastRuleValidator.validate_crossval()` tự train thêm K RF khác trên các
-fold của **train** rồi lọc luật bằng chính fold đó (dữ liệu CNN đã "thấy" khi
-train); stage4 (`gflownet/pipeline.py`) sau đó lại gọi `validate()` một lần
-nữa trên **val set thật** với đúng `min_support`/`min_confidence` — tính lại
-y hệt kết quả cũ.
-
-Đã gộp lại theo nguyên tắc: **train RF một lần, lọc bằng val set thật (chưa
-từng qua CNN khi train)** — không dùng K-Fold trên train để lọc luật, vì luật
-lọc bằng dữ liệu train không phản ánh đúng khả năng tổng quát hoá bằng val set
-độc lập.
+RF được train duy nhất trên `train` và đánh giá accuracy trên `val2`.
+`val2` cũng được dùng để lọc luật theo `min_support` / `min_confidence` và
+làm dữ liệu đánh giá/chọn luật của GFlowNet. `val` vẫn dành cho theo dõi và
+chọn checkpoint CNN ở stage 1. Không dùng K-Fold trên train để lọc luật.
 
 - `train_and_save_rf()` (`src/data/features.py`) — nơi DUY NHẤT train RF,
   đồng thời trích luật thô (`RuleExtractor`) ngay tại đây, trả về/lưu
   `raw_rules.pkl`.
 - `GPUFastRuleValidator.validate_crossval()` — đã xoá hoàn toàn.
-- `stage3` — gọi `train_and_save_rf()` lấy luật thô, rồi `validator.validate(raw_rules, val_features, val_labels)` để lọc — một lần duy nhất.
-- `stage4` (`gflownet/pipeline.py::run()`) — nhận thẳng luật đã lọc từ stage3
-  (`valid_rule_set`), không re-validate lại nữa.
+- `stage3` — gọi `train_and_save_rf()` để train RF, ghi accuracy trên `val2` và lấy luật thô.
+- `stage4` — lọc luật trên `val2`, sau đó tối ưu/chọn luật bằng GFlowNet trên cùng split.
 
 ## 7. Đổi metric cho EarlyStopping / chọn checkpoint tốt nhất
 

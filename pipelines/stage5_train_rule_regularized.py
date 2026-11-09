@@ -8,6 +8,7 @@ học được.
 """
 import argparse
 import hashlib
+import json
 import os
 import pickle
 
@@ -15,6 +16,7 @@ import torch
 
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
+from src.models.cbm import ConceptBottleneckModel
 from src.models.cnn import ImageClassificationBaseline
 from src.rules.rule_types import RuleSet
 from src.training.trainer import train_model
@@ -38,7 +40,7 @@ def _sha256_file(path: str) -> str:
     return digest.hexdigest()
 
 
-def main(params_path: str) -> None:
+def main(params_path: str, target_override: str = None) -> None:
     params = load_params(params_path)
     set_seed(params["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -58,20 +60,44 @@ def main(params_path: str) -> None:
     save_dir = os.path.join(params["output_dir"], "05_rules_model")
     os.makedirs(save_dir, exist_ok=True)
 
+    target_model = target_override or params.get("rule_penalty", {}).get("target_model", "baseline")
     architecture = selected_baseline_architecture(params)
-    model = ImageClassificationBaseline(
-        architecture=architecture,
-        num_classes=params["num_classes"],
-        pretrained=False,
-    )
 
-    # Nạp trọng số baseline đã hội tụ (stage 1) thay vì tiếp tục từ ImageNet.
-    # required=True: đây là điều kiện tiên quyết bắt buộc của stage 5 — nếu
-    # chưa chạy stage 1, dừng ngay với lỗi rõ ràng thay vì âm thầm train từ
-    # ImageNet (dễ gây nhầm lẫn: kết quả "rule-regularized" sẽ không thật sự
-    # kế thừa từ baseline như tên gọi/thiết kế của pipeline).
-    baseline_ckpt = selected_baseline_checkpoint(params)
-    load_model_weights(model, baseline_ckpt, device, required=True)
+    if target_model == "cbm":
+        cbm_dir = os.path.join(params["output_dir"], "cbm")
+        metadata_path = os.path.join(cbm_dir, "cbm_metadata.json")
+        concept_names = None
+        n_concepts = params.get("cbm", {}).get("n_concepts", 30)
+        arch = architecture
+        if os.path.exists(metadata_path):
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            concept_names = meta.get("concept_names")
+            n_concepts = meta.get("n_concepts", n_concepts)
+            arch = meta.get("architecture", arch)
+
+        cbm_ckpt = os.path.join(cbm_dir, "cbm_best.pth")
+        if not os.path.exists(cbm_ckpt):
+            cbm_ckpt = os.path.join(cbm_dir, "final_model_weights.pth")
+
+        model = ConceptBottleneckModel(
+            architecture=arch,
+            n_concepts=n_concepts,
+            num_classes=params["num_classes"],
+            pretrained=False,
+            concept_names=concept_names,
+        )
+        load_model_weights(model, cbm_ckpt, device, required=True)
+        logger.info("Fine-tune CBM với Rule Penalty (n_concepts=%d) từ %s", n_concepts, cbm_ckpt)
+    else:
+        model = ImageClassificationBaseline(
+            architecture=architecture,
+            num_classes=params["num_classes"],
+            pretrained=False,
+        )
+        baseline_ckpt = selected_baseline_checkpoint(params)
+        load_model_weights(model, baseline_ckpt, device, required=True)
+        logger.info("Fine-tune Baseline CNN với Rule Penalty từ %s", baseline_ckpt)
 
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],
@@ -128,5 +154,11 @@ def main(params_path: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="params.yaml")
+    parser.add_argument(
+        "--target",
+        choices=["baseline", "cbm"],
+        default=None,
+        help="Model cần fine-tune với luật: 'baseline' hoặc 'cbm'",
+    )
     args = parser.parse_args()
-    main(args.config)
+    main(args.config, target_override=args.target)
