@@ -16,7 +16,7 @@ weight_decay: !!float 1e-4
 monitor_metric: "val_loss"
 
 transfer_learning:
-  lr_head: !!float 1e-4
+  lr_head: !!float 1e-3
   lr_backbone: !!float 1e-4
 
 baseline_comparison:
@@ -85,7 +85,7 @@ rule_ranking_analysis:
 # Xem src/models/cbm.py và pipelines/stage1b_train_cbm.py.
 cbm:
   n_concepts: 61                          # số concept — phải << feature_dim gốc
-  concept_weight: 1.0                     # λ: trọng số concept loss trong total loss
+  concept_weight: 0.1                     # λ: trọng số concept loss trong total loss
   freeze_backbone: false                  # true = chỉ train concept layer + predictor
   smoothing: 0.1
   concept_annotations_path: "/kaggle/input/datasets/dangduykhoab2207532/mykhmer/image_concepts.json"
@@ -102,7 +102,7 @@ gflownet:
   lr: !!float 1e-3
   logZ_lr: 0.1
   validation_interval: 100
-  loss_type: "db"          # "tb" | "db" | "fm"
+  loss_type: "tb"          # "tb" | "db" | "fm"
   logZ_warmup_steps: 50
   val_samples: 140
   w_acc: 1.0
