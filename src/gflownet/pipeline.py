@@ -40,17 +40,19 @@ from dvclive import Live
 logger = get_logger(__name__)
 
 
+class _EliteTracker:
+    """Keep the highest-reward rule sets seen during validation."""
 
-    """Giữ lại rule-set tốt nhất TỪNG THẤY qua mọi lần validate, bất kể model
-    hiện tại cclass _EliteTracker:ó tốt hơn hay không. Đây là phần biến GFlowNet thành một công
-    cụ tìm kiếm tổ hợp (elitist), tách biệt khỏi việc train sampler."""
-
-    def __init__(self, max_states: int = 2048) -> None:
+    def __init__(
+        self, ckpt_path: Optional[str] = None, max_states: int = 2048
+    ) -> None:
         if max_states < 1:
             raise ValueError("max_states phải >= 1.")
+        self.ckpt_path = ckpt_path
         self.max_states = max_states
         self.best_log_reward = float("-inf")
         self.best_selected: List[Rule] = []
+        self.best_mask: Optional[torch.Tensor] = None
         self._states: Dict[bytes, Tuple[torch.Tensor, float]] = {}
 
     def update(self, val_trajectories: list, valid_rules: List[Rule]) -> bool:
@@ -84,12 +86,8 @@ logger = get_logger(__name__)
             idx = r.argmax().item()
             if r[idx].item() > self.best_log_reward:
                 self.best_log_reward = r[idx].item()
-<<<<<<< HEAD
                 mask = states[idx]
-=======
-                mask = vt.terminating_states.tensor[idx].bool().cpu()
                 self.best_mask = mask.clone()
->>>>>>> 2431ac0804f24fb05b16b040de68c7a70cd4046c
                 self.best_selected = [valid_rules[i] for i in torch.where(mask)[0].tolist()]
                 improved = True
         return improved
