@@ -38,6 +38,7 @@ def evaluate_model_performance(
 
     acc = accuracy_score(all_labels, all_preds)
     report_str = classification_report(all_labels, all_preds, target_names=class_names)
+    report_dict = classification_report(all_labels, all_preds, target_names=class_names, output_dict=True)
     logger.info("%s | Overall Accuracy: %.2f%%", title, acc * 100)
 
     cm = confusion_matrix(all_labels, all_preds)
@@ -53,8 +54,20 @@ def evaluate_model_performance(
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
         safe_title = title.replace(" ", "_").lower()
+        # 1. Báo cáo định dạng văn bản .txt
         with open(os.path.join(output_dir, f"{safe_title}_classification_report.txt"), "w", encoding="utf-8") as f:
             f.write(f"Overall Accuracy: {acc*100:.2f}%\n\n{report_str}")
+        # 2. Báo cáo định dạng cấu trúc .json (đầy đủ precision, recall, f1 từng lớp)
+        with open(os.path.join(output_dir, f"{safe_title}_classification_report.json"), "w", encoding="utf-8") as f:
+            json.dump(report_dict, f, ensure_ascii=False, indent=2)
+        # 3. Báo cáo dạng bảng tính .csv
+        try:
+            import pandas as pd
+            df_report = pd.DataFrame(report_dict).transpose()
+            df_report.to_csv(os.path.join(output_dir, f"{safe_title}_classification_report.csv"), index=True)
+        except Exception as e:
+            logger.warning("Không thể lưu CSV report: %s", e)
+        # 4. Ma trận nhầm lẫn .png
         fig.savefig(os.path.join(output_dir, f"{safe_title}_confusion_matrix.png"), dpi=300)
     plt.close(fig)
     return acc

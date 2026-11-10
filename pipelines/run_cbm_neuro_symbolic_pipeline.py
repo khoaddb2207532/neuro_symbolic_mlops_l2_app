@@ -7,13 +7,17 @@ Thứ tự thực thi đầy đủ (có Baseline đối chứng):
   4. Stage 3:  Trích xuất luật ngữ nghĩa (Human-interpretable rules) bằng Random Forest (outputs/03_rules/).
   5. Stage 4:  GFlowNet tuyển chọn tập luật Concept tối ưu và đa dạng (outputs/04_filtered_rules/).
   6. Stage 5:  Huấn luyện CBM có ràng buộc luật (Rule-Regularized Fine-Tuning, outputs/05_rules_model/).
+  7. Lưu tổng hợp Classification Report cho mọi mô hình trong seed.
 
 Chạy:
   python -m pipelines.run_cbm_neuro_symbolic_pipeline --config params.yaml
 """
 import argparse
+import json
+import os
 import sys
 import time
+from pathlib import Path
 
 from pipelines import (
     stage1_train_baseline,
@@ -23,9 +27,54 @@ from pipelines import (
     stage4_select_rules_gflownet,
     stage5_train_rule_regularized,
 )
+from src.utils.config import load_params
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def generate_seed_classification_summary(config_path: str) -> None:
+    """Tổng hợp chi tiết classification report của từng mô hình trong seed."""
+    try:
+        import pandas as pd
+        params = load_params(config_path)
+        output_dir = Path(params.get("output_dir", "outputs"))
+        seed = params.get("seed", 42)
+
+        models_info = [
+            ("Baseline CNN (Hộp đen)", output_dir / "01_baseline"),
+            ("CBM (Concept Bottleneck)", output_dir / "cbm"),
+            ("CBM + Rule-Regularized", output_dir / "05_rules_model"),
+        ]
+
+        rows = []
+        for model_name, path in models_info:
+            json_files = list(path.glob("*classification_report.json"))
+            if not json_files:
+                continue
+            with open(json_files[0], "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            row = {
+                "Seed": seed,
+                "Model": model_name,
+                "Accuracy (%)": round(data.get("accuracy", 0.0) * 100, 2),
+                "Macro F1 (%)": round(data.get("macro avg", {}).get("f1-score", 0.0) * 100, 2),
+                "Weighted F1 (%)": round(data.get("weighted avg", {}).get("f1-score", 0.0) * 100, 2),
+            }
+            # Per-class F1
+            for k, v in data.items():
+                if k not in ("accuracy", "macro avg", "weighted avg") and isinstance(v, dict):
+                    row[f"F1_{k}"] = round(v.get("f1-score", 0.0) * 100, 2)
+            rows.append(row)
+
+        if rows:
+            df = pd.DataFrame(rows)
+            summary_csv = output_dir / "seed_classification_summary.csv"
+            df.to_csv(summary_csv, index=False, encoding="utf-8-sig")
+            logger.info("Đã lưu bảng tổng hợp Classification Report của Seed %d tại: %s", seed, summary_csv)
+    except Exception as e:
+        logger.warning("Không thể tổng hợp classification summary: %s", e)
 
 
 def main(
@@ -67,6 +116,9 @@ def main(
     # 6. Stage 5: Rule-Regularized Training on CBM
     logger.info("\n>>> [6/6] STAGE 5: Fine-tune CBM với Rule Penalty...")
     stage5_train_rule_regularized.main(config_path, target_override="cbm")
+
+    # 7. Tổng hợp bảng Classification Report
+    generate_seed_classification_summary(config_path)
 
     elapsed = (time.time() - total_start) / 60
     logger.info("\n" + "=" * 70)
