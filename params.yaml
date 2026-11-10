@@ -7,7 +7,7 @@
 seed: 42
 data_dir: "D:/32526_LV/vietnamese_cultural_dataset"
 output_dir: "outputs"
-num_classes: 12
+num_classes: 9
 batch_size: 64
 num_workers: 4
 num_epochs: 100
@@ -84,10 +84,11 @@ rule_ranking_analysis:
 # giá trị này khớp với nhãn concept, giúp mô hình có thể giải thích được.
 # Xem src/models/cbm.py và pipelines/stage1b_train_cbm.py.
 cbm:
-  n_concepts: 30                          # số concept — phải << feature_dim gốc
+  n_concepts: 61                          # số concept — phải << feature_dim gốc
   concept_weight: 1.0                     # λ: trọng số concept loss trong total loss
   freeze_backbone: false                  # true = chỉ train concept layer + predictor
   smoothing: 0.1
+  concept_annotations_path: "/kaggle/input/datasets/dangduykhoab2207532/mykhmer/image_concepts.json"
   # Đường dẫn file concept annotations (chọn 1 trong 2):
   # concept_annotations_path: "data/concept_annotations.json"   # per-image
   # class_concept_matrix_path: "data/class_concepts.json"        # per-class
