@@ -1,11 +1,11 @@
 """Sinh notebook mỏng (launcher) chạy CBM + Rule + GFlowNet trên Kaggle.
 
 Cách dùng:
-  # Sinh 1 notebook mặc định (mobilenetv3_small, seed 42)
+  # Sinh 1 notebook mặc định (Khmer dataset, 9 classes, 61 concepts, seed 42)
   python scripts/generate_cbm_kaggle_notebook.py
 
   # Sinh cho backbone và seed cụ thể
-  python scripts/generate_cbm_kaggle_notebook.py --backbone resnet50 --seed 42 --output-dir generated_cbm_notebooks
+  python scripts/generate_cbm_kaggle_notebook.py --backbone resnet50 --seed 42
 
   # Sinh hàng loạt cho tất cả các seeds (42, 44, 46, 48, 50)
   python scripts/generate_cbm_kaggle_notebook.py --all-seeds
@@ -15,7 +15,8 @@ import json
 from pathlib import Path
 
 DEFAULT_TEMPLATE = Path("cbm-neuro-symbolic-kaggle-template.ipynb")
-DEFAULT_DATASET = "/kaggle/input/vietnamese-cultural-dataset/vietnamese_cultural_dataset"
+DEFAULT_DATASET = "/kaggle/input/datasets/dangduykhoab2207532/mykhmer/khmer"
+DEFAULT_CONCEPT_PATH = "/kaggle/input/datasets/dangduykhoab2207532/mykhmer/image_concepts.json"
 SEEDS = [42, 44, 46, 48, 50]
 
 
@@ -25,7 +26,9 @@ def generate_notebook(
     backbone: str = "mobilenetv3_small",
     seed: int = 42,
     data_dir: str = DEFAULT_DATASET,
-    n_concepts: int = 30,
+    concept_annotations_path: str = DEFAULT_CONCEPT_PATH,
+    num_classes: int = 9,
+    n_concepts: int = 61,
     concept_weight: float = 1.0,
     num_epochs: int = 50,
     patience: int = 5,
@@ -47,9 +50,11 @@ def generate_notebook(
                 "# THAM SỐ THỰC NGHIỆM TỰ ĐỘNG SINH BỞI GENERATOR SCRIPT\n",
                 "# =========================================================================\n",
                 f"DATA_DIR = {data_dir!r}\n",
+                f"CONCEPT_ANNOTATIONS_PATH = {concept_annotations_path!r}\n",
+                f"NUM_CLASSES = {num_classes}\n",
+                f"N_CONCEPTS = {n_concepts}\n",
                 f"SEED = {seed}\n",
                 f"BACKBONE = {backbone!r}\n",
-                f"N_CONCEPTS = {n_concepts}\n",
                 f"CONCEPT_WEIGHT = {concept_weight}\n",
                 f"NUM_EPOCHS = {num_epochs}\n",
                 f"PATIENCE = {patience}\n",
@@ -74,7 +79,9 @@ def main():
     parser.add_argument("--backbone", default="mobilenetv3_small")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--data-dir", default=DEFAULT_DATASET)
-    parser.add_argument("--n-concepts", type=int, default=30)
+    parser.add_argument("--concept-path", default=DEFAULT_CONCEPT_PATH)
+    parser.add_argument("--num-classes", type=int, default=9)
+    parser.add_argument("--n-concepts", type=int, default=61)
     parser.add_argument("--concept-weight", type=float, default=1.0)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--patience", type=int, default=5)
@@ -96,6 +103,8 @@ def main():
             backbone=args.backbone,
             seed=s,
             data_dir=args.data_dir,
+            concept_annotations_path=args.concept_path,
+            num_classes=args.num_classes,
             n_concepts=args.n_concepts,
             concept_weight=args.concept_weight,
             num_epochs=args.epochs,
