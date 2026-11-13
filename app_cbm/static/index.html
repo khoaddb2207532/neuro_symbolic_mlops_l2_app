@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CBM Image Classifier</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172033; background: #f3f6fb; }
+    body { max-width: 1000px; margin: 32px auto; padding: 0 18px; }
+    h1 { margin-bottom: 6px; }
+    .muted { color: #5d687c; }
+    .panel, .card { background: white; border: 1px solid #dfe5ef; border-radius: 12px; padding: 18px; margin: 16px 0; }
+    .controls { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); align-items: end; }
+    .mode-switch { display: flex; gap: 8px; margin: 14px 0; }
+    #mode-switch button { background: #fff; color: #344054; border: 1px solid #c8d1df; }
+    #mode-switch button.active { background: #175cd3; color: #fff; border-color: #175cd3; }
+    label { display: grid; gap: 6px; font-weight: 600; }
+    select, input, button { font: inherit; padding: 10px; border: 1px solid #c8d1df; border-radius: 8px; }
+    button { background: #175cd3; color: white; border: 0; cursor: pointer; font-weight: 700; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #models { display: flex; flex-wrap: wrap; gap: 10px; }
+    .choice { border: 1px solid #dfe5ef; border-radius: 8px; padding: 8px 10px; }
+    .choice label { display: flex; align-items: center; gap: 7px; font-weight: 500; }
+    .choice input { padding: 0; }
+    .card h2 { margin: 0 0 8px; font-size: 1.15rem; }
+    .confidence { font-size: 1.4rem; font-weight: 700; color: #175cd3; }
+    .concepts { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0; }
+    .concept { background: #e8f5ed; color: #17613a; border-radius: 999px; padding: 5px 10px; }
+    .concept.inactive { background: #eef1f6; color: #566174; }
+    .concept-boxes { font-size: .85rem; margin-top: 4px; }
+    .result-image { display: block; max-width: 100%; max-height: 560px; margin-top: 12px; border-radius: 8px; }
+    .pipeline-list { display: grid; gap: 18px; margin-top: 18px; }
+    .pipeline { background: #fff; border: 1px solid #dfe5ef; border-radius: 12px; padding: 16px; overflow: hidden; }
+    .pipeline-title { margin: 0 0 12px; font-size: 1rem; }
+    .pipeline-row { display: grid; grid-template-columns: minmax(190px, 1fr) 42px minmax(190px, .9fr) 42px minmax(230px, 1.15fr); gap: 10px; align-items: stretch; }
+    .stage { min-width: 0; border: 1px solid #dfe5ef; border-radius: 10px; padding: 10px; background: #fbfcfe; }
+    .stage h3 { margin: 0 0 8px; font-size: .9rem; }
+    .stage-image { display: block; width: 100%; max-height: 260px; object-fit: contain; border-radius: 6px; background: #eef1f6; }
+    .crop-list { display: grid; gap: 8px; max-height: 330px; overflow-y: auto; }
+    .crop-item { border: 1px solid #dfe5ef; border-left: 4px solid #175cd3; border-radius: 7px; padding: 6px; }
+    .crop-image { display: block; width: 100%; height: 110px; object-fit: contain; background: #eef1f6; }
+    .crop-caption { margin-top: 5px; font-size: .78rem; overflow-wrap: anywhere; }
+    .prediction-label { font-size: 1.05rem; font-weight: 700; margin-top: 10px; }
+    .prediction-confidence { color: #175cd3; font-size: 1.2rem; font-weight: 700; }
+    .stage-placeholder { min-height: 100px; display: grid; place-items: center; text-align: center; color: #7a8495; font-size: .85rem; }
+    .normal-preview { display: grid; grid-template-columns: minmax(180px, 1fr) 2fr; gap: 16px; align-items: center; }
+    .normal-preview img { width: 100%; max-height: 280px; object-fit: contain; border-radius: 8px; background: #eef1f6; }
+    .normal-result { display: grid; grid-template-columns: minmax(140px, .7fr) 1.3fr; gap: 14px; align-items: center; }
+    .normal-result img { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; background: #eef1f6; }
+    .normal-result h2 { margin: 0 0 8px; font-size: 1rem; }
+    .normal-concepts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .normal-concept { background: #e8f5ed; border-radius: 999px; padding: 4px 8px; font-size: .8rem; }
+    .edge { display: grid; place-items: center; position: relative; overflow: hidden; color: #97a2b3; }
+    .edge::before { content: ""; height: 3px; width: 100%; background: #d7deea; }
+    .edge::after { content: ""; position: absolute; left: -45%; width: 45%; height: 3px; opacity: 0; background: linear-gradient(90deg, transparent, #24b7ec, #175cd3, transparent); }
+    .edge.flowing::after { opacity: 1; animation: propagate 850ms linear infinite; }
+    .edge.done::before { background: #24b7ec; }
+    .stage.reveal { animation: stage-reveal 420ms ease-out both; }
+    @keyframes propagate { from { left: -45%; } to { left: 100%; } }
+    @keyframes stage-reveal { from { opacity: .2; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @media (max-width: 820px) {
+      .pipeline-row { grid-template-columns: minmax(180px, 1fr); }
+      .edge { height: 28px; }
+      .edge::before { width: 3px; height: 100%; }
+      .edge::after { left: auto; top: -45%; width: 3px; height: 45%; }
+      .edge.flowing::after { animation-name: propagate-vertical; }
+      .stage-image { max-height: 320px; }
+    }
+    @media (max-width: 600px) {
+      .normal-preview, .normal-result { grid-template-columns: minmax(0, 1fr); }
+    }
+    @keyframes propagate-vertical { from { top: -45%; } to { top: 100%; } }
+    #message { white-space: pre-wrap; }
+    @media (max-width: 600px) { body { margin-top: 16px; } }
+  </style>
+</head>
+<body>
+  <h1>Phân loại ảnh với CBM</h1>
+  <p class="muted">Chọn run (backbone/seed), chọn mô hình và tải ảnh. Sau khi dự đoán, các vùng concept ước lượng sẽ lan truyền tới ảnh kết quả; bounding box không phải ground truth.</p>
+  <div id="mode-switch" class="mode-switch" role="group" aria-label="Chế độ dự đoán">
+    <button class="mode-button active" type="button" data-mode="normal" aria-pressed="true">Bình thường</button>
+    <button class="mode-button" type="button" data-mode="edited" aria-pressed="false">Vừa chỉnh sửa</button>
+  </div>
+  <section class="panel">
+    <div class="controls">
+      <label>Run mô hình
+        <select id="run"></select>
+      </label>
+      <label>Ảnh cần dự đoán
+        <input id="image" type="file" accept="image/*">
+      </label>
+      <button id="submit" type="button">Dự đoán</button>
+    </div>
+    <h3>Mô hình khả dụng trong run</h3>
+    <div id="models"></div>
+  </section>
+  <p id="message" class="muted"></p>
+  <section id="results"></section>
+  <script>
+    const runSelect = document.querySelector("#run");
+    const modelList = document.querySelector("#models");
+    const message = document.querySelector("#message");
+    const results = document.querySelector("#results");
+    const imageInput = document.querySelector("#image");
+    const submitButton = document.querySelector("#submit");
+    const modeSwitch = document.querySelector("#mode-switch");
+    let catalog;
+    let previewUrl = null;
+    let currentMode = "normal";
+
+    function selectedModelIds() {
+      return [...modelList.querySelectorAll("input:checked")].map(input => input.value);
+    }
+
+    function selectedModelLabels() {
+      const selected = new Set(selectedModelIds());
+      const run = catalog?.runs.find(item => item.run_id === runSelect.value);
+      return (run?.models || []).filter(model => selected.has(model.model_id));
+    }
+
+    function renderChoices() {
+      modelList.replaceChildren();
+      const run = catalog.runs.find(item => item.run_id === runSelect.value);
+      if (!run) return;
+      for (const model of run.models) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "choice";
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = model.model_id;
+        checkbox.disabled = !model.available;
+        checkbox.dataset.available = String(model.available);
+        checkbox.checked = model.available;
+        label.append(checkbox, document.createTextNode(
+          `${model.model_label}${model.available ? "" : " — chưa khả dụng"}`
+        ));
+        wrapper.append(label);
+        if (model.error) wrapper.title = model.error;
+        modelList.append(wrapper);
+      }
+      renderUploadPreview();
+    }
+
+    function createPipeline(modelLabel, imageSrc) {
+      const pipeline = document.createElement("article");
+      pipeline.className = "pipeline";
+      const title = document.createElement("h2");
+      title.className = "pipeline-title";
+      title.textContent = modelLabel;
+      const row = document.createElement("div");
+      row.className = "pipeline-row";
+
+      const inputStage = document.createElement("section");
+      inputStage.className = "stage";
+      const inputTitle = document.createElement("h3");
+      inputTitle.textContent = "Ảnh đầu vào";
+      const inputImage = document.createElement("img");
+      inputImage.className = "stage-image";
+      inputImage.alt = "Ảnh người dùng tải lên";
+      inputImage.src = imageSrc;
+      inputStage.append(inputTitle, inputImage);
+
+      const firstEdge = document.createElement("div");
+      firstEdge.className = "edge";
+      firstEdge.setAttribute("aria-hidden", "true");
+
+      const cropStage = document.createElement("section");
+      cropStage.className = "stage";
+      const cropTitle = document.createElement("h3");
+      cropTitle.textContent = "Vùng concept (tối đa 5)";
+      const cropList = document.createElement("div");
+      cropList.className = "crop-list stage-placeholder";
+      cropList.textContent = "Các vùng cắt sẽ xuất hiện sau khi dự đoán.";
+      cropStage.append(cropTitle, cropList);
+
+      const secondEdge = document.createElement("div");
+      secondEdge.className = "edge";
+      secondEdge.setAttribute("aria-hidden", "true");
+
+      const outputStage = document.createElement("section");
+      outputStage.className = "stage";
+      const outputTitle = document.createElement("h3");
+      outputTitle.textContent = "Ảnh kết quả";
+      const outputBody = document.createElement("div");
+      outputBody.className = "stage-placeholder";
+      outputBody.textContent = "Kết quả và độ tin cậy sẽ xuất hiện tại đây.";
+      outputStage.append(outputTitle, outputBody);
+
+      row.append(inputStage, firstEdge, cropStage, secondEdge, outputStage);
+      pipeline.append(title, row);
+      return { element: pipeline, firstEdge, secondEdge, cropList, outputStage };
+    }
+
+    function renderUploadPreview() {
+      const file = imageInput.files[0];
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = file ? URL.createObjectURL(file) : null;
+      results.replaceChildren();
+      if (!file) return;
+      if (currentMode === "normal") {
+        const preview = document.createElement("article");
+        preview.className = "card normal-preview";
+        const image = document.createElement("img");
+        image.src = previewUrl;
+        image.alt = "Ảnh người dùng tải lên";
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = "Ảnh xem trước. Nhấn Dự đoán để xem nhãn và độ tin cậy.";
+        preview.append(image, note);
+        results.append(preview);
+        return;
+      }
+      const labels = selectedModelLabels();
+      const pipelines = labels.length
+        ? labels.map(model => createPipeline(model.model_label, previewUrl))
+        : [createPipeline("Chọn mô hình để dự đoán", previewUrl)];
+      const list = document.createElement("div");
+      list.className = "pipeline-list";
+      for (const pipeline of pipelines) list.append(pipeline.element);
+      results.append(list);
+    }
+
+    function renderNormalPredictions(predictions) {
+      results.replaceChildren();
+      const preview = document.createElement("article");
+      preview.className = "card normal-preview";
+      const sourceImage = document.createElement("img");
+      sourceImage.src = previewUrl;
+      sourceImage.alt = "Ảnh người dùng tải lên";
+      const heading = document.createElement("h2");
+      heading.textContent = "Ảnh đầu vào";
+      preview.append(sourceImage, heading);
+      results.append(preview);
+
+      for (const prediction of predictions) {
+        const card = document.createElement("article");
+        card.className = "card normal-result";
+        const image = document.createElement("img");
+        image.src = previewUrl;
+        image.alt = "Ảnh được phân loại";
+        const details = document.createElement("div");
+        const model = document.createElement("h2");
+        model.textContent = `${prediction.model_label} · ${prediction.architecture} · seed ${prediction.seed}`;
+        const label = document.createElement("div");
+        label.className = "prediction-label";
+        label.textContent = `Nhãn: ${prediction.predicted_class}`;
+        const confidence = document.createElement("div");
+        confidence.className = "prediction-confidence";
+        confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
+        details.append(model, label, confidence);
+        if (prediction.activated_concepts.length) {
+          const concepts = document.createElement("div");
+          concepts.className = "normal-concepts";
+          for (const concept of prediction.activated_concepts) {
+            const badge = document.createElement("span");
+            badge.className = "normal-concept";
+            badge.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
+            concepts.append(badge);
+          }
+          details.append(concepts);
+        }
+        card.append(image, details);
+        results.append(card);
+      }
+    }
+
+    function wait(milliseconds) {
+      return new Promise(resolve => setTimeout(resolve, milliseconds));
+    }
+
+    function cropImage(bitmap, box) {
+      const width = Math.max(1, box.x2 - box.x1);
+      const height = Math.max(1, box.y2 - box.y1);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext("2d").drawImage(
+        bitmap, box.x1, box.y1, width, height, 0, 0, width, height
+      );
+      return canvas.toDataURL("image/png");
+    }
+
+    function collectCrops(prediction) {
+      return prediction.concepts
+        .flatMap(concept => (concept.boxes || []).map(box => ({ concept, box })))
+        .sort((left, right) =>
+          right.concept.probability - left.concept.probability
+          || right.box.importance - left.box.importance
+        )
+        .slice(0, 5);
+    }
+
+    async function renderPrediction(pipeline, prediction, bitmap) {
+      pipeline.firstEdge.classList.add("done");
+      const crops = collectCrops(prediction);
+      pipeline.cropList.className = "crop-list";
+      pipeline.cropList.replaceChildren();
+      if (!crops.length) {
+        pipeline.cropList.className = "crop-list stage-placeholder";
+        pipeline.cropList.textContent = prediction.model_type === "baseline"
+          ? "Baseline không có concept để định vị."
+          : "Không tìm thấy vùng concept đủ ảnh hưởng.";
+      } else {
+        for (const { concept, box } of crops) {
+          const item = document.createElement("article");
+          item.className = "crop-item stage reveal";
+          if (concept.color) {
+            item.style.borderLeftColor = `rgb(${concept.color.join(",")})`;
+          }
+          const image = document.createElement("img");
+          image.className = "crop-image";
+          image.alt = `Vùng cắt concept ${concept.name}`;
+          image.src = cropImage(bitmap, box);
+          const caption = document.createElement("div");
+          caption.className = "crop-caption";
+          caption.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
+          const coordinates = document.createElement("div");
+          coordinates.className = "crop-caption muted";
+          coordinates.textContent = `[${box.x1}, ${box.y1}, ${box.x2}, ${box.y2}]`;
+          item.append(image, caption, coordinates);
+          pipeline.cropList.append(item);
+        }
+      }
+
+      await wait(180);
+      pipeline.secondEdge.classList.add("flowing");
+      await wait(700);
+      pipeline.secondEdge.classList.remove("flowing");
+      pipeline.secondEdge.classList.add("done");
+
+      const outputBody = document.createElement("div");
+      outputBody.className = "stage reveal";
+      const image = document.createElement("img");
+      image.className = "stage-image";
+      image.alt = "Ảnh kết quả với bounding box";
+      image.src = prediction.annotated_image_base64
+        ? `data:image/png;base64,${prediction.annotated_image_base64}`
+        : previewUrl;
+      const label = document.createElement("div");
+      label.className = "prediction-label";
+      label.textContent = `Nhãn: ${prediction.predicted_class}`;
+      const confidence = document.createElement("div");
+      confidence.className = "prediction-confidence";
+      confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
+      outputBody.append(image, label, confidence);
+      pipeline.outputStage.replaceChildren(
+        pipeline.outputStage.querySelector("h3"),
+        outputBody
+      );
+    }
+
+    async function loadModels() {
+      try {
+        const response = await fetch("/models");
+        if (!response.ok) throw new Error(await response.text());
+        catalog = await response.json();
+        runSelect.replaceChildren();
+        for (const run of catalog.runs) {
+          const option = document.createElement("option");
+          option.value = run.run_id;
+          option.textContent = `${run.architecture} · seed ${run.seed}`;
+          runSelect.append(option);
+        }
+        runSelect.onchange = renderChoices;
+        modelList.onchange = renderUploadPreview;
+        renderChoices();
+        if (!catalog.runs.some(run => run.models.some(model => model.available))) {
+          message.textContent = `Chưa có model khả dụng. Hãy giải nén artifacts của notebook vào: ${catalog.artifact_root}`;
+        } else {
+          message.textContent = "";
+        }
+      } catch (error) {
+        message.textContent = `Không tải được danh sách model: ${error.message}`;
+      }
+    }
+
+    imageInput.addEventListener("change", renderUploadPreview);
+    modeSwitch.addEventListener("click", event => {
+      const button = event.target.closest("button[data-mode]");
+      if (!button || button.dataset.mode === currentMode) return;
+      currentMode = button.dataset.mode;
+      for (const modeButton of modeSwitch.querySelectorAll("button[data-mode]")) {
+        const active = modeButton === button;
+        modeButton.classList.toggle("active", active);
+        modeButton.setAttribute("aria-pressed", String(active));
+      }
+      renderUploadPreview();
+    });
+    submitButton.addEventListener("click", async () => {
+      const file = imageInput.files[0];
+      const selected = selectedModelIds();
+      if (!file) { message.textContent = "Vui lòng chọn ảnh."; return; }
+      if (!selected.length) { message.textContent = "Run này không có model khả dụng được chọn."; return; }
+      submitButton.disabled = true;
+      runSelect.disabled = true;
+      imageInput.disabled = true;
+      modeSwitch.querySelectorAll("button").forEach(button => { button.disabled = true; });
+      modelList.querySelectorAll("input").forEach(input => { input.disabled = true; });
+      message.textContent = "Đang dự đoán...";
+      results.replaceChildren();
+      const labels = selectedModelLabels();
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = URL.createObjectURL(file);
+      const pipelines = new Map();
+      if (currentMode === "edited") {
+        const list = document.createElement("div");
+        list.className = "pipeline-list";
+        for (const model of labels) {
+          const pipeline = createPipeline(
+            `${model.model_label} · ${runSelect.selectedOptions[0].textContent}`,
+            previewUrl
+          );
+          pipeline.firstEdge.classList.add("flowing");
+          pipelines.set(model.model_id, pipeline);
+          list.append(pipeline.element);
+        }
+        results.append(list);
+      }
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("model_ids", selected.join(","));
+        form.append("mode", currentMode);
+        const response = await fetch("/predict", { method: "POST", body: form });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || response.statusText);
+        if (currentMode === "normal") {
+          renderNormalPredictions(payload.predictions);
+        } else {
+          const bitmap = await createImageBitmap(file);
+          try {
+            await Promise.all(payload.predictions.map(prediction => {
+              const pipeline = pipelines.get(prediction.model_id);
+              pipeline.firstEdge.classList.remove("flowing");
+              return renderPrediction(pipeline, prediction, bitmap);
+            }));
+          } finally {
+            bitmap.close();
+          }
+        }
+        message.textContent = "";
+      } catch (error) {
+        message.textContent = `Dự đoán thất bại: ${error.message}`;
+        for (const pipeline of pipelines.values()) {
+          pipeline.firstEdge.classList.remove("flowing");
+          pipeline.secondEdge.classList.remove("flowing");
+        }
+      } finally {
+        submitButton.disabled = false;
+        runSelect.disabled = false;
+        imageInput.disabled = false;
+        modeSwitch.querySelectorAll("button").forEach(button => { button.disabled = false; });
+        modelList.querySelectorAll("input").forEach(input => {
+          input.disabled = input.dataset.available !== "true";
+        });
+      }
+    });
+
+    loadModels();
+  </script>
+</body>
+</html>
