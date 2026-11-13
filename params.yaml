@@ -1,7 +1,5 @@
 # ============================================================
-# Cấu hình trung tâm cho toàn bộ pipeline (MLOps L2: 1 nguồn config duy nhất).
-# DVC theo dõi file này; đổi bất kỳ giá trị nào sẽ tự trigger lại đúng stage
-# bị ảnh hưởng (xem dvc.yaml).
+# Cấu hình trung tâm cho toàn bộ pipeline.
 # ============================================================
 
 seed: 42
@@ -21,16 +19,6 @@ transfer_learning:
 
 baseline_comparison:
   selected_architecture: mobilenetv3_small
-  architectures:
-    - mobilenetv3_small
-    - shufflenet_v2_x1_0
-    - alexnet
-    - resnet50
-    - densenet121
-    - efficientnet_b0
-    - swin_t
-    - vit_b_16
-    - vit_b_32
   pretrained: true
 
 features:
@@ -50,28 +38,6 @@ rule_penalty:
   temp_warmup_epochs: 2
   temp_anneal_epochs: 10
   min_epochs_before_early_stop: 12
-
-# Student khởi tạo từ ImageNet; teacher baseline đóng băng chỉ tạo feature để
-# các luật đã chọn bỏ phiếu thành soft targets.
-rule_distillation:
-  weight: 0.1
-  temperature: 2.0
-  use_confidence: true
-
-# Dùng bởi pipelines/stage5_train_rule_bayesian.py — regularization kiểu
-# Bayesian marginalization (frozen GFlowNet sampler, resample K tập luật MỚI
-# mỗi bước train CNN, xem src/rules/bayesian_penalty.py).
-rule_penalty_bayesian:
-  K: 32                        # số tập luật resample mỗi bước (ước lượng MC)
-  sampler_checkpoint: "gflownet_best_diverse.pth"
-
-# Biến thể không chờ GFlowNet hội tụ: freeze policy ngay tại lần nó sinh ra
-# ruleset elite có reward cao nhất từng thấy. training_last.pth được ghi nguyên
-# tử sau mỗi epoch để resume đầy đủ khi Kaggle/session bị ngắt.
-rule_penalty_bayesian_elite:
-  K: 32
-  sampler_checkpoint: "gflownet_best_elite.pth"
-  resume: true
 
 # Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
 # GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.

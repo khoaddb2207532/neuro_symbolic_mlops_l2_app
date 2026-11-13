@@ -16,7 +16,6 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from dvclive import Live
 from torch.utils.data import DataLoader
 
 from src.training.callbacks import EarlyStopping
@@ -24,7 +23,7 @@ from src.training.optimizer import build_optimizer
 from src.training.trainer import (
     MONITOR_MODES,
     DEFAULT_CONFIG,
-    _NoOpLive,
+    _NoOpMetrics,
     save_checkpoint,
 )
 from src.utils.logging_utils import get_logger
@@ -195,12 +194,7 @@ def train_cbm(
     best_acc = 0.0
     best_weights = copy.deepcopy(model.state_dict())
 
-    disable_dvclive = os.environ.get("DISABLE_DVCLIVE", "").lower() in {
-        "1", "true", "yes",
-    }
-    live_context = _NoOpLive() if disable_dvclive else Live(
-        dir=cfg["dvclive_path"], save_dvc_exp=False,
-    )
+    live_context = _NoOpMetrics()
 
     start_time = time.time()
 

@@ -15,7 +15,11 @@ import torch
 import yaml
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
-from app.rule_localization import RULE_COLORS, extract_bounding_boxes, image_to_base64
+from app_cbm.rule_localization import (
+    RULE_COLORS,
+    extract_bounding_boxes,
+    image_to_base64,
+)
 from src.data.dataset import IMAGENET_MEAN, NeuroSymbolicDataset
 from src.models.cbm import ConceptBottleneckModel
 from src.models.cnn import ImageClassificationBaseline

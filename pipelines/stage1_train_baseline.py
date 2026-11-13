@@ -1,4 +1,4 @@
-"""DVC Stage 1 — Huấn luyện CNN baseline bằng full fine-tuning.
+"""Stage 1 — Huấn luyện CNN baseline bằng full fine-tuning.
 
 Chạy: python -m pipelines.stage1_train_baseline --config params.yaml
 """
@@ -47,7 +47,6 @@ def main(params_path: str) -> None:
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "dvclive_path": os.path.join(save_dir, "dvclive_baseline"),
         "save_dir": save_dir,
     }
 

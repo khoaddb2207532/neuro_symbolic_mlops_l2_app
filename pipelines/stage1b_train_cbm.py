@@ -1,4 +1,4 @@
-"""DVC Stage 1b — Huấn luyện Concept Bottleneck Model (CBM).
+"""Stage 1b — Huấn luyện Concept Bottleneck Model (CBM).
 
 Chạy: python -m pipelines.stage1b_train_cbm --config params.yaml
 
@@ -171,7 +171,6 @@ def main(params_path: str) -> None:
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
         "monitor_metric": params.get("monitor_metric", "val_loss"),
-        "dvclive_path": os.path.join(save_dir, "dvclive_cbm"),
         "save_dir": save_dir,
     }
 

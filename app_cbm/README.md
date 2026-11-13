@@ -1,7 +1,7 @@
 # CBM inference API
 
-Ứng dụng này độc lập với API legacy trong `app/`. Nó phục vụ ba loại model được
-huấn luyện bởi notebook trong `generated_cbm_notebooks`:
+Ứng dụng này phục vụ ba loại model được huấn luyện bởi notebook trong
+`generated_cbm_notebooks`:
 
 - Baseline: `01_baseline/baseline_best.pth`
 - CBM: `cbm/cbm_best.pth`
@@ -15,7 +15,7 @@ mục này. Mỗi run cần có `params_seed_<seed>.yaml`; metadata concept đư
 từ `cbm/cbm_metadata.json`.
 
 ```powershell
-pip install -r requirements.txt -r app/requirements-app.txt
+pip install -r requirements.txt -r app_cbm/requirements-app.txt
 uvicorn app_cbm.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 

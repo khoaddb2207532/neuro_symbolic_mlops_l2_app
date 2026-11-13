@@ -32,7 +32,7 @@ def generate_dual_gpu_notebook(
     num_epochs: int = 50,
     patience: int = 5,
     git_repo: str = "https://github.com/khoaddb2207532/neuro_symbolic_mlops_l2_app.git",
-    git_branch: str = "main",
+    git_branch: str = "cbm",
 ) -> Path:
     if not template_path.exists():
         raise FileNotFoundError(f"Không tìm thấy template tại: {template_path}")
@@ -91,7 +91,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--git-repo", default="https://github.com/khoaddb2207532/neuro_symbolic_mlops_l2_app.git")
-    parser.add_argument("--git-branch", default="main")
+    parser.add_argument("--git-branch", default="cbm")
 
     args = parser.parse_args()
     template_path = Path(args.template)

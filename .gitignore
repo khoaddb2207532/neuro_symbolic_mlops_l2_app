@@ -219,7 +219,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-#dvc
 kaggle/working/
 outputs/
 outputs_seed_42/
