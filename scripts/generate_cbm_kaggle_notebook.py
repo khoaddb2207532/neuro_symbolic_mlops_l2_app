@@ -26,7 +26,7 @@ def generate_dual_gpu_notebook(
     concept_annotations_path: str = DEFAULT_CONCEPT_PATH,
     num_classes: int = 9,
     n_concepts: int = 61,
-    concept_weight: float = 1.0,
+    concept_weight: float = 0.1,
     batch_size: int = 64,
     num_workers: int = 2,
     num_epochs: int = 50,
@@ -85,7 +85,7 @@ def main():
     parser.add_argument("--concept-path", default=DEFAULT_CONCEPT_PATH)
     parser.add_argument("--num-classes", type=int, default=9)
     parser.add_argument("--n-concepts", type=int, default=61)
-    parser.add_argument("--concept-weight", type=float, default=1.0)
+    parser.add_argument("--concept-weight", type=float, default=0.1)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=50)
