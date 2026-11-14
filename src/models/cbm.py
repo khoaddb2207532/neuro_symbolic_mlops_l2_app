@@ -224,10 +224,26 @@ class ConceptBottleneckModel(nn.Module):
             concept_probs: [B, n_concepts] — xác suất từng concept ∈ [0,1].
             raw_features: [B, feature_dim] — đặc trưng gốc từ backbone.
         """
-        raw_features = self.backbone(x)
-        concept_probs = self.concept_layer(raw_features)
-        logits = self.label_predictor(concept_probs)
+        logits, concept_probs, raw_features, _ = self.forward_with_concept_logits(x)
         return logits, concept_probs, raw_features
+
+    def forward_with_concept_logits(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Như ``forward`` nhưng trả thêm concept logits (trước sigmoid).
+
+        Dùng cho concept loss ``BCEWithLogits`` (ổn định số học hơn BCE trên xác
+        suất). ``concept_layer`` vẫn là Linear + Sigmoid nên state_dict và
+        checkpoint không đổi.
+
+        Returns:
+            (logits, concept_probs, raw_features, concept_logits)
+        """
+        raw_features = self.backbone(x)
+        concept_logits = self.concept_layer[0](raw_features)
+        concept_probs = self.concept_layer[1](concept_logits)
+        logits = self.label_predictor(concept_probs)
+        return logits, concept_probs, raw_features, concept_logits
 
     def trainable_param_groups(self, lr_head: float, lr_backbone: float):
         """Trả về 3 nhóm tham số với learning rate riêng.

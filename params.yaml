@@ -51,7 +51,11 @@ rule_ranking_analysis:
 # Xem src/models/cbm.py và pipelines/stage1b_train_cbm.py.
 cbm:
   n_concepts: 61                          # số concept — phải << feature_dim gốc
-  concept_weight: 0.1                     # λ: trọng số concept loss trong total loss
+  concept_weight: 1.0                     # λ: trọng số concept loss; sweep 0.5–5 bằng experiments/sweep_concept_weight.py
+  concept_pos_weight: auto                # auto | null: pos_weight theo concept từ tập train (bù mất cân bằng)
+  concept_pos_weight_max: 10.0            # kẹp pos_weight để concept hiếm không làm loss bùng nổ
+  two_stage: true                         # giai đoạn 1 đóng băng backbone, giai đoạn 2 mở backbone
+  stage1_epochs: 5                        # số epoch giai đoạn 1 (phải < num_epochs)
   freeze_backbone: false                  # true = chỉ train concept layer + predictor
   smoothing: 0.1
   concept_annotations_path: "/kaggle/input/datasets/dangduykhoab2207532/mykhmer/image_concepts.json"

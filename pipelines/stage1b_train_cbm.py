@@ -15,7 +15,9 @@ template này cho phù hợp rồi chạy lại.
 import argparse
 import json
 import os
+from typing import Optional
 
+import numpy as np
 import torch
 
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
@@ -28,6 +30,7 @@ from src.data.concepts import (
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
 from src.models.cbm import ConceptBottleneckModel, create_cbm_from_baseline
 from src.training.cbm_trainer import train_cbm
+from src.training.concept_loss import compute_pos_weight
 from src.utils.config import load_params, selected_baseline_architecture
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
@@ -101,6 +104,15 @@ def _wrap_with_concepts(
             class_to_concepts=class_to_concepts,
             n_concepts=n_concepts,
         )
+        # Cảnh báo khi nhiều ảnh phải dùng prototype của lớp thay vì nhãn riêng:
+        # đó là nhãn suy ra, không phải nhãn người/VLM đã gán cho ảnh đó.
+        _, fallback_count = ds.target_matrix()
+        if fallback_count:
+            logger.warning(
+                "Split '%s': %d/%d ảnh không khớp nhãn riêng nên dùng prototype lớp "
+                "hoặc ignore. Kiểm tra đường dẫn trong concept annotations.",
+                split_name, fallback_count, len(ds),
+            )
         wrapped[split_name] = torch.utils.data.DataLoader(
             ds,
             batch_size=loader.batch_size,
@@ -111,6 +123,27 @@ def _wrap_with_concepts(
         )
 
     return wrapped, concept_names, n_concepts
+
+
+def _resolve_pos_weight(
+    cbm_cfg: dict,
+    train_dataset: torch.utils.data.Dataset,
+) -> Optional[np.ndarray]:
+    """pos_weight theo concept từ tập train; ``concept_pos_weight: auto`` mới tính."""
+    mode = cbm_cfg.get("concept_pos_weight", "auto")
+    if mode in (None, False, "none", "off"):
+        return None
+    if mode != "auto":
+        raise ValueError("cbm.concept_pos_weight phải là 'auto', null hoặc false.")
+    targets, _ = train_dataset.target_matrix()  # type: ignore[attr-defined]
+    weights = compute_pos_weight(
+        targets, max_weight=float(cbm_cfg.get("concept_pos_weight_max", 10.0))
+    )
+    logger.info(
+        "pos_weight theo concept: min=%.2f median=%.2f max=%.2f",
+        float(weights.min()), float(np.median(weights)), float(weights.max()),
+    )
+    return weights
 
 
 def main(params_path: str) -> None:
@@ -174,6 +207,10 @@ def main(params_path: str) -> None:
         "save_dir": save_dir,
     }
 
+    concept_pos_weight = _resolve_pos_weight(cbm_cfg, wrapped_loaders["train"].dataset)
+    two_stage = bool(cbm_cfg.get("two_stage", False))
+    stage1_epochs = int(cbm_cfg.get("stage1_epochs", 0))
+
     model, history = train_cbm(
         model=model,
         train_loader=wrapped_loaders["train"],
@@ -186,7 +223,12 @@ def main(params_path: str) -> None:
         smoothing=cbm_cfg.get("smoothing", 0.1),
         num_classes=params["num_classes"],
         config=train_cfg,
+        concept_pos_weight=concept_pos_weight,
+        two_stage=two_stage,
+        stage1_epochs=stage1_epochs,
     )
+    with open(os.path.join(save_dir, "history.json"), "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
     # Evaluate
     # Lưu ý: evaluate_model_performance expect model(images) → (logits, features)
@@ -214,6 +256,11 @@ def main(params_path: str) -> None:
         "concept_names": concept_names,
         "concept_weight": concept_weight,
         "freeze_backbone": freeze_backbone,
+        "concept_pos_weight": (
+            None if concept_pos_weight is None else concept_pos_weight.tolist()
+        ),
+        "two_stage": two_stage,
+        "stage1_epochs": stage1_epochs,
     }
     with open(os.path.join(save_dir, "cbm_metadata.json"), "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
