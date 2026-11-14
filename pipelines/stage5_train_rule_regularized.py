@@ -1,4 +1,4 @@
-"""DVC Stage 5 — Fine-tune lại CNN với rule penalty (vectorized) từ luật đã chọn.
+"""Stage 5 — Fine-tune lại CNN với rule penalty (vectorized) từ luật đã chọn.
 
 Ở stage này model full fine-tune với differential LR cố định và khởi động
 lại từ baseline đã hội tụ
@@ -104,7 +104,6 @@ def main(params_path: str, target_override: str = None) -> None:
         "lr_head": params["transfer_learning"]["lr_head"],
         "weight_decay": params["weight_decay"],
         "monitor_metric": params.get("monitor_metric", "val_acc"),
-        "dvclive_path": os.path.join(save_dir, "dvclive_rule_regularized"),
         "save_dir": save_dir,
         "resume": bool(params["rule_penalty"].get("resume", False)),
         "resume_checkpoint_path": os.path.join(save_dir, "training_last.pth"),

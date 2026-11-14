@@ -9,7 +9,5 @@ seaborn
 tqdm
 joblib
 openpyxl
-dvclive
-dvc
 pyyaml
 pytest

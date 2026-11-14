@@ -48,8 +48,14 @@
     .normal-result { display: grid; grid-template-columns: minmax(140px, .7fr) 1.3fr; gap: 14px; align-items: center; }
     .normal-result img { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; background: #eef1f6; }
     .normal-result h2 { margin: 0 0 8px; font-size: 1rem; }
-    .normal-concepts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .normal-concept-heading { margin: 10px 0 5px; font-size: .9rem; }
+    .normal-concepts { display: flex; flex-wrap: wrap; gap: 6px; }
     .normal-concept { background: #e8f5ed; border-radius: 999px; padding: 4px 8px; font-size: .8rem; }
+    .normal-concept.inactive { background: #eef1f6; color: #566174; }
+    .rule-explanations { margin-top: 12px; padding-top: 10px; border-top: 1px solid #dfe5ef; }
+    .rule-explanations h3 { margin: 0 0 6px; font-size: .95rem; }
+    .rule-explanation { margin-top: 7px; padding: 8px; border-radius: 7px; background: #f3f6fb; font-size: .84rem; overflow-wrap: anywhere; }
+    .rule-explanation p { margin: 0; }
     .edge { display: grid; place-items: center; position: relative; overflow: hidden; color: #97a2b3; }
     .edge::before { content: ""; height: 3px; width: 100%; background: #d7deea; }
     .edge::after { content: ""; position: absolute; left: -45%; width: 45%; height: 3px; opacity: 0; background: linear-gradient(90deg, transparent, #24b7ec, #175cd3, transparent); }
@@ -76,7 +82,7 @@
 </head>
 <body>
   <h1>Phân loại ảnh với CBM</h1>
-  <p class="muted">Chọn run (backbone/seed), chọn mô hình và tải ảnh. Sau khi dự đoán, các vùng concept ước lượng sẽ lan truyền tới ảnh kết quả; bounding box không phải ground truth.</p>
+  <p class="muted">Chọn run (backbone/seed), chọn mô hình và tải ảnh. CBM chỉ hiển thị tối đa 5 concept có xác suất cao nhất; các vùng concept ước lượng lan truyền tới ảnh kết quả, không phải ground truth.</p>
   <div id="mode-switch" class="mode-switch" role="group" aria-label="Chế độ dự đoán">
     <button class="mode-button active" type="button" data-mode="normal" aria-pressed="true">Bình thường</button>
     <button class="mode-button" type="button" data-mode="edited" aria-pressed="false">Vừa chỉnh sửa</button>
@@ -107,6 +113,66 @@
     let catalog;
     let previewUrl = null;
     let currentMode = "normal";
+    const MAX_VISIBLE_CONCEPTS = 5;
+    const CONCEPT_LABELS_VI = {
+        dragon_boat: "Thuyền đua dài có đầu rồng trên sông",
+        paddlers_rowing: "Các hàng người chèo ngồi trên thuyền gỗ dài",
+        drummer_front_boat: "Người đánh trống đứng ở mũi thuyền đua",
+        riverbank_crowd: "Đám đông reo hò trên bờ sông trong cuộc đua thuyền",
+        flag_decorated_boat: "Thuyền dài được trang trí cờ trên mặt nước",
+
+        kneeling_altar_night: "Người quỳ trước bàn thờ có lễ vật vào ban đêm",
+        rice_fruit_tray: "Cơm dẹt và trái cây xếp đầy trên khay làm lễ vật",
+        parent_feeding_child: "Cha mẹ cho con nhỏ ăn trong buổi lễ",
+        paper_lanterns_sky: "Đèn lồng giấy phát sáng trôi lơ lửng trên bầu trời đêm",
+        night_fair_food_stalls: "Quầy thức ăn sáng đèn và đông người tại chợ đêm",
+
+        sand_pile_flags: "Gò cát được trang trí cờ và hoa",
+        pouring_water_buddha: "Người ta rót nước lên tượng Phật vàng",
+        altar_procession: "Bàn thờ được trang trí được rước qua đường phố",
+        khmer_script_banner: "Băng rôn lễ hội có chữ Khmer",
+        sprinkling_water_monks: "Người ta rảy nước lên các nhà sư",
+
+        monks_alms_bowls: "Các nhà sư mặc áo cà sa cam ôm bát, người dân bỏ thức ăn vào bát",
+        monks_chanting_row: "Một hàng nhà sư ngồi tụng kinh",
+        offering_food_monks: "Người ta quỳ, chắp tay dâng thức ăn cho nhà sư",
+        monks_robes_procession: "Các nhà sư mang áo cà sa cam đã xếp gọn trong đoàn rước",
+        sticky_rice_offering_trays: "Bánh nếp và trái cây đặt trên khay lễ vật trong buổi lễ",
+
+        dancer_gold_crown: "Vũ công đội mũ vàng, mặc trang phục biểu diễn trên sân khấu",
+        men_drum_dance: "Nam giới vừa múa vừa đánh những chiếc trống lớn",
+        musicians_xylophone_gongs: "Nhạc công ngồi thành hàng chơi đàn phím gỗ, cồng chiêng và trống",
+        sequin_actors_stage: "Diễn viên mặc trang phục đính kim sa trên sân khấu có phông vẽ",
+        courtyard_circle_dance: "Người ta múa vòng tròn vào ban đêm trong sân chùa",
+
+        ring_toss: "Người chơi ném vòng về phía cọc gỗ",
+        tug_of_war: "Hai đội kéo co bằng một sợi dây dài",
+        children_circle_chase: "Trẻ em ngồi thành vòng tròn, một em chạy phía sau",
+        oxen_race: "Một người chạy theo sau hai con bò trong cuộc đua trên cánh đồng lầy",
+        game_crowd_cheering: "Đám đông cổ vũ quanh các người chơi trong cuộc thi",
+
+        monks_writing_desks: "Các chú tiểu ngồi bên bàn viết vào vở",
+        monk_teaching_blackboard: "Một nhà sư giảng bài cho trẻ em trước bảng đen",
+        young_monks_reading: "Các chú tiểu đọc sách trên chiếu",
+        outdoor_cooking: "Mọi người cùng nấu ăn ngoài trời tại chùa",
+        uniform_classroom: "Trẻ em mặc đồng phục ngồi học trong lớp học ở chùa",
+
+        multi_tier_roof: "Mái chùa cong nhiều tầng với các họa tiết trang trí",
+        gate_sign: "Cổng chùa có bảng hiệu phía trên lối vào",
+        white_gold_stupa: "Bảo tháp trắng và vàng trong khuôn viên chùa",
+        naga_statues_stairs: "Tượng rắn thần Naga bằng đá đặt cạnh cầu thang chùa",
+        carved_wall_gable: "Hoa văn chạm khắc trên tường hoặc đầu hồi chùa",
+
+        silk_skirt_portrait: "Cô gái trẻ mặc váy lụa Khmer truyền thống đứng chụp chân dung",
+        krama_scarf: "Người mặc khăn krama kẻ ca rô",
+        wedding_couple: "Cô dâu và chú rể mặc trang phục cưới Khmer truyền thống",
+        silk_rolls_shop: "Các cuộn lụa dệt nhiều màu sắc được bày trong cửa hàng",
+        photographer_clothing: "Nhiếp ảnh gia chụp ảnh người mặc trang phục Khmer truyền thống"
+    };
+
+    function conceptLabel(name) {
+      return CONCEPT_LABELS_VI[name.toLowerCase()] || name;
+    }
 
     function selectedModelIds() {
       return [...modelList.querySelectorAll("input:checked")].map(input => input.value);
@@ -249,20 +315,73 @@
         confidence.className = "prediction-confidence";
         confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
         details.append(model, label, confidence);
-        if (prediction.activated_concepts.length) {
-          const concepts = document.createElement("div");
-          concepts.className = "normal-concepts";
-          for (const concept of prediction.activated_concepts) {
-            const badge = document.createElement("span");
-            badge.className = "normal-concept";
-            badge.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
-            concepts.append(badge);
-          }
-          details.append(concepts);
-        }
+        renderTopConcepts(details, prediction);
+        renderRuleExplanations(details, prediction);
         card.append(image, details);
         results.append(card);
       }
+    }
+
+    function renderTopConcepts(container, prediction) {
+      if (prediction.model_type === "baseline") return;
+      const concepts = [...prediction.concepts]
+        .sort((left, right) => right.probability - left.probability)
+        .slice(0, MAX_VISIBLE_CONCEPTS);
+      if (!concepts.length) return;
+
+      const section = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.className = "normal-concept-heading";
+      heading.textContent = `Top ${concepts.length} concept có xác suất cao nhất`;
+      const badges = document.createElement("div");
+      badges.className = "normal-concepts";
+      for (const concept of concepts) {
+        const badge = document.createElement("span");
+        badge.className = concept.activated
+          ? "normal-concept"
+          : "normal-concept inactive";
+        badge.textContent = `${conceptLabel(concept.name)} · ${(concept.probability * 100).toFixed(1)}%`;
+        badges.append(badge);
+      }
+      section.append(heading, badges);
+      container.append(section);
+    }
+
+    function renderRuleExplanations(container, prediction) {
+      if (prediction.model_type === "baseline") return;
+      const section = document.createElement("section");
+      section.className = "rule-explanations";
+      const heading = document.createElement("h3");
+      heading.textContent = "Luật giải thích";
+      section.append(heading);
+
+      if (!prediction.rule_explanation_available) {
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = prediction.rule_explanation_error
+          || "Run chưa có artifacts 04_filtered_rules/selected_rules.pkl.";
+        section.append(note);
+      } else if (!prediction.explanation_rules.length) {
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = "Không có luật được chọn nào khớp với nhãn dự đoán.";
+        section.append(note);
+      } else {
+        for (const rule of prediction.explanation_rules) {
+          const item = document.createElement("article");
+          item.className = "rule-explanation";
+          const title = document.createElement("p");
+          title.textContent = `Luật ${rule.rule_number} · độ tin cậy luật ${(rule.confidence * 100).toFixed(1)}%`;
+          const conditions = rule.conditions.map(condition =>
+            `${conceptLabel(condition.concept_name)} ${condition.operator} ${condition.threshold.toFixed(3)} (ảnh: ${condition.value.toFixed(3)})`
+          );
+          const statement = document.createElement("p");
+          statement.textContent = `IF ${conditions.join(" AND ")} THEN ${rule.target_class}`;
+          item.append(title, statement);
+          section.append(item);
+        }
+      }
+      container.append(section);
     }
 
     function wait(milliseconds) {
@@ -282,7 +401,9 @@
     }
 
     function collectCrops(prediction) {
-      return prediction.concepts
+      return [...prediction.concepts]
+        .sort((left, right) => right.probability - left.probability)
+        .slice(0, MAX_VISIBLE_CONCEPTS)
         .flatMap(concept => (concept.boxes || []).map(box => ({ concept, box })))
         .sort((left, right) =>
           right.concept.probability - left.concept.probability
@@ -310,11 +431,11 @@
           }
           const image = document.createElement("img");
           image.className = "crop-image";
-          image.alt = `Vùng cắt concept ${concept.name}`;
+          image.alt = `Vùng cắt concept ${conceptLabel(concept.name)}`;
           image.src = cropImage(bitmap, box);
           const caption = document.createElement("div");
           caption.className = "crop-caption";
-          caption.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
+          caption.textContent = `${conceptLabel(concept.name)} · ${(concept.probability * 100).toFixed(1)}%`;
           const coordinates = document.createElement("div");
           coordinates.className = "crop-caption muted";
           coordinates.textContent = `[${box.x1}, ${box.y1}, ${box.x2}, ${box.y2}]`;
@@ -344,6 +465,8 @@
       confidence.className = "prediction-confidence";
       confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
       outputBody.append(image, label, confidence);
+      renderTopConcepts(outputBody, prediction);
+      renderRuleExplanations(outputBody, prediction);
       pipeline.outputStage.replaceChildren(
         pipeline.outputStage.querySelector("h3"),
         outputBody

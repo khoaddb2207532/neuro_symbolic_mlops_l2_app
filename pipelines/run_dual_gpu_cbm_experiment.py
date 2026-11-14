@@ -59,10 +59,7 @@ def _run_worker(
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     env["PYTHONUNBUFFERED"] = "1"
-    env["DISABLE_DVCLIVE"] = "1"
     env["PYTHONWARNINGS"] = "ignore"
-    env["DVCLIVE_LOGLEVEL"] = "ERROR"
-    env["DVC_NO_ANALYTICS"] = "1"
 
     cmd = [
         sys.executable, "-m", "pipelines.run_cbm_neuro_symbolic_pipeline",

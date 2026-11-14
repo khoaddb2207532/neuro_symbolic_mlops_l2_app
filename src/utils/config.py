@@ -1,10 +1,8 @@
 """Nạp cấu hình tập trung từ params.yaml (single source of truth).
 
 Thay vì hard-code hằng số rải rác trong notebook (NUM_EPOCHS, LR, DATA_DIR, ...),
-toàn bộ tham số nằm trong params.yaml ở gốc repo. Điều này là điều kiện bắt buộc
-của MLOps cấp độ 2: pipeline phải "tái lập" (reproducible) chỉ bằng cách track
-1 file config, và DVC có thể tự phát hiện khi tham số đổi để trigger lại đúng
-stage bị ảnh hưởng.
+Toàn bộ tham số nằm trong params.yaml ở gốc repo để các lần chạy có thể tái lập
+và dễ cấu hình mà không cần sửa code.
 """
 import os
 from pathlib import Path

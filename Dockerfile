@@ -7,5 +7,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Ví dụ chạy toàn bộ pipeline bằng DVC (MLOps L2: môi trường đóng gói, tái lập được)
-CMD ["dvc", "repro"]
+# Chạy pipeline Baseline + CBM + GFlowNet + rule regularization.
+CMD ["python", "-m", "pipelines.run_cbm_neuro_symbolic_pipeline", "--config", "params.yaml"]

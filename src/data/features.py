@@ -61,7 +61,7 @@ def train_and_save_rf(
     X_train = torch.load(f"{features_dir}/train_features.pt").numpy()
     y_train = torch.load(f"{features_dir}/train_labels.pt").numpy()
 
-    rf = RandomForestClassifier(n_estimators=n_estimators, max_depth=12, random_state=42, n_jobs=-1)
+    rf = RandomForestClassifier(n_estimators=n_estimators, max_depth=5, random_state=42, n_jobs=-1)
     rf.fit(X_train, y_train)
     X_val2 = torch.load(f"{features_dir}/val2_features.pt").numpy()
     y_val2 = torch.load(f"{features_dir}/val2_labels.pt").numpy()
