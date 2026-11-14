@@ -114,6 +114,65 @@
     let previewUrl = null;
     let currentMode = "normal";
     const MAX_VISIBLE_CONCEPTS = 5;
+    const CONCEPT_LABELS_VI = {
+        dragon_boat: "Thuyền đua dài có đầu rồng trên sông",
+        paddlers_rowing: "Các hàng người chèo ngồi trên thuyền gỗ dài",
+        drummer_front_boat: "Người đánh trống đứng ở mũi thuyền đua",
+        riverbank_crowd: "Đám đông reo hò trên bờ sông trong cuộc đua thuyền",
+        flag_decorated_boat: "Thuyền dài được trang trí cờ trên mặt nước",
+
+        kneeling_altar_night: "Người quỳ trước bàn thờ có lễ vật vào ban đêm",
+        rice_fruit_tray: "Cơm dẹt và trái cây xếp đầy trên khay làm lễ vật",
+        parent_feeding_child: "Cha mẹ cho con nhỏ ăn trong buổi lễ",
+        paper_lanterns_sky: "Đèn lồng giấy phát sáng trôi lơ lửng trên bầu trời đêm",
+        night_fair_food_stalls: "Quầy thức ăn sáng đèn và đông người tại chợ đêm",
+
+        sand_pile_flags: "Gò cát được trang trí cờ và hoa",
+        pouring_water_buddha: "Người ta rót nước lên tượng Phật vàng",
+        altar_procession: "Bàn thờ được trang trí được rước qua đường phố",
+        khmer_script_banner: "Băng rôn lễ hội có chữ Khmer",
+        sprinkling_water_monks: "Người ta rảy nước lên các nhà sư",
+
+        monks_alms_bowls: "Các nhà sư mặc áo cà sa cam ôm bát, người dân bỏ thức ăn vào bát",
+        monks_chanting_row: "Một hàng nhà sư ngồi tụng kinh",
+        offering_food_monks: "Người ta quỳ, chắp tay dâng thức ăn cho nhà sư",
+        monks_robes_procession: "Các nhà sư mang áo cà sa cam đã xếp gọn trong đoàn rước",
+        sticky_rice_offering_trays: "Bánh nếp và trái cây đặt trên khay lễ vật trong buổi lễ",
+
+        dancer_gold_crown: "Vũ công đội mũ vàng, mặc trang phục biểu diễn trên sân khấu",
+        men_drum_dance: "Nam giới vừa múa vừa đánh những chiếc trống lớn",
+        musicians_xylophone_gongs: "Nhạc công ngồi thành hàng chơi đàn phím gỗ, cồng chiêng và trống",
+        sequin_actors_stage: "Diễn viên mặc trang phục đính kim sa trên sân khấu có phông vẽ",
+        courtyard_circle_dance: "Người ta múa vòng tròn vào ban đêm trong sân chùa",
+
+        ring_toss: "Người chơi ném vòng về phía cọc gỗ",
+        tug_of_war: "Hai đội kéo co bằng một sợi dây dài",
+        children_circle_chase: "Trẻ em ngồi thành vòng tròn, một em chạy phía sau",
+        oxen_race: "Một người chạy theo sau hai con bò trong cuộc đua trên cánh đồng lầy",
+        game_crowd_cheering: "Đám đông cổ vũ quanh các người chơi trong cuộc thi",
+
+        monks_writing_desks: "Các chú tiểu ngồi bên bàn viết vào vở",
+        monk_teaching_blackboard: "Một nhà sư giảng bài cho trẻ em trước bảng đen",
+        young_monks_reading: "Các chú tiểu đọc sách trên chiếu",
+        outdoor_cooking: "Mọi người cùng nấu ăn ngoài trời tại chùa",
+        uniform_classroom: "Trẻ em mặc đồng phục ngồi học trong lớp học ở chùa",
+
+        multi_tier_roof: "Mái chùa cong nhiều tầng với các họa tiết trang trí",
+        gate_sign: "Cổng chùa có bảng hiệu phía trên lối vào",
+        white_gold_stupa: "Bảo tháp trắng và vàng trong khuôn viên chùa",
+        naga_statues_stairs: "Tượng rắn thần Naga bằng đá đặt cạnh cầu thang chùa",
+        carved_wall_gable: "Hoa văn chạm khắc trên tường hoặc đầu hồi chùa",
+
+        silk_skirt_portrait: "Cô gái trẻ mặc váy lụa Khmer truyền thống đứng chụp chân dung",
+        krama_scarf: "Người mặc khăn krama kẻ ca rô",
+        wedding_couple: "Cô dâu và chú rể mặc trang phục cưới Khmer truyền thống",
+        silk_rolls_shop: "Các cuộn lụa dệt nhiều màu sắc được bày trong cửa hàng",
+        photographer_clothing: "Nhiếp ảnh gia chụp ảnh người mặc trang phục Khmer truyền thống"
+    };
+
+    function conceptLabel(name) {
+      return CONCEPT_LABELS_VI[name.toLowerCase()] || name;
+    }
 
     function selectedModelIds() {
       return [...modelList.querySelectorAll("input:checked")].map(input => input.value);
@@ -281,7 +340,7 @@
         badge.className = concept.activated
           ? "normal-concept"
           : "normal-concept inactive";
-        badge.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
+        badge.textContent = `${conceptLabel(concept.name)} · ${(concept.probability * 100).toFixed(1)}%`;
         badges.append(badge);
       }
       section.append(heading, badges);
@@ -314,7 +373,7 @@
           const title = document.createElement("p");
           title.textContent = `Luật ${rule.rule_number} · độ tin cậy luật ${(rule.confidence * 100).toFixed(1)}%`;
           const conditions = rule.conditions.map(condition =>
-            `${condition.concept_name} ${condition.operator} ${condition.threshold.toFixed(3)} (ảnh: ${condition.value.toFixed(3)})`
+            `${conceptLabel(condition.concept_name)} ${condition.operator} ${condition.threshold.toFixed(3)} (ảnh: ${condition.value.toFixed(3)})`
           );
           const statement = document.createElement("p");
           statement.textContent = `IF ${conditions.join(" AND ")} THEN ${rule.target_class}`;
@@ -372,11 +431,11 @@
           }
           const image = document.createElement("img");
           image.className = "crop-image";
-          image.alt = `Vùng cắt concept ${concept.name}`;
+          image.alt = `Vùng cắt concept ${conceptLabel(concept.name)}`;
           image.src = cropImage(bitmap, box);
           const caption = document.createElement("div");
           caption.className = "crop-caption";
-          caption.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
+          caption.textContent = `${conceptLabel(concept.name)} · ${(concept.probability * 100).toFixed(1)}%`;
           const coordinates = document.createElement("div");
           coordinates.className = "crop-caption muted";
           coordinates.textContent = `[${box.x1}, ${box.y1}, ${box.x2}, ${box.y2}]`;
