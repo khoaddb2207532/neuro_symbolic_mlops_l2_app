@@ -4,10 +4,12 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 import pickle
 import re
 import time
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,6 +25,7 @@ from app_cbm.rule_localization import (
 from src.data.dataset import IMAGENET_MEAN, NeuroSymbolicDataset
 from src.models.cbm import ConceptBottleneckModel
 from src.models.cnn import ImageClassificationBaseline
+from src.rules.rule_types import Condition, Rule
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,9 @@ class LoadedModel:
     model: torch.nn.Module
     class_names: List[str]
     concept_names: List[str]
+    explanation_rules: List[Rule]
+    rule_explanation_available: bool
+    rule_explanation_error: Optional[str]
 
 
 class CBMInferenceService:
@@ -105,6 +111,8 @@ class CBMInferenceService:
         tracked_paths = set()
         for run_dir in self._run_directories():
             seed_match = re.search(r"(\d+)$", run_dir.name)
+            rules_path = run_dir / "04_filtered_rules" / "selected_rules.pkl"
+            tracked_paths.add(rules_path)
             config_path = run_dir / (
                 f"params_seed_{seed_match.group(1)}.yaml" if seed_match else "params.yaml"
             )
@@ -173,6 +181,7 @@ class CBMInferenceService:
                         "checkpoint": str(checkpoint) if checkpoint else None,
                         "error": error,
                         "run_dir": run_dir,
+                        "rules_path": rules_path,
                         "architecture": architecture,
                         "seed": seed,
                         "config": config if not config_error else {},
@@ -188,16 +197,17 @@ class CBMInferenceService:
                 }
             )
 
-        fingerprint = tuple(
-            sorted(
-                (
-                    str(path),
-                    path.stat().st_size,
-                    path.stat().st_mtime_ns,
+        fingerprint_items = []
+        for path in tracked_paths:
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                fingerprint_items.append((str(path), -1, -1))
+            else:
+                fingerprint_items.append(
+                    (str(path), stat.st_size, stat.st_mtime_ns)
                 )
-                for path in tracked_paths
-            )
-        )
+        fingerprint = tuple(sorted(fingerprint_items))
         return runs, fingerprint
 
     @staticmethod
@@ -218,6 +228,54 @@ class CBMInferenceService:
             if isinstance(checkpoint, dict) else []
         )
         return state, class_names if isinstance(class_names, list) else []
+
+    @staticmethod
+    def _load_explanation_rules(
+        path: Path, num_concepts: int, num_classes: int
+    ) -> Tuple[List[Rule], bool, Optional[str]]:
+        if not path.is_file():
+            return [], False, None
+
+        try:
+            with path.open("rb") as file:
+                rules = pickle.load(file)
+            if not isinstance(rules, list):
+                raise ValueError("selected_rules.pkl phải chứa danh sách luật.")
+            for rule in rules:
+                if not isinstance(rule, Rule):
+                    raise ValueError("selected_rules.pkl chứa luật không hợp lệ.")
+                if (
+                    not isinstance(rule.target_class, Integral)
+                    or not 0 <= rule.target_class < num_classes
+                    or not isinstance(rule.conditions, list)
+                    or not rule.conditions
+                    or not math.isfinite(rule.confidence)
+                    or not 0 <= rule.confidence <= 1
+                ):
+                    raise ValueError("selected_rules.pkl chứa luật không hợp lệ.")
+                for condition in rule.conditions:
+                    if (
+                        not isinstance(condition, Condition)
+                        or not isinstance(condition.feature_index, Integral)
+                        or not 0 <= condition.feature_index < num_concepts
+                        or condition.operator not in ("<=", ">")
+                        or not math.isfinite(condition.threshold)
+                    ):
+                        raise ValueError(
+                            "selected_rules.pkl chứa điều kiện không hợp lệ."
+                        )
+        except (
+            OSError,
+            EOFError,
+            ImportError,
+            pickle.UnpicklingError,
+            ValueError,
+            TypeError,
+            AttributeError,
+        ) as exc:
+            logger.exception("Không nạp được luật giải thích từ %s", path)
+            return [], False, f"Không nạp được luật giải thích: {exc}"
+        return rules, True, None
 
     def _load_model(self, status: Dict[str, Any]) -> LoadedModel:
         checkpoint_path = Path(status["checkpoint"])
@@ -272,6 +330,18 @@ class CBMInferenceService:
         model.to(self.device).eval()
         if len(class_names) != num_classes:
             class_names = [f"class_{index}" for index in range(num_classes)]
+        if model_type == "baseline":
+            explanation_rules, rule_explanation_available, rule_explanation_error = (
+                [], False, None
+            )
+        else:
+            (
+                explanation_rules,
+                rule_explanation_available,
+                rule_explanation_error,
+            ) = self._load_explanation_rules(
+                status["rules_path"], len(concept_names), num_classes
+            )
         return LoadedModel(
             model_id=status["model_id"],
             model_type=model_type,
@@ -281,6 +351,9 @@ class CBMInferenceService:
             model=model,
             class_names=class_names,
             concept_names=concept_names,
+            explanation_rules=explanation_rules,
+            rule_explanation_available=rule_explanation_available,
+            rule_explanation_error=rule_explanation_error,
         )
 
     def refresh(self, force: bool = False) -> None:
@@ -472,6 +545,46 @@ class CBMInferenceService:
             raise LookupError("Không có model khả dụng cho lựa chọn này.")
         return selected
 
+    @staticmethod
+    def _matching_explanation_rules(
+        item: LoadedModel,
+        concept_probs: torch.Tensor,
+        predicted_index: int,
+    ) -> List[Dict[str, Any]]:
+        matches = []
+        for rule_number, rule in enumerate(item.explanation_rules, 1):
+            if rule.target_class != predicted_index:
+                continue
+            conditions = []
+            rule_matches = True
+            for condition in rule.conditions:
+                value = float(concept_probs[condition.feature_index].item())
+                if condition.operator == "<=":
+                    rule_matches = rule_matches and value <= condition.threshold
+                else:
+                    rule_matches = rule_matches and value > condition.threshold
+                conditions.append(
+                    {
+                        "concept_name": item.concept_names[condition.feature_index],
+                        "operator": condition.operator,
+                        "threshold": round(condition.threshold, 4),
+                        "value": round(value, 4),
+                    }
+                )
+            if rule_matches:
+                matches.append(
+                    {
+                        "rule_number": rule_number,
+                        "target_class": item.class_names[rule.target_class],
+                        "confidence": round(rule.confidence, 4),
+                        "conditions": conditions,
+                    }
+                )
+        return sorted(
+            matches,
+            key=lambda rule: (-rule["confidence"], rule["rule_number"]),
+        )
+
     @torch.inference_mode()
     def predict(
         self,
@@ -500,11 +613,19 @@ class CBMInferenceService:
                 probabilities, min(5, len(item.class_names))
             ).indices.tolist()
             concepts = []
+            explanation_rules = []
             annotated_image_base64 = None
+            rule_explanation_available = False
+            rule_explanation_error = None
             if item.model_type != "baseline":
                 if not isinstance(output, (tuple, list)) or len(output) < 2:
                     raise RuntimeError(f"{model_id} không trả concept probabilities.")
                 concept_probs = output[1].squeeze(0)
+                explanation_rules = self._matching_explanation_rules(
+                    item, concept_probs, predicted_index
+                )
+                rule_explanation_available = item.rule_explanation_available
+                rule_explanation_error = item.rule_explanation_error
                 if include_localization:
                     concepts, annotated_image_base64 = self._localize_concepts(
                         item.model, image, concept_probs, item.concept_names
@@ -545,6 +666,9 @@ class CBMInferenceService:
                     "activated_concepts": [
                         concept for concept in concepts if concept["activated"]
                     ],
+                    "rule_explanation_available": rule_explanation_available,
+                    "rule_explanation_error": rule_explanation_error,
+                    "explanation_rules": explanation_rules,
                     "concept_activation_threshold": (
                         self.concept_threshold if concepts else None
                     ),

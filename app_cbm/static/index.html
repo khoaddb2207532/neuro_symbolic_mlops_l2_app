@@ -50,6 +50,10 @@
     .normal-result h2 { margin: 0 0 8px; font-size: 1rem; }
     .normal-concepts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .normal-concept { background: #e8f5ed; border-radius: 999px; padding: 4px 8px; font-size: .8rem; }
+    .rule-explanations { margin-top: 12px; padding-top: 10px; border-top: 1px solid #dfe5ef; }
+    .rule-explanations h3 { margin: 0 0 6px; font-size: .95rem; }
+    .rule-explanation { margin-top: 7px; padding: 8px; border-radius: 7px; background: #f3f6fb; font-size: .84rem; overflow-wrap: anywhere; }
+    .rule-explanation p { margin: 0; }
     .edge { display: grid; place-items: center; position: relative; overflow: hidden; color: #97a2b3; }
     .edge::before { content: ""; height: 3px; width: 100%; background: #d7deea; }
     .edge::after { content: ""; position: absolute; left: -45%; width: 45%; height: 3px; opacity: 0; background: linear-gradient(90deg, transparent, #24b7ec, #175cd3, transparent); }
@@ -260,9 +264,47 @@
           }
           details.append(concepts);
         }
+        renderRuleExplanations(details, prediction);
         card.append(image, details);
         results.append(card);
       }
+    }
+
+    function renderRuleExplanations(container, prediction) {
+      if (prediction.model_type === "baseline") return;
+      const section = document.createElement("section");
+      section.className = "rule-explanations";
+      const heading = document.createElement("h3");
+      heading.textContent = "Luật giải thích";
+      section.append(heading);
+
+      if (!prediction.rule_explanation_available) {
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = prediction.rule_explanation_error
+          || "Run chưa có artifacts 04_filtered_rules/selected_rules.pkl.";
+        section.append(note);
+      } else if (!prediction.explanation_rules.length) {
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = "Không có luật được chọn nào khớp với nhãn dự đoán.";
+        section.append(note);
+      } else {
+        for (const rule of prediction.explanation_rules) {
+          const item = document.createElement("article");
+          item.className = "rule-explanation";
+          const title = document.createElement("p");
+          title.textContent = `Luật ${rule.rule_number} · độ tin cậy luật ${(rule.confidence * 100).toFixed(1)}%`;
+          const conditions = rule.conditions.map(condition =>
+            `${condition.concept_name} ${condition.operator} ${condition.threshold.toFixed(3)} (ảnh: ${condition.value.toFixed(3)})`
+          );
+          const statement = document.createElement("p");
+          statement.textContent = `IF ${conditions.join(" AND ")} THEN ${rule.target_class}`;
+          item.append(title, statement);
+          section.append(item);
+        }
+      }
+      container.append(section);
     }
 
     function wait(milliseconds) {
@@ -344,6 +386,7 @@
       confidence.className = "prediction-confidence";
       confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
       outputBody.append(image, label, confidence);
+      renderRuleExplanations(outputBody, prediction);
       pipeline.outputStage.replaceChildren(
         pipeline.outputStage.querySelector("h3"),
         outputBody

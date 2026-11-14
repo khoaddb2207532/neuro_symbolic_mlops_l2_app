@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -45,6 +45,20 @@ class ClassScore(BaseModel):
     confidence: float
 
 
+class RuleCondition(BaseModel):
+    concept_name: str
+    operator: Literal["<=", ">"]
+    threshold: float
+    value: float
+
+
+class RuleExplanation(BaseModel):
+    rule_number: int
+    target_class: str
+    confidence: float
+    conditions: List[RuleCondition]
+
+
 class Prediction(BaseModel):
     model_id: str
     model_type: str
@@ -57,6 +71,9 @@ class Prediction(BaseModel):
     top5: List[ClassScore]
     concepts: List[ConceptScore] = Field(default_factory=list)
     activated_concepts: List[ConceptScore] = Field(default_factory=list)
+    rule_explanation_available: bool = False
+    rule_explanation_error: Optional[str] = None
+    explanation_rules: List[RuleExplanation] = Field(default_factory=list)
     concept_activation_threshold: Optional[float] = None
     annotated_image_base64: Optional[str] = None
     occlusion_method: Optional[str] = None
