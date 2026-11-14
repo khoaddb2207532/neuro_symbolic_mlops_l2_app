@@ -46,6 +46,9 @@ theo thứ tự. Notebook cài dependencies cần thiết và chạy cùng pipel
 trên nhánh này.
 
 ## Chạy API inference
+Tải output(file zip trong output) theo seed của mô hình muốn chạy , giải nén vào app_cbm/
+
+![alt text](image.png)
 
 Sau khi có artifacts, cài dependencies của ứng dụng và khởi động API:
 
