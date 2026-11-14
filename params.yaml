@@ -63,7 +63,7 @@ cbm:
 gflownet:
   max_rules: 120
   hidden_dim: 256
-  num_iterations: 5000
+  num_iterations: 1000
   batch_size: 256
   lr: !!float 1e-3
   logZ_lr: 0.1
