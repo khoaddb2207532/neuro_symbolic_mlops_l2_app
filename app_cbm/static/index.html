@@ -48,8 +48,10 @@
     .normal-result { display: grid; grid-template-columns: minmax(140px, .7fr) 1.3fr; gap: 14px; align-items: center; }
     .normal-result img { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; background: #eef1f6; }
     .normal-result h2 { margin: 0 0 8px; font-size: 1rem; }
-    .normal-concepts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .normal-concept-heading { margin: 10px 0 5px; font-size: .9rem; }
+    .normal-concepts { display: flex; flex-wrap: wrap; gap: 6px; }
     .normal-concept { background: #e8f5ed; border-radius: 999px; padding: 4px 8px; font-size: .8rem; }
+    .normal-concept.inactive { background: #eef1f6; color: #566174; }
     .rule-explanations { margin-top: 12px; padding-top: 10px; border-top: 1px solid #dfe5ef; }
     .rule-explanations h3 { margin: 0 0 6px; font-size: .95rem; }
     .rule-explanation { margin-top: 7px; padding: 8px; border-radius: 7px; background: #f3f6fb; font-size: .84rem; overflow-wrap: anywhere; }
@@ -80,7 +82,7 @@
 </head>
 <body>
   <h1>Phân loại ảnh với CBM</h1>
-  <p class="muted">Chọn run (backbone/seed), chọn mô hình và tải ảnh. Sau khi dự đoán, các vùng concept ước lượng sẽ lan truyền tới ảnh kết quả; bounding box không phải ground truth.</p>
+  <p class="muted">Chọn run (backbone/seed), chọn mô hình và tải ảnh. CBM chỉ hiển thị tối đa 5 concept có xác suất cao nhất; các vùng concept ước lượng lan truyền tới ảnh kết quả, không phải ground truth.</p>
   <div id="mode-switch" class="mode-switch" role="group" aria-label="Chế độ dự đoán">
     <button class="mode-button active" type="button" data-mode="normal" aria-pressed="true">Bình thường</button>
     <button class="mode-button" type="button" data-mode="edited" aria-pressed="false">Vừa chỉnh sửa</button>
@@ -111,6 +113,7 @@
     let catalog;
     let previewUrl = null;
     let currentMode = "normal";
+    const MAX_VISIBLE_CONCEPTS = 5;
 
     function selectedModelIds() {
       return [...modelList.querySelectorAll("input:checked")].map(input => input.value);
@@ -253,21 +256,36 @@
         confidence.className = "prediction-confidence";
         confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
         details.append(model, label, confidence);
-        if (prediction.activated_concepts.length) {
-          const concepts = document.createElement("div");
-          concepts.className = "normal-concepts";
-          for (const concept of prediction.activated_concepts) {
-            const badge = document.createElement("span");
-            badge.className = "normal-concept";
-            badge.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
-            concepts.append(badge);
-          }
-          details.append(concepts);
-        }
+        renderTopConcepts(details, prediction);
         renderRuleExplanations(details, prediction);
         card.append(image, details);
         results.append(card);
       }
+    }
+
+    function renderTopConcepts(container, prediction) {
+      if (prediction.model_type === "baseline") return;
+      const concepts = [...prediction.concepts]
+        .sort((left, right) => right.probability - left.probability)
+        .slice(0, MAX_VISIBLE_CONCEPTS);
+      if (!concepts.length) return;
+
+      const section = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.className = "normal-concept-heading";
+      heading.textContent = `Top ${concepts.length} concept có xác suất cao nhất`;
+      const badges = document.createElement("div");
+      badges.className = "normal-concepts";
+      for (const concept of concepts) {
+        const badge = document.createElement("span");
+        badge.className = concept.activated
+          ? "normal-concept"
+          : "normal-concept inactive";
+        badge.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
+        badges.append(badge);
+      }
+      section.append(heading, badges);
+      container.append(section);
     }
 
     function renderRuleExplanations(container, prediction) {
@@ -324,7 +342,9 @@
     }
 
     function collectCrops(prediction) {
-      return prediction.concepts
+      return [...prediction.concepts]
+        .sort((left, right) => right.probability - left.probability)
+        .slice(0, MAX_VISIBLE_CONCEPTS)
         .flatMap(concept => (concept.boxes || []).map(box => ({ concept, box })))
         .sort((left, right) =>
           right.concept.probability - left.concept.probability
@@ -386,6 +406,7 @@
       confidence.className = "prediction-confidence";
       confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
       outputBody.append(image, label, confidence);
+      renderTopConcepts(outputBody, prediction);
       renderRuleExplanations(outputBody, prediction);
       pipeline.outputStage.replaceChildren(
         pipeline.outputStage.querySelector("h3"),

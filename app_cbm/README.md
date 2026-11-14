@@ -28,13 +28,13 @@ uvicorn app_cbm.main:app --host 0.0.0.0 --port 8000 --reload
 Mở `http://localhost:8000` để chọn run/model và tải ảnh lên. Chọn nhiều model
 trong cùng run để so sánh cả ba loại. Có hai chế độ:
 
-- **Bình thường**: phân loại nhanh, hiển thị nhãn, độ tin cậy và concept kích
-  hoạt cùng các luật khớp; không chạy occlusion mapping.
+- **Bình thường**: phân loại nhanh, hiển thị nhãn, độ tin cậy, tối đa 5 concept
+  có xác suất cao nhất và các luật khớp; không chạy occlusion mapping.
 - **Vừa chỉnh sửa**: chạy thêm occlusion mapping trên lưới `7×7`, rồi hiển thị
-  luồng ảnh đầu vào → tối đa 5 crop box → ảnh kết quả có box, nhãn và độ tin
-  cậy và luật khớp. Tọa độ box theo ảnh gốc; đây là vùng đóng góp ước lượng,
-  không phải localization ground truth. Chế độ này chậm hơn do cần các lượt
-  che ảnh.
+  tối đa 5 concept có xác suất cao nhất, luồng ảnh đầu vào → tối đa 5 crop box
+  → ảnh kết quả có box, nhãn, độ tin cậy và luật khớp. Tọa độ box theo ảnh
+  gốc; đây là vùng đóng góp ước lượng, không phải localization ground truth.
+  Chế độ này chậm hơn do cần các lượt che ảnh.
 
 - `GET /models`: quét lại artifacts và liệt kê mô hình tải được.
 - `GET /health`: trạng thái service và số mô hình khả dụng.
