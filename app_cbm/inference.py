@@ -17,6 +17,12 @@ import torch
 import yaml
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
+from app_cbm.concept_explanation import (
+    THRESHOLDS_KEY,
+    concept_contributions,
+    logit_residual,
+    resolve_concept_thresholds,
+)
 from app_cbm.rule_localization import (
     RULE_COLORS,
     extract_bounding_boxes,
@@ -52,6 +58,8 @@ class LoadedModel:
     explanation_rules: List[Rule]
     rule_explanation_available: bool
     rule_explanation_error: Optional[str]
+    concept_thresholds: List[float]
+    threshold_source: str
 
 
 class CBMInferenceService:
@@ -292,6 +300,8 @@ class CBMInferenceService:
             raise ValueError("Không xác định được số lớp từ params hoặc checkpoint.")
 
         concept_names: List[str] = []
+        concept_thresholds: List[float] = []
+        threshold_source = "none"
         if model_type == "baseline":
             model = ImageClassificationBaseline(
                 architecture=architecture, num_classes=num_classes, pretrained=False
@@ -318,6 +328,9 @@ class CBMInferenceService:
                 raise ValueError(
                     "Danh sách tên concept không khớp với checkpoint."
                 )
+            concept_thresholds, threshold_source = resolve_concept_thresholds(
+                metadata.get(THRESHOLDS_KEY), n_concepts, self.concept_threshold
+            )
             architecture = metadata.get("architecture") or architecture
             model = ConceptBottleneckModel(
                 architecture=architecture,
@@ -354,6 +367,8 @@ class CBMInferenceService:
             explanation_rules=explanation_rules,
             rule_explanation_available=rule_explanation_available,
             rule_explanation_error=rule_explanation_error,
+            concept_thresholds=concept_thresholds,
+            threshold_source=threshold_source,
         )
 
     def refresh(self, force: bool = False) -> None:
@@ -434,6 +449,7 @@ class CBMInferenceService:
         image: Image.Image,
         concept_probs: torch.Tensor,
         concept_names: List[str],
+        thresholds: List[float],
     ) -> Tuple[List[Dict[str, Any]], str]:
         """Estimate activated-concept boxes by masking each region of the image."""
         drops = self._concept_occlusion_maps(model, image, concept_probs)
@@ -441,7 +457,7 @@ class CBMInferenceService:
         candidates = []
 
         for index, probability in enumerate(concept_probs):
-            activated = float(probability.item()) >= self.concept_threshold
+            activated = float(probability.item()) >= thresholds[index]
             boxes = []
             if activated and float(drops[index].max().item()) >= 0.01:
                 boxes = extract_bounding_boxes(
@@ -458,6 +474,7 @@ class CBMInferenceService:
                     "name": concept_names[index],
                     "probability": round(float(probability.item()), 4),
                     "activated": activated,
+                    "threshold": round(thresholds[index], 4),
                     "color": None,
                     "boxes": [],
                 }
@@ -585,6 +602,37 @@ class CBMInferenceService:
             key=lambda rule: (-rule["confidence"], rule["rule_number"]),
         )
 
+    @staticmethod
+    def _contribution_explanation(
+        item: LoadedModel,
+        concept_probs: torch.Tensor,
+        logits: torch.Tensor,
+        predicted_index: int,
+    ) -> Tuple[List[Dict[str, Any]], float, float]:
+        """Phân rã logit của lớp dự đoán thành đóng góp từng concept + bias."""
+        model = item.model
+        if not isinstance(model, ConceptBottleneckModel):
+            raise RuntimeError("Mô hình không phải CBM nên không có label_predictor.")
+        head = model.label_predictor
+        weight_row = head.weight[predicted_index].detach().cpu().tolist()
+        label_bias = float(head.bias[predicted_index].detach().cpu().item())
+        predicted_logit = float(
+            logits.reshape(-1)[predicted_index].detach().cpu().item()
+        )
+        rows = concept_contributions(
+            probabilities=concept_probs.detach().cpu().tolist(),
+            names=item.concept_names,
+            thresholds=item.concept_thresholds,
+            weights=weight_row,
+        )
+        residual = logit_residual(rows, label_bias, predicted_logit)
+        if residual > 1e-3 * max(1.0, abs(predicted_logit)):
+            logger.warning(
+                "Phân rã logit lệch %.6f ở %s; kiểm tra lại head của checkpoint.",
+                residual, item.model_id,
+            )
+        return [row.to_dict() for row in rows], label_bias, predicted_logit
+
     @torch.inference_mode()
     def predict(
         self,
@@ -614,6 +662,10 @@ class CBMInferenceService:
             ).indices.tolist()
             concepts = []
             explanation_rules = []
+            contributions: List[Dict[str, Any]] = []
+            label_bias: Optional[float] = None
+            predicted_logit: Optional[float] = None
+            threshold_source: Optional[str] = None
             annotated_image_base64 = None
             rule_explanation_available = False
             rule_explanation_error = None
@@ -626,16 +678,22 @@ class CBMInferenceService:
                 )
                 rule_explanation_available = item.rule_explanation_available
                 rule_explanation_error = item.rule_explanation_error
+                threshold_source = item.threshold_source
                 if include_localization:
                     concepts, annotated_image_base64 = self._localize_concepts(
-                        item.model, image, concept_probs, item.concept_names
+                        item.model, image, concept_probs, item.concept_names,
+                        item.concept_thresholds,
                     )
                 else:
                     concepts = [
                         {
                             "name": item.concept_names[index],
                             "probability": round(float(probability.item()), 4),
-                            "activated": float(probability.item()) >= self.concept_threshold,
+                            "activated": (
+                                float(probability.item())
+                                >= item.concept_thresholds[index]
+                            ),
+                            "threshold": round(item.concept_thresholds[index], 4),
                             "color": None,
                             "boxes": [],
                         }
@@ -644,6 +702,11 @@ class CBMInferenceService:
                 concepts.sort(
                     key=lambda concept: concept["probability"],
                     reverse=True,
+                )
+                contributions, label_bias, predicted_logit = (
+                    self._contribution_explanation(
+                        item, concept_probs, logits, predicted_index
+                    )
                 )
             results.append(
                 {
@@ -671,6 +734,12 @@ class CBMInferenceService:
                     "explanation_rules": explanation_rules,
                     "concept_activation_threshold": (
                         self.concept_threshold if concepts else None
+                    ),
+                    "concept_threshold_source": threshold_source,
+                    "concept_contributions": contributions,
+                    "label_bias": None if label_bias is None else round(label_bias, 4),
+                    "predicted_logit": (
+                        None if predicted_logit is None else round(predicted_logit, 4)
                     ),
                     "annotated_image_base64": annotated_image_base64,
                     "occlusion_method": (

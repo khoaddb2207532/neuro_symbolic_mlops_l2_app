@@ -36,8 +36,21 @@ class ConceptScore(BaseModel):
     name: str
     probability: float
     activated: bool
+    threshold: Optional[float] = None
     color: Optional[List[int]] = None
     boxes: List[BoundingBox] = Field(default_factory=list)
+
+
+class ConceptContributionScore(BaseModel):
+    """Đóng góp p_i * W[pred, i] của một concept vào logit của lớp dự đoán."""
+
+    index: int
+    name: str
+    probability: float
+    threshold: float
+    activated: bool
+    weight: float
+    contribution: float
 
 
 class ClassScore(BaseModel):
@@ -75,6 +88,10 @@ class Prediction(BaseModel):
     rule_explanation_error: Optional[str] = None
     explanation_rules: List[RuleExplanation] = Field(default_factory=list)
     concept_activation_threshold: Optional[float] = None
+    concept_threshold_source: Optional[str] = None
+    concept_contributions: List[ConceptContributionScore] = Field(default_factory=list)
+    label_bias: Optional[float] = None
+    predicted_logit: Optional[float] = None
     annotated_image_base64: Optional[str] = None
     occlusion_method: Optional[str] = None
     occlusion_grid_size: Optional[int] = None

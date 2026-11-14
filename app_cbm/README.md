@@ -42,3 +42,34 @@ trong cùng run để so sánh cả ba loại. Có hai chế độ:
   (tuỳ chọn, danh sách ID phân tách bằng dấu phẩy), `mode` (`normal` hoặc
   `edited`, mặc định `normal`).
 - `GET /docs`: OpenAPI/Swagger UI.
+
+## Giải thích CBM theo đóng góp concept
+
+Với mô hình CBM, `label_predictor` là một lớp Linear nên logit của lớp dự đoán
+`c` bằng `Σ_i W[c, i] · p_i + b_c`. Mỗi concept `i` có **đóng góp**
+`p_i · W[c, i]` vào logit đó; `label_bias` là `b_c` và `predicted_logit` là
+logit của lớp dự đoán. Các đóng góp cộng với bias đúng bằng `predicted_logit`.
+
+Trong response `POST /predict`, mỗi prediction CBM có:
+
+- `concept_contributions`: danh sách đóng góp của **tất cả** concept, xếp từ
+  đẩy logit lên nhiều nhất đến kéo xuống nhiều nhất. Mỗi mục gồm `probability`,
+  `threshold`, `activated`, `weight` (`W[c, i]`) và `contribution`.
+- `label_bias`, `predicted_logit`: để kiểm tra `Σ contribution + label_bias ≈ predicted_logit`.
+- `concept_threshold_source`: `per_concept` nếu dùng ngưỡng riêng, `global` nếu dùng
+  ngưỡng mặc định.
+
+Lưu ý khi đọc: đây là phân rã của **logit**, không phải của xác suất softmax.
+Concept có đóng góp dương lớn chỉ cho biết nó đẩy logit của lớp đó lên; không đảm
+bảo lớp đó thắng các lớp khác. Muốn biết vì sao lớp A thắng lớp B, so sánh
+`W[A, i] − W[B, i]` thay vì chỉ nhìn một hàng.
+
+### Ngưỡng riêng cho từng concept
+
+Ngưỡng kích hoạt mặc định là `0.5` cho mọi concept. Nếu `cbm_metadata.json` có khoá
+`concept_thresholds` (danh sách đúng `n_concepts` số trong khoảng `(0, 1)`, theo
+đúng thứ tự `concept_names`), mỗi concept dùng ngưỡng của chính nó. Ngưỡng này
+áp dụng cho cả cờ `activated`, việc chọn vùng occlusion và trường `threshold` của
+từng concept. Nếu khoá có mặt nhưng sai định dạng, mô hình đó không được tải và
+lỗi được ghi trong `/models`, thay vì lặng lẽ dùng ngưỡng sai.
+`concept_activation_threshold` vẫn trả về ngưỡng toàn cục để tương thích ngược.
