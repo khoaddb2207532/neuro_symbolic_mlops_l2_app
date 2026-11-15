@@ -25,7 +25,7 @@ def generate_dual_gpu_notebook(
     data_dir: str = DEFAULT_DATASET,
     concept_annotations_path: str = DEFAULT_CONCEPT_PATH,
     num_classes: int = 9,
-    n_concepts: int = 61,
+    n_concepts: int = 49,
     concept_weight: float = 0.1,
     batch_size: int = 64,
     num_workers: int = 2,
