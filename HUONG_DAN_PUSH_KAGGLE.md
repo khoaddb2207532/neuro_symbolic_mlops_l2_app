@@ -15,17 +15,19 @@ kaggle --version
 
 ## 2. Lấy token của 5 account
 
-Với mỗi account: đăng nhập Kaggle → **Settings** → **API** → **Create New Token**. Ghi lại `username` và `key`.
+Với mỗi account: đăng nhập Kaggle → https://www.kaggle.com/settings/api → mục **API** → bấm **Generate New Token**. Sao chép chuỗi token hiện ra (chỉ hiện một lần, hãy lưu ngay). Cùng với **username** của account đó (phần cuối URL hồ sơ `kaggle.com/<username>`).
+
+Kaggle CLI bản mới dùng token này qua biến `KAGGLE_API_TOKEN`; cặp `KAGGLE_USERNAME` + `KAGGLE_KEY` kiểu cũ sẽ báo lỗi "Authentication required".
 
 ## 3. Tạo `accounts.json` ở thư mục gốc repo
 
 ```json
 [
-  {"username": "acc1", "key": "KEY1"},
-  {"username": "acc2", "key": "KEY2"},
-  {"username": "acc3", "key": "KEY3"},
-  {"username": "acc4", "key": "KEY4"},
-  {"username": "acc5", "key": "KEY5"}
+  {"username": "acc1", "token": "TOKEN1"},
+  {"username": "acc2", "token": "TOKEN2"},
+  {"username": "acc3", "token": "TOKEN3"},
+  {"username": "acc4", "token": "TOKEN4"},
+  {"username": "acc5", "token": "TOKEN5"}
 ]
 ```
 
@@ -107,7 +109,10 @@ if args.dry_run:
 failed = []
 for acc, nb in jobs:
     slug = nb.stem.lower().replace("_", "-")
-    env = {**os.environ, "KAGGLE_USERNAME": acc["username"], "KAGGLE_KEY": acc["key"]}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_API_TOKEN")}
+    env["KAGGLE_API_TOKEN"] = acc["token"]
+    env["KAGGLE_USERNAME"] = acc["username"]
     print(f"\n[{acc['username']}] {slug}")
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
@@ -181,4 +186,11 @@ python scripts/push_kaggle.py
 - **Dataset:** đã share nên 4 account còn lại gắn được `dangduykhoab2207532/mykhmer`. Đường dẫn `/kaggle/input/datasets/dangduykhoab2207532/mykhmer/...` giữ nguyên.
 - **`n_concepts` lệch trong script sinh notebook:** hàm mặc định `49`, tham số dòng lệnh `--n-concepts` mặc định `61`. `generate_all.py` truyền rõ `61`; hãy chắc `image_concepts.json` đúng 61 concept.
 - **Bảo mật:** không commit `accounts.json`; nếu lỡ lộ key, tạo lại token trên Kaggle (Create New Token vô hiệu key cũ).
-- **Xác thực:** nếu CLI báo lỗi với `KAGGLE_USERNAME`/`KAGGLE_KEY`, kiểm tra tài liệu phiên bản CLI bạn cài, vì Kaggle có thể đã đổi kiểu token.
+- **Xác thực:** CLI bản mới dùng `KAGGLE_API_TOKEN`. Script đã xóa các biến Kaggle cũ trong môi trường trước khi đặt token của từng account. Đừng chạy `kaggle auth login` hay lưu `~/.kaggle/access_token` trên máy này, vì thông tin đăng nhập lưu sẵn có thể làm các lần đẩy dính vào một account duy nhất.
+- **Kiểm tra token từng account** trước khi đẩy:
+  ```
+  # Windows (cmd)
+  set KAGGLE_API_TOKEN=TOKEN1
+  kaggle kernels list --mine
+  ```
+  (Linux/macOS dùng `export KAGGLE_API_TOKEN=TOKEN1`). Liệt kê được mà không báo lỗi là token đúng.

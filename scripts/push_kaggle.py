@@ -43,7 +43,10 @@ if args.dry_run:
 failed = []
 for acc, nb in jobs:
     slug = nb.stem.lower().replace("_", "-")
-    env = {**os.environ, "KAGGLE_USERNAME": acc["username"], "KAGGLE_KEY": acc["key"]}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_API_TOKEN")}
+    env["KAGGLE_API_TOKEN"] = acc["token"]
+    env["KAGGLE_USERNAME"] = acc["username"]
     print(f"\n[{acc['username']}] {slug}")
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
