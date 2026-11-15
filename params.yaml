@@ -33,7 +33,11 @@ rule_penalty:
   target_model: "cbm"                  # "cbm" hoặc "baseline"
   weight: 0.1
   smoothing: 0.1
-  initial_temp: 2.0
+  lr_backbone: !!float 1e-5            # LR Stage 5 (CBM): nhỏ hơn Stage 1b để penalty không phá concept đã học; khoảng 1e-5..1e-4
+  lr_head: !!float 1e-4
+  # concept_weight: 0.5                # bỏ trống = dùng cbm.concept_weight
+  penalty_off_epochs: 3                # số epoch đầu TẮT rule penalty (chỉ CE + concept BCE); 0 = bật ngay
+  initial_temp: 6.0                    # T khởi đầu (sigmoid(T·(p-ngưỡng))); cao hơn = khớp luật gần "cứng" hơn. Cũ: 2.0
   final_temp: 12.0
   temp_warmup_epochs: 2
   temp_anneal_epochs: 10
@@ -54,7 +58,7 @@ cbm:
   concept_weight: 0.5                     # λ: trọng số concept loss; sweep 0.5–5 bằng experiments/sweep_concept_weight.py
   concept_pos_weight: auto                # auto | null: pos_weight theo concept từ tập train (bù mất cân bằng)
   concept_pos_weight_max: 20.0            # kẹp pos_weight để concept hiếm không làm loss bùng nổ
-  two_stage: true                         # giai đoạn 1 đóng băng backbone, giai đoạn 2 mở backbone
+  two_stage: false                         # giai đoạn 1 đóng băng backbone, giai đoạn 2 mở backbone
   stage1_epochs: 5                        # số epoch giai đoạn 1 (phải < num_epochs)
   freeze_backbone: false                  # true = chỉ train concept layer + predictor
   smoothing: 0.1

@@ -1,24 +1,30 @@
-"""Stage 5 — Fine-tune lại CNN với rule penalty (vectorized) từ luật đã chọn.
+"""Stage 5 — Fine-tune lại mô hình với rule penalty (vectorized) từ luật đã chọn.
 
-Ở stage này model full fine-tune với differential LR cố định và khởi động
-lại từ baseline đã hội tụ
-(baseline_best.pth từ stage 1), KHÔNG khởi tạo lại từ ImageNet — vì mục tiêu
-bây giờ là tinh chỉnh sâu hơn có ràng buộc luật dựa trên những gì baseline đã
-học được.
+Hai đích (``rule_penalty.target_model``):
+  - ``cbm``: dùng lại ``train_cbm`` (src/training/cbm_trainer.py) nên loss giữ đủ ba phần
+        Loss = CE + λ_concept·BCE(concept) + λ_rule·RulePenalty
+    LR nhỏ (``rule_penalty.lr_backbone`` / ``lr_head``, mặc định 1e-5 / 1e-4), ``penalty_off_epochs``
+    epoch đầu tắt penalty rồi bật với T khởi đầu ``initial_temp`` (xem params.yaml).
+  - ``baseline``: như cũ, ``train_model`` với CE + penalty, khởi động từ baseline_best.pth
+    (KHÔNG khởi tạo lại từ ImageNet).
 """
 import argparse
 import hashlib
 import json
 import os
 import pickle
+from typing import Any, cast
 
 import torch
 
+from pipelines.stage1b_train_cbm import resolve_pos_weight, wrap_with_concepts
 from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
 from src.models.cbm import ConceptBottleneckModel
 from src.models.cnn import ImageClassificationBaseline
+from src.rules.penalty import VectorizedRulePenalty
 from src.rules.rule_types import RuleSet
+from src.training.cbm_trainer import train_cbm
 from src.training.trainer import train_model
 from src.utils.checkpoint import load_model_weights
 from src.utils.config import (
@@ -38,6 +44,148 @@ def _sha256_file(path: str) -> str:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _load_json_object(path: str) -> dict[str, Any]:
+    """Đọc JSON và bảo đảm gốc là object (ranh giới kiểu duy nhất của file này)."""
+    with open(path, "r", encoding="utf-8") as file:
+        raw: object = json.load(file)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} phải chứa một JSON object, nhận {type(raw).__name__}.")
+    return cast(dict[str, Any], raw)
+
+
+class _CBMEvalAdapter(torch.nn.Module):
+    """evaluate_model_performance cần model(x) -> (logits, features); CBM trả thêm raw_features."""
+
+    def __init__(self, cbm: torch.nn.Module) -> None:
+        super().__init__()
+        self.cbm = cbm
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        logits, concept_probs, _ = self.cbm(x)
+        return logits, concept_probs
+
+
+def _train_cbm_with_rules(
+    params: dict[str, Any],
+    rule_set: RuleSet,
+    selected_rules_sha256: str,
+    dataloaders: dict[str, Any],
+    test_loader: Any,
+    class_names: list[str],
+    save_dir: str,
+    device: str,
+) -> None:
+    """Fine-tune CBM bằng ``train_cbm``: CE + λ_concept·BCE + rule penalty, LR nhỏ."""
+    rule_cfg: dict[str, Any] = params["rule_penalty"]
+    cbm_cfg: dict[str, Any] = params.get("cbm", {})
+    architecture = selected_baseline_architecture(params)
+
+    cbm_dir = os.path.join(params["output_dir"], "cbm")
+    metadata_path = os.path.join(cbm_dir, "cbm_metadata.json")
+    meta: dict[str, Any] = _load_json_object(metadata_path) if os.path.exists(metadata_path) else {}
+    arch = str(meta.get("architecture", architecture))
+    n_concepts = int(meta.get("n_concepts", cbm_cfg.get("n_concepts", 30)))
+
+    # Dataloader có concept target (cùng nguồn nhãn với Stage 1b) để giữ được concept loss.
+    wrapped, concept_names, wrapped_n_concepts = wrap_with_concepts(
+        dataloaders, params, class_names, cbm_dir
+    )
+    if wrapped_n_concepts != n_concepts:
+        raise ValueError(
+            f"Số concept trong annotations ({wrapped_n_concepts}) khác checkpoint CBM "
+            f"({n_concepts}); luật Stage 3 đánh chỉ số theo concept nên không được lệch."
+        )
+    concept_pos_weight = resolve_pos_weight(cbm_cfg, wrapped["train"].dataset)
+
+    cbm_ckpt = os.path.join(cbm_dir, "cbm_best.pth")
+    if not os.path.exists(cbm_ckpt):
+        cbm_ckpt = os.path.join(cbm_dir, "final_model_weights.pth")
+    model = ConceptBottleneckModel(
+        architecture=arch,
+        n_concepts=n_concepts,
+        num_classes=params["num_classes"],
+        pretrained=False,
+        concept_names=concept_names,
+    )
+    load_model_weights(model, cbm_ckpt, device, required=True)
+
+    lr_backbone = float(rule_cfg.get("lr_backbone", 1e-5))
+    lr_head = float(rule_cfg.get("lr_head", 1e-4))
+    concept_weight = float(rule_cfg.get("concept_weight", cbm_cfg.get("concept_weight", 1.0)))
+    off_epochs = int(rule_cfg.get("penalty_off_epochs", 0))
+    # Early stopping chỉ được tính sau khi penalty đã bật đủ min_epochs epoch.
+    min_epochs = off_epochs + int(rule_cfg.get("min_epochs_before_early_stop", 12))
+
+    penalty_module = VectorizedRulePenalty(
+        rule_set,
+        penalty_weight=float(rule_cfg["weight"]),
+        use_confidence=True,
+        smoothing=float(rule_cfg["smoothing"]),
+        num_classes=int(params["num_classes"]),
+        initial_temp=float(rule_cfg["initial_temp"]),
+        final_temp=float(rule_cfg["final_temp"]),
+        temp_warmup_epochs=int(rule_cfg.get("temp_warmup_epochs", 2)),
+        temp_anneal_epochs=int(rule_cfg.get("temp_anneal_epochs", 10)),
+    )
+    logger.info(
+        "Stage 5 (CBM): %d luật | λ_concept=%.2f λ_rule=%.3f | lr_backbone=%.1e lr_head=%.1e | "
+        "tắt penalty %d epoch đầu, T %.1f→%.1f | từ %s",
+        len(rule_set), concept_weight, float(rule_cfg["weight"]), lr_backbone, lr_head,
+        off_epochs, float(rule_cfg["initial_temp"]), float(rule_cfg["final_temp"]), cbm_ckpt,
+    )
+
+    train_cfg: dict[str, Any] = {
+        "lr_backbone": lr_backbone,
+        "lr_head": lr_head,
+        "weight_decay": params["weight_decay"],
+        "monitor_metric": params.get("monitor_metric", "val_loss"),
+        "save_dir": save_dir,
+    }
+    model, history = train_cbm(
+        model=model,
+        train_loader=wrapped["train"],
+        val_loader=wrapped["val"],
+        num_epochs=params["num_epochs"],
+        lr=lr_head,
+        patience=params["patience"],
+        device=device,
+        concept_weight=concept_weight,
+        smoothing=float(rule_cfg["smoothing"]),
+        num_classes=int(params["num_classes"]),
+        min_epochs_before_early_stop=min_epochs,
+        config=train_cfg,
+        concept_pos_weight=concept_pos_weight,
+        two_stage=False,
+        penalty_module=penalty_module,
+        penalty_off_epochs=off_epochs,
+        ckpt_filename="rule_regularized_best.pth",
+    )
+
+    with open(os.path.join(save_dir, "history.json"), "w", encoding="utf-8") as file:
+        json.dump(history, file, ensure_ascii=False, indent=2)
+    with open(os.path.join(save_dir, "rule_regularized_metadata.json"), "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "architecture": arch,
+                "n_concepts": n_concepts,
+                "n_rules": len(rule_set),
+                "selected_rules_sha256": selected_rules_sha256,
+                "concept_weight": concept_weight,
+                "lr_backbone": lr_backbone,
+                "lr_head": lr_head,
+                "penalty_off_epochs": off_epochs,
+                "rule_penalty": dict(rule_cfg),
+            },
+            file, ensure_ascii=False, indent=2,
+        )
+
+    evaluate_model_performance(
+        _CBMEvalAdapter(model), test_loader, device, class_names,
+        title="Rule-Regularized CBM Performance", output_dir=save_dir,
+    )
+    plot_training_history(history, save_dir=save_dir, title_suffix="Rule-Regularized CBM")
 
 
 def main(params_path: str, target_override: str = None) -> None:
@@ -64,40 +212,21 @@ def main(params_path: str, target_override: str = None) -> None:
     architecture = selected_baseline_architecture(params)
 
     if target_model == "cbm":
-        cbm_dir = os.path.join(params["output_dir"], "cbm")
-        metadata_path = os.path.join(cbm_dir, "cbm_metadata.json")
-        concept_names = None
-        n_concepts = params.get("cbm", {}).get("n_concepts", 30)
-        arch = architecture
-        if os.path.exists(metadata_path):
-            with open(metadata_path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-            concept_names = meta.get("concept_names")
-            n_concepts = meta.get("n_concepts", n_concepts)
-            arch = meta.get("architecture", arch)
-
-        cbm_ckpt = os.path.join(cbm_dir, "cbm_best.pth")
-        if not os.path.exists(cbm_ckpt):
-            cbm_ckpt = os.path.join(cbm_dir, "final_model_weights.pth")
-
-        model = ConceptBottleneckModel(
-            architecture=arch,
-            n_concepts=n_concepts,
-            num_classes=params["num_classes"],
-            pretrained=False,
-            concept_names=concept_names,
+        _train_cbm_with_rules(
+            params, rule_set, _sha256_file(os.path.join(filtered_dir, "selected_rules.pkl")),
+            dataloaders, test_loader, class_names, save_dir, device,
         )
-        load_model_weights(model, cbm_ckpt, device, required=True)
-        logger.info("Fine-tune CBM với Rule Penalty (n_concepts=%d) từ %s", n_concepts, cbm_ckpt)
-    else:
-        model = ImageClassificationBaseline(
-            architecture=architecture,
-            num_classes=params["num_classes"],
-            pretrained=False,
-        )
-        baseline_ckpt = selected_baseline_checkpoint(params)
-        load_model_weights(model, baseline_ckpt, device, required=True)
-        logger.info("Fine-tune Baseline CNN với Rule Penalty từ %s", baseline_ckpt)
+        logger.info("Stage 5 hoàn thành (CBM + rule penalty).")
+        return
+
+    model = ImageClassificationBaseline(
+        architecture=architecture,
+        num_classes=params["num_classes"],
+        pretrained=False,
+    )
+    baseline_ckpt = selected_baseline_checkpoint(params)
+    load_model_weights(model, baseline_ckpt, device, required=True)
+    logger.info("Fine-tune Baseline CNN với Rule Penalty từ %s", baseline_ckpt)
 
     train_cfg = {
         "lr_backbone": params["transfer_learning"]["lr_backbone"],

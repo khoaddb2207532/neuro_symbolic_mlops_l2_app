@@ -38,7 +38,7 @@ from src.utils.seed import set_seed
 logger = get_logger(__name__)
 
 
-def _wrap_with_concepts(
+def wrap_with_concepts(
     dataloaders: dict,
     params: dict,
     class_names: list,
@@ -125,7 +125,7 @@ def _wrap_with_concepts(
     return wrapped, concept_names, n_concepts
 
 
-def _resolve_pos_weight(
+def resolve_pos_weight(
     cbm_cfg: dict,
     train_dataset: torch.utils.data.Dataset,
 ) -> Optional[np.ndarray]:
@@ -173,7 +173,7 @@ def main(params_path: str) -> None:
     os.makedirs(save_dir, exist_ok=True)
 
     # Wrap dataloaders với concept annotations
-    wrapped_loaders, concept_names, n_concepts = _wrap_with_concepts(
+    wrapped_loaders, concept_names, n_concepts = wrap_with_concepts(
         dataloaders, params, class_names, save_dir,
     )
 
@@ -207,7 +207,7 @@ def main(params_path: str) -> None:
         "save_dir": save_dir,
     }
 
-    concept_pos_weight = _resolve_pos_weight(cbm_cfg, wrapped_loaders["train"].dataset)
+    concept_pos_weight = resolve_pos_weight(cbm_cfg, wrapped_loaders["train"].dataset)
     two_stage = bool(cbm_cfg.get("two_stage", False))
     stage1_epochs = int(cbm_cfg.get("stage1_epochs", 0))
 
