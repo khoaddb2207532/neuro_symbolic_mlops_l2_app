@@ -1,6 +1,8 @@
-# Hướng dẫn đẩy notebook lên nhiều account Kaggle (chạy local)
+# Hướng dẫn chia 10 notebook lên 5 account Kaggle (chạy local)
 
-Mục tiêu: sau khi đã test notebook xong, chạy **một lệnh** để đẩy toàn bộ notebook trong `generated_cbm_notebooks/` lên **5 account Kaggle**. Không tự động đẩy khi commit; chỉ đẩy khi bạn gõ lệnh.
+Mục tiêu: sinh 10 notebook (5 backbone × 2 cặp seed), sau khi test xong thì chạy **một lệnh** để **chia đều lên 5 account, mỗi account 2 notebook**. Không tự động đẩy khi commit; chỉ đẩy khi bạn gõ lệnh.
+
+Tổng cộng chỉ có **10 lần chạy** trên Kaggle (mỗi notebook đúng 1 account), nên quota GPU của mỗi account chỉ phải gánh 2 notebook.
 
 ---
 
@@ -13,7 +15,7 @@ kaggle --version
 
 ## 2. Lấy token của 5 account
 
-Với mỗi account: đăng nhập Kaggle → **Settings** → **API** → **Create New Token**. Ghi lại `username` và `key` của từng account.
+Với mỗi account: đăng nhập Kaggle → **Settings** → **API** → **Create New Token**. Ghi lại `username` và `key`.
 
 ## 3. Tạo `accounts.json` ở thư mục gốc repo
 
@@ -33,15 +35,39 @@ Với mỗi account: đăng nhập Kaggle → **Settings** → **API** → **Cre
 accounts.json
 ```
 
-## 4. Tạo `scripts/push_kaggle.py`
+Thứ tự trong file này quyết định notebook nào vào account nào, nên đừng đổi thứ tự sau khi đã đẩy.
+
+## 4. Sinh 10 notebook: `scripts/generate_all.py`
 
 ```python
-"""Đẩy các notebook trong generated_cbm_notebooks/ lên nhiều account Kaggle.
+import subprocess, sys
 
-  python scripts/push_kaggle.py                      # tất cả notebook, tất cả account
-  python scripts/push_kaggle.py seeds_42_44          # chỉ notebook có tên chứa chuỗi này
-  python scripts/push_kaggle.py --accounts acc1      # chỉ 1 account (để thử trước)
-  python scripts/push_kaggle.py --dry-run            # xem sẽ đẩy gì, chưa đẩy thật
+BACKBONES = ["alexnet", "mobilenetv3_small", "resnet50", "swin_t", "vit_b_32"]
+SEED_PAIRS = [(42, 44), (46, 48)]   # đổi nếu bạn dùng cặp seed khác
+
+for bb in BACKBONES:
+    for a, b in SEED_PAIRS:
+        subprocess.run(
+            [sys.executable, "scripts/generate_cbm_kaggle_notebook.py",
+             "--backbone", bb, "--seeds", str(a), str(b),
+             "--n-concepts", "61"],
+            check=True,
+        )
+```
+
+Chạy: `python scripts/generate_all.py`. Kết quả là 10 file trong `generated_cbm_notebooks/`.
+
+## 5. Script chia và đẩy: `scripts/push_kaggle.py`
+
+Cách chia: sắp xếp 10 notebook theo tên rồi chia thành các khối liên tiếp, mỗi account một khối. Tên file bắt đầu bằng backbone nên mỗi account nhận đúng **một backbone với cả hai cặp seed**. Cách chia này cố định, nên đẩy lại một notebook thì nó luôn về đúng account cũ.
+
+```python
+"""Chia đều các notebook trong generated_cbm_notebooks/ lên các account Kaggle.
+
+  python scripts/push_kaggle.py --dry-run            # xem bảng phân công, chưa đẩy
+  python scripts/push_kaggle.py                      # đẩy tất cả theo phân công
+  python scripts/push_kaggle.py resnet50             # chỉ đẩy notebook có tên chứa chuỗi này
+  python scripts/push_kaggle.py --accounts acc1      # chỉ đẩy phần của acc1 (để thử trước)
 """
 import argparse, json, os, shutil, subprocess, tempfile
 from pathlib import Path
@@ -51,92 +77,108 @@ DATASET = "dangduykhoab2207532/mykhmer"
 
 p = argparse.ArgumentParser()
 p.add_argument("names", nargs="*", help="lọc notebook theo chuỗi con của tên file")
-p.add_argument("--accounts", nargs="*", help="chỉ đẩy lên các username này")
+p.add_argument("--accounts", nargs="*", help="chỉ đẩy phần của các username này")
 p.add_argument("--dry-run", action="store_true")
 args = p.parse_args()
 
 accounts = json.loads(Path("accounts.json").read_text(encoding="utf-8"))
-if args.accounts:
-    accounts = [a for a in accounts if a["username"] in args.accounts]
+all_nbs = sorted(NB_DIR.glob("*.ipynb"))
 
-notebooks = [f for f in sorted(NB_DIR.glob("*.ipynb"))
-             if not args.names or any(n in f.stem for n in args.names)]
+# Phân công dựa trên TOÀN BỘ danh sách để không đổi khi bạn lọc
+base, extra = divmod(len(all_nbs), len(accounts))
+assignment, start = [], 0
+for i, acc in enumerate(accounts):
+    n = base + (1 if i < extra else 0)
+    for nb in all_nbs[start:start + n]:
+        assignment.append((acc, nb))
+    start += n
 
-print(f"{len(notebooks)} notebook x {len(accounts)} account = {len(notebooks) * len(accounts)} lần đẩy")
+# Lọc theo yêu cầu
+jobs = [(a, nb) for a, nb in assignment
+        if (not args.names or any(s in nb.stem for s in args.names))
+        and (not args.accounts or a["username"] in args.accounts)]
+
+print(f"{len(all_nbs)} notebook / {len(accounts)} account. Sẽ đẩy {len(jobs)}:")
+for a, nb in jobs:
+    print(f"  {a['username']:<15} <- {nb.name}")
+if args.dry_run:
+    raise SystemExit(0)
+
 failed = []
-
-for acc in accounts:
+for acc, nb in jobs:
+    slug = nb.stem.lower().replace("_", "-")
     env = {**os.environ, "KAGGLE_USERNAME": acc["username"], "KAGGLE_KEY": acc["key"]}
-    for nb in notebooks:
-        slug = nb.stem.lower().replace("_", "-")
-        print(f"[{acc['username']}] {slug}")
-        if args.dry_run:
-            continue
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            shutil.copy(nb, work / nb.name)
-            meta = {
-                "id": f"{acc['username']}/{slug}",
-                "title": slug,
-                "code_file": nb.name,
-                "language": "python",
-                "kernel_type": "notebook",
-                "is_private": True,
-                "enable_gpu": True,
-                "enable_internet": True,   # notebook cần git clone repo
-                "dataset_sources": [DATASET],
-                "competition_sources": [],
-            }
-            (work / "kernel-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-            r = subprocess.run(["kaggle", "kernels", "push", "-p", str(work)], env=env)
-            if r.returncode != 0:
-                failed.append(f"{acc['username']}/{slug}")
+    print(f"\n[{acc['username']}] {slug}")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        shutil.copy(nb, work / nb.name)
+        meta = {
+            "id": f"{acc['username']}/{slug}",
+            "title": slug,
+            "code_file": nb.name,
+            "language": "python",
+            "kernel_type": "notebook",
+            "is_private": True,
+            "enable_gpu": True,
+            "enable_internet": True,   # notebook cần git clone repo
+            "dataset_sources": [DATASET],
+            "competition_sources": [],
+        }
+        (work / "kernel-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        r = subprocess.run(["kaggle", "kernels", "push", "-p", str(work)], env=env)
+        if r.returncode != 0:
+            failed.append(f"{acc['username']}/{slug}")
 
 if failed:
-    print("LỖI:", *failed, sep="\n  ")
+    print("\nLỖI:", *failed, sep="\n  ")
     raise SystemExit(1)
-print("Xong.")
+print("\nXong.")
 ```
 
-## 5. Quy trình làm việc
+Với 10 notebook và 5 account, bảng phân công sẽ là:
+
+| Account | Notebook |
+|---|---|
+| acc1 | alexnet, seeds 42_44 và 46_48 |
+| acc2 | mobilenetv3_small, seeds 42_44 và 46_48 |
+| acc3 | resnet50, seeds 42_44 và 46_48 |
+| acc4 | swin_t, seeds 42_44 và 46_48 |
+| acc5 | vit_b_32, seeds 42_44 và 46_48 |
+
+## 6. Quy trình làm việc
 
 ```
-# 1. Sinh notebook bằng script có sẵn (lặp cho đủ 10 notebook, đổi --backbone / --seeds)
-python scripts/generate_cbm_kaggle_notebook.py --seeds 42 44
-python scripts/generate_cbm_kaggle_notebook.py --seeds 46 48
+# 1. Sinh 10 notebook
+python scripts/generate_all.py
 
-# 2. Test trên 1 account (xem mục 6)
+# 2. Test từng notebook trước (xem mục 7)
 
-# 3. Khi đã ổn, đẩy lên cả 5 account
+# 3. Xem bảng phân công
+python scripts/push_kaggle.py --dry-run
+
+# 4. Đẩy thật, chia đều lên 5 account
 python scripts/push_kaggle.py
 ```
 
-## 6. Test an toàn trước khi đẩy hàng loạt
+## 7. Test an toàn trước khi đẩy
 
-1. Xem trước, chưa đẩy thật:
-   ```
-   python scripts/push_kaggle.py --dry-run
-   ```
-2. Đẩy thử 1 notebook lên 1 account:
-   ```
-   python scripts/push_kaggle.py seeds_42_44 --accounts acc1
-   ```
+1. Xem bảng phân công, chưa đẩy: `python scripts/push_kaggle.py --dry-run`
+2. Đẩy thử phần của 1 account: `python scripts/push_kaggle.py --accounts acc1`
 3. Kiểm tra trạng thái:
    ```
-   kaggle kernels status acc1/dual-gpu-cbm-mobilenetv3-small-seeds-42-44
+   kaggle kernels status acc1/dual-gpu-cbm-alexnet-seeds-42-44
    ```
-   Trạng thái: `queued` → `running` → `complete` (hoặc `error`). Mở log trên web để xác nhận chạy đúng, đủ 2 GPU, rồi mới đẩy toàn bộ.
+   Trạng thái: `queued` → `running` → `complete` (hoặc `error`). Mở log trên web, xác nhận chạy đúng và đủ 2 GPU, rồi mới đẩy phần còn lại.
 
 ---
 
 ## Lưu ý quan trọng
 
-- **Đẩy là chạy luôn:** `kaggle kernels push` lưu phiên bản mới *và* kích hoạt chạy. CLI không có tùy chọn "chỉ lưu". Đẩy đủ 10 × 5 = 50 phiên chạy, tốn quota GPU hằng tuần của từng account và có thể phải xếp hàng.
-- **Giảm lãng phí:** đẩy riêng notebook vừa sửa (`python scripts/push_kaggle.py <chuỗi-tên>`), và luôn thử 1 account trước.
-- **Hủy phiên chạy:** CLI không có lệnh hủy; vào trang notebook trên web và bấm dừng.
-- **GPU T4 x2:** `"enable_gpu": true` có thể không đảm bảo đúng 2 GPU. Ở lần chạy thử, kiểm tra log `torch.cuda.device_count()` bằng 2. Nếu không, kiểm tra `kaggle kernels push -h` xem có tùy chọn accelerator không, hoặc chọn T4 x2 thủ công trên web một lần.
-- **Dataset:** đã share nên 4 account còn lại gắn được `dangduykhoab2207532/mykhmer`. Đường dẫn `/kaggle/input/datasets/dangduykhoab2207532/mykhmer/...` trong notebook giữ nguyên cho mọi account.
-- **`n_concepts` lệch trong script sinh notebook:** hàm mặc định là `49`, tham số dòng lệnh `--n-concepts` mặc định là `61`. Chạy bằng CLI thực tế dùng `61`. Hãy chắc `image_concepts.json` đúng 61 concept, hoặc thống nhất lại hai giá trị.
-- **Tên notebook không trùng:** slug lấy từ tên file (đã chứa backbone và cặp seed). Push lên notebook đã tồn tại sẽ tạo phiên bản mới, không tạo bản trùng.
-- **Bảo mật:** không commit `accounts.json`; nếu lỡ lộ key, vào Kaggle tạo lại token (Create New Token sẽ vô hiệu key cũ).
+- **Đẩy là chạy luôn:** `kaggle kernels push` lưu phiên bản mới *và* kích hoạt chạy; CLI không có tùy chọn "chỉ lưu". Hủy phiên chạy phải làm trên web.
+- **Đẩy lại sau khi sửa:** `python scripts/push_kaggle.py swin_t` chỉ đẩy các notebook swin_t, về đúng account cũ và tạo phiên bản mới (không tạo bản trùng).
+- **GPU T4 x2:** `"enable_gpu": true` có thể không đảm bảo đúng 2 GPU. Ở lần chạy thử, kiểm tra log `torch.cuda.device_count()` bằng 2. Nếu không, xem `kaggle kernels push -h` có tùy chọn accelerator không, hoặc chọn T4 x2 thủ công trên web một lần.
+- **Backbone nặng:** `swin_t`, `vit_b_32`, `resnet50` có thể cần `--batch-size 32` nếu hết VRAM; thêm tham số này vào `generate_all.py` cho các backbone đó.
+- **Dataset:** đã share nên 4 account còn lại gắn được `dangduykhoab2207532/mykhmer`. Đường dẫn `/kaggle/input/datasets/dangduykhoab2207532/mykhmer/...` giữ nguyên.
+- **`n_concepts` lệch trong script sinh notebook:** hàm mặc định `49`, tham số dòng lệnh `--n-concepts` mặc định `61`. `generate_all.py` truyền rõ `61`; hãy chắc `image_concepts.json` đúng 61 concept.
+- **Bảo mật:** không commit `accounts.json`; nếu lỡ lộ key, tạo lại token trên Kaggle (Create New Token vô hiệu key cũ).
 - **Xác thực:** nếu CLI báo lỗi với `KAGGLE_USERNAME`/`KAGGLE_KEY`, kiểm tra tài liệu phiên bản CLI bạn cài, vì Kaggle có thể đã đổi kiểu token.
