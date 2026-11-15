@@ -11,3 +11,4 @@ joblib
 openpyxl
 pyyaml
 pytest
+kaggle
