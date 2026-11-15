@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from src.rules.temperature import geometric_temperature
+from src.rules.temperature import geometric_temperature, penalty_phase
 
 
 def test_geometric_temperature_warmup_anneal_and_hold():
@@ -49,3 +49,29 @@ def test_geometric_temperature_uses_multiplicative_progress():
 def test_geometric_temperature_rejects_invalid_schedule(kwargs):
     with pytest.raises(ValueError):
         geometric_temperature(epoch=0, **kwargs)
+
+
+def test_penalty_phase_off_then_on_with_local_epoch():
+    phases = [penalty_phase(epoch, off_epochs=3) for epoch in range(6)]
+
+    assert phases[:3] == [(False, 0), (False, 0), (False, 0)]
+    assert phases[3:] == [(True, 0), (True, 1), (True, 2)]
+
+
+def test_penalty_phase_zero_off_epochs_is_always_active():
+    assert [penalty_phase(e, 0) for e in range(3)] == [(True, 0), (True, 1), (True, 2)]
+
+
+def test_penalty_phase_restarts_temperature_at_initial_value():
+    _, local = penalty_phase(5, off_epochs=5)
+    temp = geometric_temperature(
+        epoch=local, initial_temp=6.0, final_temp=12.0, warmup_epochs=2, anneal_epochs=10
+    )
+
+    assert temp == pytest.approx(6.0)
+
+
+@pytest.mark.parametrize("epoch,off", [(-1, 0), (0, -1)])
+def test_penalty_phase_rejects_negative(epoch: int, off: int):
+    with pytest.raises(ValueError):
+        penalty_phase(epoch, off)

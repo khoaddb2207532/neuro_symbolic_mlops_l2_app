@@ -37,7 +37,7 @@ def load_model_weights(model: nn.Module, path: str, device, required: bool = Fal
         if required:
             raise FileNotFoundError(
                 f"{msg} Bắt buộc phải có checkpoint này (required=True) — "
-                "hãy chạy stage trước đó (vd `dvc repro train_baseline`) trước."
+                "hãy chạy stage huấn luyện baseline trước."
             )
         logger.warning("%s Bỏ qua — model giữ nguyên trọng số khởi tạo hiện tại.", msg)
         return False

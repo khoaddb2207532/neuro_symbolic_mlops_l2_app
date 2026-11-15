@@ -1,7 +1,7 @@
 """
 Sweep hyperparameter 3 giai đoạn cho GFlowNet rule selection, dùng Optuna.
 
-KHÔNG phải DVC/pipeline stage chính thức — đây là script thử nghiệm để TÌM
+Không phải pipeline stage chính thức — đây là script thử nghiệm để TÌM
 bộ tham số tốt, sau đó ghi ngược vào params.yaml["gflownet"] để stage4 đọc.
 
 Chạy:

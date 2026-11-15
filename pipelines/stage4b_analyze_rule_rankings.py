@@ -1,4 +1,4 @@
-"""DVC Stage 4b — Phân tích SAU KHI GFlowNet đã train xong (KHÔNG train lại
+"""Stage 4b — Phân tích SAU KHI GFlowNet đã train xong (KHÔNG train lại
 bất kỳ tham số nào, chỉ nạp checkpoint sampler để sample).
 
   1. Sample K trajectory từ policy đã train.

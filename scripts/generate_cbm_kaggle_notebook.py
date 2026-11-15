@@ -25,14 +25,14 @@ def generate_dual_gpu_notebook(
     data_dir: str = DEFAULT_DATASET,
     concept_annotations_path: str = DEFAULT_CONCEPT_PATH,
     num_classes: int = 9,
-    n_concepts: int = 61,
+    n_concepts: int = 54,
     concept_weight: float = 0.1,
     batch_size: int = 64,
     num_workers: int = 2,
     num_epochs: int = 50,
     patience: int = 5,
     git_repo: str = "https://github.com/khoaddb2207532/neuro_symbolic_mlops_l2_app.git",
-    git_branch: str = "main",
+    git_branch: str = "cbm",
 ) -> Path:
     if not template_path.exists():
         raise FileNotFoundError(f"Không tìm thấy template tại: {template_path}")
@@ -84,20 +84,20 @@ def main():
     parser.add_argument("--data-dir", default=DEFAULT_DATASET)
     parser.add_argument("--concept-path", default=DEFAULT_CONCEPT_PATH)
     parser.add_argument("--num-classes", type=int, default=9)
-    parser.add_argument("--n-concepts", type=int, default=61)
-    parser.add_argument("--concept-weight", type=float, default=0.1)
+    parser.add_argument("--n-concepts", type=int, default=49)
+    parser.add_argument("--concept-weight", type=float, default=0.5)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--git-repo", default="https://github.com/khoaddb2207532/neuro_symbolic_mlops_l2_app.git")
-    parser.add_argument("--git-branch", default="main")
+    parser.add_argument("--git-branch", default="cbm")
 
     args = parser.parse_args()
     template_path = Path(args.template)
     out_dir = Path(args.output_dir)
 
-    out_file = out_dir / f"dual_gpu_cbm_{args.backbone}_seeds_{args.seeds[0]}_{args.seeds[1]}.ipynb"
+    out_file = out_dir / f"cbm_{args.backbone}_seeds_{args.seeds[0]}_{args.seeds[1]}.ipynb"
     generate_dual_gpu_notebook(
         template_path=template_path,
         output_path=out_file,

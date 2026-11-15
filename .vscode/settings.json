@@ -1,7 +1,4 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:venv",
-    "python-envs.defaultPackageManager": "ms-python.python:pip",
-    "dvc.relink": false,
-    "dvc.trackLivePlots": false,
-    "dvc.showExperimentalFeatures": false
+    "python-envs.defaultPackageManager": "ms-python.python:pip"
 }

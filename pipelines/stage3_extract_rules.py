@@ -1,4 +1,4 @@
-"""DVC Stage 3 — Huấn luyện Random Forest (1 lần duy nhất), trích luật thô,
+"""Stage 3 — Huấn luyện Random Forest (1 lần duy nhất), trích luật thô,
 lọc luật bằng val set thật (không còn train lại RF trong bước lọc — xem
 src/rules/validator.py và src/data/features.py để biết lý do đã gộp)."""
 import argparse

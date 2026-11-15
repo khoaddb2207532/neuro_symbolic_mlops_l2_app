@@ -37,7 +37,8 @@ def _run_worker(
     base_config_path: str,
     output_root: str,
     skip_baseline: bool,
-    results: dict,
+    skip_controls: bool,
+    results: dict[int, dict[str, object]],
 ) -> None:
     seed_output_dir = os.path.join(output_root, f"outputs_seed_{seed}")
     os.makedirs(seed_output_dir, exist_ok=True)
@@ -59,10 +60,7 @@ def _run_worker(
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     env["PYTHONUNBUFFERED"] = "1"
-    env["DISABLE_DVCLIVE"] = "1"
     env["PYTHONWARNINGS"] = "ignore"
-    env["DVCLIVE_LOGLEVEL"] = "ERROR"
-    env["DVC_NO_ANALYTICS"] = "1"
 
     cmd = [
         sys.executable, "-m", "pipelines.run_cbm_neuro_symbolic_pipeline",
@@ -70,6 +68,8 @@ def _run_worker(
     ]
     if skip_baseline:
         cmd.append("--skip-baseline")
+    if skip_controls:
+        cmd.append("--skip-controls")
 
     log_path = os.path.join(seed_output_dir, f"execution_gpu_{gpu_id}_seed_{seed}.log")
     print(f"[GPU {gpu_id}] Khởi động huấn luyện Seed {seed} -> Ghi log tại {log_path}", flush=True)
@@ -113,6 +113,11 @@ def main():
     parser.add_argument("--seeds", nargs=2, type=int, default=[42, 44], help="2 seeds cần chạy (vd: 42 44)")
     parser.add_argument("--output-root", default=".", help="Thư mục gốc chứa outputs")
     parser.add_argument("--skip-baseline", action="store_true", help="Bỏ qua Stage 1 nếu đã có baseline")
+    parser.add_argument(
+        "--skip-controls",
+        action="store_true",
+        help="Bỏ qua 2 đối chứng (mỗi seed chỉ còn 3 mô hình; báo cáo sẽ fail nếu không khai báo lại)",
+    )
 
     args = parser.parse_args()
     seed_a, seed_b = args.seeds[0], args.seeds[1]
@@ -134,16 +139,16 @@ def main():
     print("=" * 70)
 
     total_start = time.time()
-    results = {}
+    results: dict[int, dict[str, object]] = {}
 
     t0 = threading.Thread(
         target=_run_worker,
-        args=(0, seed_a, args.config, args.output_root, args.skip_baseline, results),
+        args=(0, seed_a, args.config, args.output_root, args.skip_baseline, args.skip_controls, results),
         name=f"Worker-GPU0-Seed{seed_a}",
     )
     t1 = threading.Thread(
         target=_run_worker,
-        args=(gpu_b, seed_b, args.config, args.output_root, args.skip_baseline, results),
+        args=(gpu_b, seed_b, args.config, args.output_root, args.skip_baseline, args.skip_controls, results),
         name=f"Worker-GPU1-Seed{seed_b}",
     )
 
@@ -183,6 +188,11 @@ def main():
             print(f"    Excel: {combined_xlsx}")
     except Exception as e:
         print(f"Lưu ý: Không thể xuất file tổng hợp: {e}")
+
+    failed = [seed for seed in (seed_a, seed_b) if seed not in results or results[seed]["success"] is not True]
+    if failed:
+        print(f"LỖI: các seed sau không hoàn thành: {failed}", flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

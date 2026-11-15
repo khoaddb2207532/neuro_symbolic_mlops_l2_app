@@ -134,6 +134,10 @@ class VectorizedRulePenalty(nn.Module):
         # đè ngay sau forward() tiếp theo).
         self._last_rule_sat: Optional[torch.Tensor] = None
 
+    def current_temperature(self) -> float:
+        """Nhiệt độ hiện tại của khớp luật mềm (để log, tránh đọc ``_temperature`` từ ngoài)."""
+        return float(self._temperature.item())
+
     def update_temperature(self, epoch: int) -> None:
         """Ủ theo lịch cố định, không phụ thuộc giới hạn ``num_epochs``."""
         new_temp = geometric_temperature(

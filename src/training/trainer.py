@@ -2,7 +2,7 @@
   * rule-regularized loss (penalty theo luật được GFlowNet chọn) — dùng DUY
     NHẤT `VectorizedRulePenalty` (xem src/rules/penalty.py để biết lý do đã
     gộp bỏ implementation loop trùng lặp trước đây).
-  * DVCLive experiment tracking
+  * Training metrics retained in the returned history
 """
 import copy
 import os
@@ -11,9 +11,8 @@ import time
 from typing import Dict, Optional, Tuple
 
 import torch
-import torch.nn as nn
 import numpy as np
-from dvclive import Live
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from src.rules.penalty import VectorizedRulePenalty
@@ -25,8 +24,8 @@ from src.utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
-class _NoOpLive:
-    """DVCLive-compatible no-op used by concurrent dual-GPU workers."""
+class _NoOpMetrics:
+    """Keep the trainer's metric calls inert when no external tracker is used."""
 
     def __init__(self):
         self.summary = {}
@@ -56,7 +55,6 @@ MONITOR_MODES = {
 
 DEFAULT_CONFIG = {
     "weight_decay": 1e-4,
-    "dvclive_path": "dvclive",
     "save_dir": "outputs",
     "monitor_metric": "val_acc",  # đổi thành "val_loss" nếu muốn early-stop/lưu checkpoint theo loss
 }
@@ -115,15 +113,13 @@ def _save_resume_checkpoint(path: str, state: dict) -> None:
 def train_one_epoch(
     model, loader, criterion, optimizer, device, penalty_module=None,
 ):
-    """penalty_module: nếu không None (VectorizedRulePenalty hoặc
-    BayesianRuleMarginalization — cùng chữ ký forward(features, logits)),
+    """penalty_module: nếu không None (thường là VectorizedRulePenalty),
     được cộng vào loss chính. Không còn nhánh loop-based riêng — chỉ một
     công thức.
 
     Trả về (train_loss, train_ce, train_penalty, train_acc, coverage_stats).
     train_acc được tính trên chính batch train (không phải eval mode) để
-    theo dõi cùng lúc với val_acc trên DVCLive, giúp phát hiện overfit/
-    underfit qua khoảng cách train_acc vs val_acc.
+    so sánh với val_acc trong history để phát hiện overfit/underfit.
 
     coverage_stats (dict rỗng nếu không có penalty_module hoặc module không
     hỗ trợ `last_coverage_stats()`): thống kê xem luật có thực sự "sống"
@@ -236,13 +232,9 @@ def train_model(
     config: Optional[Dict] = None,
     penalty_module: Optional[nn.Module] = None,
 ) -> Tuple[nn.Module, dict]:
-    """penalty_module: nếu được truyền sẵn (vd
-    `src.rules.bayesian_penalty.BayesianRuleMarginalization`), dùng TRỰC
-    TIẾP module này thay vì tự build `VectorizedRulePenalty` từ `rule_set` —
-    cho phép cắm chiến lược rule-regularization khác (Bayesian
-    marginalization qua frozen GFlowNet sampler) mà không phải sửa vòng lặp
-    train — cắm module khác vào chỉ bằng cách truyền tham số này. Nếu None
-    (mặc định, hành vi cũ), vẫn build `VectorizedRulePenalty`
+    """penalty_module: nếu được truyền sẵn, dùng TRỰC TIẾP module này thay
+    vì tự build `VectorizedRulePenalty` từ `rule_set`. Nếu None
+    (mặc định), vẫn build `VectorizedRulePenalty`
     từ `rule_set`/`penalty_weight` như trước.
     """
     cfg = {**DEFAULT_CONFIG, **(config or {})}
@@ -380,17 +372,7 @@ def train_model(
     start_time = time.time()
     last_completed_epoch = start_epoch
 
-    # DVC itself orchestrates the pipeline.  Disabling DVCLive's implicit
-    # experiment save avoids checking outputs from unrelated stages and avoids
-    # repeatedly appending generated params/metrics/plots to dvc.yaml.
-    disable_dvclive = os.environ.get("DISABLE_DVCLIVE", "").lower() in {
-        "1", "true", "yes",
-    }
-    live_context = _NoOpLive() if disable_dvclive else Live(
-        dir=cfg["dvclive_path"],
-        save_dvc_exp=False,
-        resume=resume_enabled and start_epoch > 0,
-    )
+    live_context = _NoOpMetrics()
     with live_context as live:
         live.log_params(
             {
@@ -436,8 +418,6 @@ def train_model(
                     epoch + 1, num_epochs, train_loss, train_acc, train_ce,
                     train_penalty, val_loss, val_acc, lr_details,
                 )
-            # DVCLive theo dõi đầy đủ 4 metric chính: train_loss, train_acc,
-            # val_loss, val_acc — cộng thêm breakdown loss (ce/penalty) và lr.
             live.log_metric("train/loss", train_loss)
             live.log_metric("train/acc", train_acc)
             live.log_metric("train/ce", train_ce)

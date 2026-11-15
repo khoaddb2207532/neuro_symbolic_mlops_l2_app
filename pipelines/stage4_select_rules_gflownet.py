@@ -1,4 +1,4 @@
-"""DVC Stage 4 — Dùng GFlowNet để chọn tập luật con tối ưu."""
+"""Stage 4 — Dùng GFlowNet để chọn tập luật con tối ưu."""
 import argparse
 import os
 import pickle

@@ -48,8 +48,14 @@
     .normal-result { display: grid; grid-template-columns: minmax(140px, .7fr) 1.3fr; gap: 14px; align-items: center; }
     .normal-result img { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; background: #eef1f6; }
     .normal-result h2 { margin: 0 0 8px; font-size: 1rem; }
-    .normal-concepts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .normal-concept-heading { margin: 10px 0 5px; font-size: .9rem; }
+    .normal-concepts { display: flex; flex-wrap: wrap; gap: 6px; }
     .normal-concept { background: #e8f5ed; border-radius: 999px; padding: 4px 8px; font-size: .8rem; }
+    .normal-concept.inactive { background: #eef1f6; color: #566174; }
+    .rule-explanations { margin-top: 12px; padding-top: 10px; border-top: 1px solid #dfe5ef; }
+    .rule-explanations h3 { margin: 0 0 6px; font-size: .95rem; }
+    .rule-explanation { margin-top: 7px; padding: 8px; border-radius: 7px; background: #f3f6fb; font-size: .84rem; overflow-wrap: anywhere; }
+    .rule-explanation p { margin: 0; }
     .edge { display: grid; place-items: center; position: relative; overflow: hidden; color: #97a2b3; }
     .edge::before { content: ""; height: 3px; width: 100%; background: #d7deea; }
     .edge::after { content: ""; position: absolute; left: -45%; width: 45%; height: 3px; opacity: 0; background: linear-gradient(90deg, transparent, #24b7ec, #175cd3, transparent); }
@@ -76,7 +82,7 @@
 </head>
 <body>
   <h1>Phân loại ảnh với CBM</h1>
-  <p class="muted">Chọn run (backbone/seed), chọn mô hình và tải ảnh. Sau khi dự đoán, các vùng concept ước lượng sẽ lan truyền tới ảnh kết quả; bounding box không phải ground truth.</p>
+  <p class="muted">Chọn run (backbone/seed), chọn mô hình và tải ảnh. CBM chỉ hiển thị tối đa 5 concept có xác suất cao nhất; các vùng concept ước lượng lan truyền tới ảnh kết quả, không phải ground truth.</p>
   <div id="mode-switch" class="mode-switch" role="group" aria-label="Chế độ dự đoán">
     <button class="mode-button active" type="button" data-mode="normal" aria-pressed="true">Bình thường</button>
     <button class="mode-button" type="button" data-mode="edited" aria-pressed="false">Vừa chỉnh sửa</button>
@@ -107,6 +113,67 @@
     let catalog;
     let previewUrl = null;
     let currentMode = "normal";
+    const MAX_VISIBLE_CONCEPTS = 5;
+    const CONCEPT_LABELS_VI = {
+        monk_orange_robe: "Nhà sư mặc áo cà sa màu cam hoặc vàng nghệ",
+        white_or_red_robe: "Người mặc áo choàng trắng, đỏ hoặc lễ phục tôn giáo",
+        altar_offerings: "Bàn thờ hoặc bàn có đặt lễ vật cúng",
+        praying_hands: "Người chắp tay cầu nguyện",
+        flower_arrangement: "Hoa, vòng hoa hoặc đồ trang trí bằng hoa",
+        food_bowls: "Bát, đĩa hoặc rổ đựng thức ăn",
+        microphone: "Micro mà người phát biểu đang sử dụng",
+        red_carpet: "Thảm đỏ trải trên sàn",
+        buddha_statue: "Tượng Phật hoặc tác phẩm điêu khắc tôn giáo bằng vàng hay đá",
+        pagoda_spire: "Bảo tháp hoặc đỉnh tháp chùa màu vàng hay trắng",
+        temple_building: "Ngôi chùa hoặc công trình tôn giáo",
+        red_tiled_roof: "Mái ngói đỏ của ngôi chùa",
+        pillars_columns: "Cột trụ nâng đỡ chánh điện",
+        stairs_steps: "Cầu thang hoặc bậc đá ở lối vào",
+        ornate_carving: "Hoa văn chạm khắc và chi tiết kiến trúc trang trí công phu",
+        balcony_entrance: "Ban công, cửa ra vào hoặc lối vào của tòa nhà",
+        pathway: "Lối đi lát gạch dẫn qua khuôn viên",
+        classroom: "Lớp học hoặc phòng học",
+        desk_chair: "Bàn ghế trong phòng",
+        writing_books: "Viết, bút, sách hoặc giấy",
+        blackboard: "Bảng đen hoặc bảng trắng",
+        students_teacher: "Học sinh hoặc giáo viên trong lớp học",
+        dragon_boat: "Thuyền đua dài có đầu rồng hoặc thuyền truyền thống",
+        oars_paddles: "Mái chèo hoặc mái dầm",
+        rowers: "Người chèo thuyền",
+        river_bank: "Sông, bờ sông hoặc bến nước",
+        water_surface_splash: "Mặt nước hoặc nước bắn tung tóe",
+        spectators: "Khán giả theo dõi sự kiện",
+        colored_team_shirts: "Các thành viên đội mặc áo đồng phục cùng màu",
+        tug_of_war_rope: "Người kéo sợi dây thừng lớn trong trò kéo co",
+        casual_clothes: "Trang phục thường ngày như quần jean, quần short và áo thun",
+        hat_sandals: "Mũ, kính râm hoặc dép của người chơi",
+        open_ground_field: "Bãi cỏ, đất trống hoặc nền cát ngoài trời",
+        sand_sculpture: "Gò cát hoặc tượng đắp bằng cát",
+        colorful_flags_banners: "Cờ, băng rôn nhiều màu sắc và đồ trang trí lễ hội",
+        umbrella: "Ô dù, thường là màu vàng",
+        stage_curtain: "Sân khấu có rèm",
+        dancer: "Vũ công biểu diễn điệu múa truyền thống",
+        performance_costume: "Trang phục biểu diễn hoặc mũ miện trang trí công phu",
+        drum_instruments: "Trống hoặc nhạc cụ và các nhạc công",
+        woman_portrait: "Người phụ nữ tạo dáng chụp chân dung",
+        traditional_dress: "Váy, áo hoặc trang phục Khmer truyền thống",
+        jewelry: "Hoa tai, vòng tay và dây chuyền",
+        fabric_pattern: "Vải dệt có hoa văn hoặc thêu",
+        mannequin_display: "Trang phục được trưng bày trên ma-nơ-canh",
+        belt_sash: "Thắt lưng hoặc dải đai vàng quanh eo",
+        night_scene: "Cảnh ban đêm hoặc buổi tối với bầu trời tối",
+        illuminated_lights: "Vật phát sáng, đèn thành phố và pháo hoa",
+        candle_lantern: "Nến hoặc đèn lồng được thắp sáng",
+        fruit_coconut: "Chuối, dừa, trái cây, gạo và rau củ làm lễ vật",
+        crowd_people: "Nhóm người hoặc đám đông",
+        tree_greenery: "Cây cối và tán lá xanh",
+        sky_clouds: "Bầu trời có mây",
+        white_shirt: "Người mặc áo trắng"
+    };
+
+    function conceptLabel(name) {
+      return CONCEPT_LABELS_VI[name.toLowerCase()] || name;
+    }
 
     function selectedModelIds() {
       return [...modelList.querySelectorAll("input:checked")].map(input => input.value);
@@ -249,20 +316,73 @@
         confidence.className = "prediction-confidence";
         confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
         details.append(model, label, confidence);
-        if (prediction.activated_concepts.length) {
-          const concepts = document.createElement("div");
-          concepts.className = "normal-concepts";
-          for (const concept of prediction.activated_concepts) {
-            const badge = document.createElement("span");
-            badge.className = "normal-concept";
-            badge.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
-            concepts.append(badge);
-          }
-          details.append(concepts);
-        }
+        renderTopConcepts(details, prediction);
+        renderRuleExplanations(details, prediction);
         card.append(image, details);
         results.append(card);
       }
+    }
+
+    function renderTopConcepts(container, prediction) {
+      if (prediction.model_type === "baseline") return;
+      const concepts = [...prediction.concepts]
+        .sort((left, right) => right.probability - left.probability)
+        .slice(0, MAX_VISIBLE_CONCEPTS);
+      if (!concepts.length) return;
+
+      const section = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.className = "normal-concept-heading";
+      heading.textContent = `Top ${concepts.length} concept có xác suất cao nhất`;
+      const badges = document.createElement("div");
+      badges.className = "normal-concepts";
+      for (const concept of concepts) {
+        const badge = document.createElement("span");
+        badge.className = concept.activated
+          ? "normal-concept"
+          : "normal-concept inactive";
+        badge.textContent = `${conceptLabel(concept.name)} · ${(concept.probability * 100).toFixed(1)}%`;
+        badges.append(badge);
+      }
+      section.append(heading, badges);
+      container.append(section);
+    }
+
+    function renderRuleExplanations(container, prediction) {
+      if (prediction.model_type === "baseline") return;
+      const section = document.createElement("section");
+      section.className = "rule-explanations";
+      const heading = document.createElement("h3");
+      heading.textContent = "Luật giải thích";
+      section.append(heading);
+
+      if (!prediction.rule_explanation_available) {
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = prediction.rule_explanation_error
+          || "Run chưa có artifacts 04_filtered_rules/selected_rules.pkl.";
+        section.append(note);
+      } else if (!prediction.explanation_rules.length) {
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = "Không có luật được chọn nào khớp với nhãn dự đoán.";
+        section.append(note);
+      } else {
+        for (const rule of prediction.explanation_rules) {
+          const item = document.createElement("article");
+          item.className = "rule-explanation";
+          const title = document.createElement("p");
+          title.textContent = `Luật ${rule.rule_number} · độ tin cậy luật ${(rule.confidence * 100).toFixed(1)}%`;
+          const conditions = rule.conditions.map(condition =>
+            `${conceptLabel(condition.concept_name)} ${condition.operator} ${condition.threshold.toFixed(3)} (ảnh: ${condition.value.toFixed(3)})`
+          );
+          const statement = document.createElement("p");
+          statement.textContent = `IF ${conditions.join(" AND ")} THEN ${rule.target_class}`;
+          item.append(title, statement);
+          section.append(item);
+        }
+      }
+      container.append(section);
     }
 
     function wait(milliseconds) {
@@ -282,7 +402,9 @@
     }
 
     function collectCrops(prediction) {
-      return prediction.concepts
+      return [...prediction.concepts]
+        .sort((left, right) => right.probability - left.probability)
+        .slice(0, MAX_VISIBLE_CONCEPTS)
         .flatMap(concept => (concept.boxes || []).map(box => ({ concept, box })))
         .sort((left, right) =>
           right.concept.probability - left.concept.probability
@@ -310,11 +432,11 @@
           }
           const image = document.createElement("img");
           image.className = "crop-image";
-          image.alt = `Vùng cắt concept ${concept.name}`;
+          image.alt = `Vùng cắt concept ${conceptLabel(concept.name)}`;
           image.src = cropImage(bitmap, box);
           const caption = document.createElement("div");
           caption.className = "crop-caption";
-          caption.textContent = `${concept.name} · ${(concept.probability * 100).toFixed(1)}%`;
+          caption.textContent = `${conceptLabel(concept.name)} · ${(concept.probability * 100).toFixed(1)}%`;
           const coordinates = document.createElement("div");
           coordinates.className = "crop-caption muted";
           coordinates.textContent = `[${box.x1}, ${box.y1}, ${box.x2}, ${box.y2}]`;
@@ -344,6 +466,8 @@
       confidence.className = "prediction-confidence";
       confidence.textContent = `Độ tin cậy: ${(prediction.confidence * 100).toFixed(2)}%`;
       outputBody.append(image, label, confidence);
+      renderTopConcepts(outputBody, prediction);
+      renderRuleExplanations(outputBody, prediction);
       pipeline.outputStage.replaceChildren(
         pipeline.outputStage.querySelector("h3"),
         outputBody

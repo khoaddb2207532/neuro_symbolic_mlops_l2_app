@@ -1,4 +1,4 @@
-"""DVC Stage 2 — Trích đặc trưng từ model đã chọn (Baseline CNN hoặc CBM).
+"""Stage 2 — Trích đặc trưng từ model đã chọn (Baseline CNN hoặc CBM).
 
 Hỗ trợ cả 2 chế độ:
   1. Baseline CNN (mặc định): trích latent features (1280-d, 576-d, ...)
