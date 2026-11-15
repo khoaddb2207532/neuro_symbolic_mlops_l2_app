@@ -11,7 +11,7 @@ num_workers: 4
 num_epochs: 100
 patience: 5
 weight_decay: !!float 1e-4
-monitor_metric: "val_loss"
+monitor_metric: "val_acc"
 
 transfer_learning:
   lr_head: !!float 1e-3
