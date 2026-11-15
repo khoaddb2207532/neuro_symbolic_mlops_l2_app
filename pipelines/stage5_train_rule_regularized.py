@@ -76,9 +76,19 @@ def _train_cbm_with_rules(
     class_names: list[str],
     save_dir: str,
     device: str,
+    rule_weight_override: float | None = None,
 ) -> None:
-    """Fine-tune CBM bằng ``train_cbm``: CE + λ_concept·BCE + rule penalty, LR nhỏ."""
-    rule_cfg: dict[str, Any] = params["rule_penalty"]
+    """Fine-tune CBM bằng ``train_cbm``: CE + λ_concept·BCE + rule penalty, LR nhỏ.
+
+    ``rule_weight_override`` thay ``rule_penalty.weight`` (đối chứng CBM-continued dùng 0.0).
+    Mọi tham số khác (LR, epoch, penalty_off_epochs, lịch nhiệt độ) giữ nguyên để đối chứng
+    chỉ khác đúng một điểm: có hay không luật.
+    """
+    rule_cfg: dict[str, Any] = dict(params["rule_penalty"])
+    if rule_weight_override is not None:
+        if rule_weight_override < 0:
+            raise ValueError("rule_weight_override không được âm.")
+        rule_cfg["weight"] = float(rule_weight_override)
     cbm_cfg: dict[str, Any] = params.get("cbm", {})
     architecture = selected_baseline_architecture(params)
 
@@ -176,6 +186,7 @@ def _train_cbm_with_rules(
                 "lr_backbone": lr_backbone,
                 "lr_head": lr_head,
                 "penalty_off_epochs": off_epochs,
+                "rule_weight_override": rule_weight_override,
                 "rule_penalty": dict(rule_cfg),
             },
             file, ensure_ascii=False, indent=2,
@@ -188,7 +199,12 @@ def _train_cbm_with_rules(
     plot_training_history(history, save_dir=save_dir, title_suffix="Rule-Regularized CBM")
 
 
-def main(params_path: str, target_override: str = None) -> None:
+def main(
+    params_path: str,
+    target_override: str | None = None,
+    rule_weight_override: float | None = None,
+    save_subdir: str = "05_rules_model",
+) -> None:
     params = load_params(params_path)
     set_seed(params["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -205,7 +221,7 @@ def main(params_path: str, target_override: str = None) -> None:
         n for n, _ in sorted(NeuroSymbolicDataset(params["data_dir"], "test").class_to_idx.items(), key=lambda x: x[1])
     ]
 
-    save_dir = os.path.join(params["output_dir"], "05_rules_model")
+    save_dir = os.path.join(params["output_dir"], save_subdir)
     os.makedirs(save_dir, exist_ok=True)
 
     target_model = target_override or params.get("rule_penalty", {}).get("target_model", "baseline")
@@ -215,6 +231,7 @@ def main(params_path: str, target_override: str = None) -> None:
         _train_cbm_with_rules(
             params, rule_set, _sha256_file(os.path.join(filtered_dir, "selected_rules.pkl")),
             dataloaders, test_loader, class_names, save_dir, device,
+            rule_weight_override=rule_weight_override,
         )
         logger.info("Stage 5 hoàn thành (CBM + rule penalty).")
         return
@@ -288,5 +305,21 @@ if __name__ == "__main__":
         default=None,
         help="Model cần fine-tune với luật: 'baseline' hoặc 'cbm'",
     )
+    parser.add_argument(
+        "--rule-weight",
+        type=float,
+        default=None,
+        help="Ghi đè rule_penalty.weight (đối chứng CBM-continued dùng 0)",
+    )
+    parser.add_argument(
+        "--save-subdir",
+        default="05_rules_model",
+        help="Thư mục con trong output_dir để lưu kết quả (tránh ghi đè bản chính)",
+    )
     args = parser.parse_args()
-    main(args.config, target_override=args.target)
+    main(
+        args.config,
+        target_override=args.target,
+        rule_weight_override=args.rule_weight,
+        save_subdir=args.save_subdir,
+    )

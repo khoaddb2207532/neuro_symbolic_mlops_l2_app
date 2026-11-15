@@ -146,7 +146,17 @@ def resolve_pos_weight(
     return weights
 
 
-def main(params_path: str) -> None:
+def main(
+    params_path: str,
+    concept_weight_override: float | None = None,
+    save_subdir: str = "cbm",
+) -> None:
+    """Train CBM.
+
+    ``concept_weight_override=0.0`` + ``save_subdir="cbm_no_concept"`` tạo đối chứng
+    "head cùng cỡ bottleneck nhưng không có concept loss": cùng kiến trúc, cùng khởi tạo
+    ImageNet, cùng epoch/LR, chỉ bỏ concept supervision. Lưu riêng để không ghi đè CBM chính.
+    """
     params = load_params(params_path)
     set_seed(params["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -154,6 +164,10 @@ def main(params_path: str) -> None:
     cbm_cfg = params.get("cbm", {})
     n_concepts = cbm_cfg.get("n_concepts", 30)
     concept_weight = cbm_cfg.get("concept_weight", 1.0)
+    if concept_weight_override is not None:
+        if concept_weight_override < 0:
+            raise ValueError("concept_weight_override không được âm.")
+        concept_weight = float(concept_weight_override)
 
     # Load data
     dataloaders, _, _, _ = create_dataloaders(
@@ -169,7 +183,7 @@ def main(params_path: str) -> None:
         )
     ]
 
-    save_dir = os.path.join(params["output_dir"], "cbm")
+    save_dir = os.path.join(params["output_dir"], save_subdir)
     os.makedirs(save_dir, exist_ok=True)
 
     # Wrap dataloaders với concept annotations
@@ -261,6 +275,7 @@ def main(params_path: str) -> None:
         ),
         "two_stage": two_stage,
         "stage1_epochs": stage1_epochs,
+        "concept_weight_override": concept_weight_override,
     }
     with open(os.path.join(save_dir, "cbm_metadata.json"), "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
@@ -271,5 +286,16 @@ def main(params_path: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="params.yaml")
+    parser.add_argument(
+        "--concept-weight",
+        type=float,
+        default=None,
+        help="Ghi đè cbm.concept_weight (đối chứng head không concept loss dùng 0)",
+    )
+    parser.add_argument(
+        "--save-subdir",
+        default="cbm",
+        help="Thư mục con trong output_dir để lưu (tránh ghi đè CBM chính)",
+    )
     args = parser.parse_args()
-    main(args.config)
+    main(args.config, concept_weight_override=args.concept_weight, save_subdir=args.save_subdir)

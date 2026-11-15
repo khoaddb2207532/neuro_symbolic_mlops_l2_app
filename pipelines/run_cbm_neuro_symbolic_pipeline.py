@@ -9,6 +9,13 @@ Thứ tự thực thi đầy đủ (có Baseline đối chứng):
   6. Stage 5:  Huấn luyện CBM có ràng buộc luật (Rule-Regularized Fine-Tuning, outputs/05_rules_model/).
   7. Lưu tổng hợp Classification Report cho mọi mô hình trong seed.
 
+  8. Hai đối chứng (chạy sau Stage 5, xem ``CONTROL_*`` bên dưới):
+     - CBM-continued: Stage 5 với rule_penalty.weight = 0, cùng LR/epoch/penalty_off_epochs.
+     - Head không concept loss: Stage 1b với concept_weight = 0, cùng kiến trúc 576→N→C.
+
+Tổng cộng 5 mô hình được so sánh trong ``seed_classification_summary.csv``
+(danh sách nằm ở ``EXPECTED_MODELS``, dùng chung với scripts/cbm_dual_gpu_report.py).
+
 Chạy:
   python -m pipelines.run_cbm_neuro_symbolic_pipeline --config params.yaml
 """
@@ -32,6 +39,19 @@ from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+# Thư mục con (trong output_dir) của 2 đối chứng. Không trùng thư mục của mô hình chính.
+CONTROL_ZERO_RULE_WEIGHT_SUBDIR = "05_control_zero_weight"
+CONTROL_CONCEPT_FREE_SUBDIR = "cbm_no_concept"
+
+# Nguồn duy nhất cho danh sách mô hình được so sánh: (tên hiển thị, thư mục con).
+EXPECTED_MODELS: list[tuple[str, str]] = [
+    ("Baseline CNN (Hộp đen)", "01_baseline"),
+    ("CBM (Concept Bottleneck)", "cbm"),
+    ("CBM + Rule-Regularized", "05_rules_model"),
+    ("CBM-continued (λ_rule=0)", CONTROL_ZERO_RULE_WEIGHT_SUBDIR),
+    ("CBM head, không concept loss", CONTROL_CONCEPT_FREE_SUBDIR),
+]
+
 
 def generate_seed_classification_summary(config_path: str) -> None:
     """Tổng hợp chi tiết classification report của từng mô hình trong seed."""
@@ -41,14 +61,9 @@ def generate_seed_classification_summary(config_path: str) -> None:
         output_dir = Path(params.get("output_dir", "outputs"))
         seed = params.get("seed", 42)
 
-        models_info = [
-            ("Baseline CNN (Hộp đen)", output_dir / "01_baseline"),
-            ("CBM (Concept Bottleneck)", output_dir / "cbm"),
-            ("CBM + Rule-Regularized", output_dir / "05_rules_model"),
-        ]
-
         rows = []
-        for model_name, path in models_info:
+        for model_name, subdir in EXPECTED_MODELS:
+            path = output_dir / subdir
             json_files = list(path.glob("*classification_report.json"))
             if not json_files:
                 continue
@@ -81,6 +96,7 @@ def main(
     config_path: str,
     skip_baseline: bool = False,
     skip_cbm: bool = False,
+    skip_controls: bool = False,
 ) -> None:
     total_start = time.time()
     logger.info("=" * 70)
@@ -89,35 +105,55 @@ def main(
 
     # 1. Stage 1: Train Baseline CNN (Mô hình đối chứng)
     if not skip_baseline:
-        logger.info("\n>>> [1/6] STAGE 1: Huấn luyện Baseline CNN (mô hình đối chứng)...")
+        logger.info("\n>>> [1/8] STAGE 1: Huấn luyện Baseline CNN (mô hình đối chứng)...")
         stage1_train_baseline.main(config_path)
     else:
-        logger.info("\n>>> [1/6] BỎ QUA STAGE 1 (sử dụng checkpoint Baseline có sẵn).")
+        logger.info("\n>>> [1/8] BỎ QUA STAGE 1 (sử dụng checkpoint Baseline có sẵn).")
 
     # 2. Stage 1b: Train CBM
     if not skip_cbm:
-        logger.info("\n>>> [2/6] STAGE 1b: Huấn luyện CBM với Concept Loss...")
+        logger.info("\n>>> [2/8] STAGE 1b: Huấn luyện CBM với Concept Loss...")
         stage1b_train_cbm.main(config_path)
     else:
-        logger.info("\n>>> [2/6] BỎ QUA STAGE 1b (sử dụng checkpoint CBM có sẵn).")
+        logger.info("\n>>> [2/8] BỎ QUA STAGE 1b (sử dụng checkpoint CBM có sẵn).")
 
     # 3. Stage 2: Extract Concept Features
-    logger.info("\n>>> [3/6] STAGE 2: Trích Concept Probabilities từ CBM...")
+    logger.info("\n>>> [3/8] STAGE 2: Trích Concept Probabilities từ CBM...")
     stage2_extract_features.main(config_path, source_override="cbm")
 
     # 4. Stage 3: Extract Human-interpretable Rules
-    logger.info("\n>>> [4/6] STAGE 3: Trích luật ngữ nghĩa (IF Concept THEN Class)...")
+    logger.info("\n>>> [4/8] STAGE 3: Trích luật ngữ nghĩa (IF Concept THEN Class)...")
     stage3_extract_rules.main(config_path)
 
     # 5. Stage 4: GFlowNet Rule Selection
-    logger.info("\n>>> [5/6] STAGE 4: GFlowNet tuyển chọn tập luật Concept...")
+    logger.info("\n>>> [5/8] STAGE 4: GFlowNet tuyển chọn tập luật Concept...")
     stage4_select_rules_gflownet.main(config_path)
 
     # 6. Stage 5: Rule-Regularized Training on CBM
-    logger.info("\n>>> [6/6] STAGE 5: Fine-tune CBM với Rule Penalty...")
+    logger.info("\n>>> [6/8] STAGE 5: Fine-tune CBM với Rule Penalty...")
     stage5_train_rule_regularized.main(config_path, target_override="cbm")
 
-    # 7. Tổng hợp bảng Classification Report
+    if not skip_controls:
+        # 7. Đối chứng CBM-continued: cùng mọi thứ của Stage 5, chỉ λ_rule = 0.
+        logger.info("\n>>> [7/8] ĐỐI CHỨNG 1: CBM-continued (Stage 5 với rule weight = 0)...")
+        stage5_train_rule_regularized.main(
+            config_path,
+            target_override="cbm",
+            rule_weight_override=0.0,
+            save_subdir=CONTROL_ZERO_RULE_WEIGHT_SUBDIR,
+        )
+
+        # 8. Đối chứng head không concept loss: cùng kiến trúc CBM, concept_weight = 0.
+        logger.info("\n>>> [8/8] ĐỐI CHỨNG 2: Head không concept loss (Stage 1b với concept_weight = 0)...")
+        stage1b_train_cbm.main(
+            config_path,
+            concept_weight_override=0.0,
+            save_subdir=CONTROL_CONCEPT_FREE_SUBDIR,
+        )
+    else:
+        logger.info("\n>>> [7-8/8] BỎ QUA 2 ĐỐI CHỨNG (--skip-controls).")
+
+    # Tổng hợp bảng Classification Report (5 mô hình khi không bỏ qua đối chứng)
     generate_seed_classification_summary(config_path)
 
     elapsed = (time.time() - total_start) / 60
@@ -127,6 +163,9 @@ def main(
     logger.info("  2. CBM Model checkpoint:     outputs/cbm/cbm_best.pth")
     logger.info("  3. GFlowNet Rules Excel:     outputs/04_filtered_rules/selected_rules.xlsx")
     logger.info("  4. Rule-Regularized CBM:     outputs/05_rules_model/rule_regularized_best.pth")
+    if not skip_controls:
+        logger.info("  5. CBM-continued (λ=0):      outputs/%s/rule_regularized_best.pth", CONTROL_ZERO_RULE_WEIGHT_SUBDIR)
+        logger.info("  6. Head không concept loss:  outputs/%s/cbm_best.pth", CONTROL_CONCEPT_FREE_SUBDIR)
     logger.info("=" * 70)
 
 
@@ -143,5 +182,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Bỏ qua huấn luyện CBM nếu đã có sẵn",
     )
+    parser.add_argument(
+        "--skip-controls",
+        action="store_true",
+        help="Bỏ qua 2 đối chứng (bảng tổng hợp chỉ còn 3 mô hình)",
+    )
     args = parser.parse_args()
-    main(args.config, skip_baseline=args.skip_baseline, skip_cbm=args.skip_cbm)
+    main(
+        args.config,
+        skip_baseline=args.skip_baseline,
+        skip_cbm=args.skip_cbm,
+        skip_controls=args.skip_controls,
+    )
