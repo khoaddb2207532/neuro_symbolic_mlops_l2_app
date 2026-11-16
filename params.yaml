@@ -42,6 +42,11 @@ rule_penalty:
   temp_warmup_epochs: 2
   temp_anneal_epochs: 10
   min_epochs_before_early_stop: 12
+  # --- Nguồn luật và cách dùng (xem README mục "Luật từ image_concept") ---
+  rules_dir: "04_filtered_rules"       # 04_filtered_rules = luật RF cũ | 04c_concept_rules = GFlowNet xây từ concept
+  mode: "penalty"                      # penalty = regularizer (cũ) | head = khối luật mới | both = cả hai (chỉ target cbm)
+  head_temperature: 10.0               # độ "cứng" của khớp luật trong khối luật (sigmoid T)
+  rule_lr: !!float 1e-3                # LR riêng cho w_r của khối luật (khởi tạo 0, cần LR đủ lớn)
 
 # Dùng bởi pipelines/stage4b_analyze_rule_rankings.py — phân tích SAU khi
 # GFlowNet đã train xong (không train lại): p_include vs 2 ranking ngây thơ.
@@ -67,6 +72,35 @@ cbm:
   # concept_annotations_path: "data/concept_annotations.json"   # per-image
   # class_concept_matrix_path: "data/class_concepts.json"        # per-class
   # baseline_checkpoint: "outputs/baseline_comparison/mobilenetv3_small/baseline_best.pth"
+
+# GFlowNet XÂY DỰNG luật conjunction trên nhãn image_concept (stage4_concept_rules_gflownet).
+# Luật dạng: (concept_a có mặt ∧ concept_b vắng mặt) ⇒ class. Không dùng RF.
+concept_rules:
+  source_split: "train"                # split để tính reward. val/test chỉ dùng báo cáo, không chọn luật.
+  use_class_prototype: false           # false: ảnh không có nhãn riêng bị loại khỏi reward (không học lại prototype)
+  output_subdir: "04c_concept_rules"
+  max_literals: 3                      # độ dài tối đa vế trái
+  max_rules: 20                        # số luật tối đa trong tập cuối
+  min_cover: 5                         # luật phủ ít hơn số mẫu này bị phạt
+  max_conflict: 0.2                    # tỉ lệ mẫu phủ bởi luật khác vế phải tối đa khi ghép tập
+  min_new_correct: 3                   # luật phải thêm ít nhất ngần này mẫu đúng mới được nhận
+  w_prec: 1.0
+  w_rec: 0.5
+  w_len: 0.1
+  w_min_cover: 1.0
+  m_estimate: 2.0                      # shrink precision về tần suất lớp khi ít mẫu
+  beta: 3.0
+  loss_type: "tb"                      # "tb" | "db"
+  hidden_dim: 256
+  num_iterations: 1000
+  batch_size: 256
+  lr: !!float 1e-3
+  logZ_lr: 0.1
+  logZ_warmup_steps: 50
+  grad_clip_max_norm: 5.0
+  archive_size: 5000
+  final_samples: 4000
+  log_every: 100
 
 gflownet:
   max_rules: 120

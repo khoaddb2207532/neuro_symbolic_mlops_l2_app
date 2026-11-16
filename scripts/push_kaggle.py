@@ -4,18 +4,24 @@
   python scripts/push_kaggle.py                      # đẩy tất cả theo phân công
   python scripts/push_kaggle.py resnet50             # chỉ đẩy notebook có tên chứa chuỗi này
   python scripts/push_kaggle.py --accounts acc1      # chỉ đẩy phần của acc1 (để thử trước)
+  python scripts/push_kaggle.py --notebook-dir generated_concept_rules_notebooks \\
+      --extra-dataset owner/prev-run-outputs         # notebook chạy tiếp, gắn thêm dataset kết quả cũ
 """
 import argparse, json, os, shutil, subprocess, tempfile
 from pathlib import Path
 
-NB_DIR = Path("generated_cbm_notebooks")
+DEFAULT_NB_DIR = "generated_cbm_notebooks"
 DATASET = "dangduykhoab2207532/mykhmer"
 
 p = argparse.ArgumentParser()
 p.add_argument("names", nargs="*", help="lọc notebook theo chuỗi con của tên file")
 p.add_argument("--accounts", nargs="*", help="chỉ đẩy phần của các username này")
 p.add_argument("--dry-run", action="store_true")
+p.add_argument("--notebook-dir", default=DEFAULT_NB_DIR, help="thư mục chứa notebook cần đẩy")
+p.add_argument("--extra-dataset", action="append", default=[],
+               help="dataset Kaggle bổ sung (owner/slug), lặp lại được")
 args = p.parse_args()
+NB_DIR = Path(args.notebook_dir)
 
 accounts = json.loads(Path(".kaggle/accounts.json").read_text(encoding="utf-8"))
 all_nbs = sorted(NB_DIR.glob("*.ipynb"))
@@ -60,7 +66,7 @@ for acc, nb in jobs:
             "is_private": True,
             "enable_gpu": True,
             "enable_internet": True,   # notebook cần git clone repo
-            "dataset_sources": [DATASET],
+            "dataset_sources": [DATASET, *args.extra_dataset],
             "competition_sources": [],
         }
         (work / "kernel-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

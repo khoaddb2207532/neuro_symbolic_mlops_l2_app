@@ -22,6 +22,7 @@ from src.data.dataset import create_dataloaders, NeuroSymbolicDataset
 from src.evaluation.evaluate import evaluate_model_performance, plot_training_history
 from src.models.cbm import ConceptBottleneckModel
 from src.models.cnn import ImageClassificationBaseline
+from src.models.rule_head import ConceptRuleHead, RuleAugmentedCBM
 from src.rules.penalty import VectorizedRulePenalty
 from src.rules.rule_types import RuleSet
 from src.training.cbm_trainer import train_cbm
@@ -67,6 +68,27 @@ class _CBMEvalAdapter(torch.nn.Module):
         return logits, concept_probs
 
 
+RULE_MODES = ("penalty", "head", "both")
+
+
+def _load_cbm_weights_into_rule_model(model: torch.nn.Module, path: str, device: str) -> None:
+    """Nạp checkpoint CBM (không có khối luật) vào RuleAugmentedCBM.
+
+    Chỉ cho phép các khóa thiếu thuộc ``rule_head.`` (khối mới khởi tạo = 0). Mọi khóa
+    khác thiếu/thừa đều là lỗi thật (sai kiến trúc hoặc sai checkpoint) và phải báo ra.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Không tìm thấy CBM checkpoint tại {path}.")
+    obj = torch.load(path, map_location=device)
+    state = obj["model_state_dict"] if isinstance(obj, dict) and "model_state_dict" in obj else obj
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if unexpected:
+        raise ValueError(f"Checkpoint CBM có khóa không khớp kiến trúc: {unexpected[:5]}")
+    not_rule = [k for k in missing if not k.startswith("rule_head.")]
+    if not_rule:
+        raise ValueError(f"Checkpoint CBM thiếu khóa không phải khối luật: {not_rule[:5]}")
+
+
 def _train_cbm_with_rules(
     params: dict[str, Any],
     rule_set: RuleSet,
@@ -78,7 +100,11 @@ def _train_cbm_with_rules(
     device: str,
     rule_weight_override: float | None = None,
 ) -> None:
-    """Fine-tune CBM bằng ``train_cbm``: CE + λ_concept·BCE + rule penalty, LR nhỏ.
+    """Fine-tune CBM bằng ``train_cbm`` với luật theo ``rule_penalty.mode``:
+
+      - ``penalty`` (mặc định, hành vi cũ): CE + λ_concept·BCE + RulePenalty.
+      - ``head``:  CE + λ_concept·BCE, logit = CBM + ConceptRuleHead (khối luật mới).
+      - ``both``:  head và penalty cùng lúc.
 
     ``rule_weight_override`` thay ``rule_penalty.weight`` (đối chứng CBM-continued dùng 0.0).
     Mọi tham số khác (LR, epoch, penalty_off_epochs, lịch nhiệt độ) giữ nguyên để đối chứng
@@ -89,6 +115,12 @@ def _train_cbm_with_rules(
         if rule_weight_override < 0:
             raise ValueError("rule_weight_override không được âm.")
         rule_cfg["weight"] = float(rule_weight_override)
+    mode = str(rule_cfg.get("mode", "penalty"))
+    if mode not in RULE_MODES:
+        raise ValueError(f"rule_penalty.mode '{mode}' không hợp lệ; chọn một trong {RULE_MODES}.")
+    use_penalty = mode in ("penalty", "both")
+    use_head = mode in ("head", "both")
+
     cbm_cfg: dict[str, Any] = params.get("cbm", {})
     architecture = selected_baseline_architecture(params)
 
@@ -105,21 +137,13 @@ def _train_cbm_with_rules(
     if wrapped_n_concepts != n_concepts:
         raise ValueError(
             f"Số concept trong annotations ({wrapped_n_concepts}) khác checkpoint CBM "
-            f"({n_concepts}); luật Stage 3 đánh chỉ số theo concept nên không được lệch."
+            f"({n_concepts}); luật đánh chỉ số theo concept nên không được lệch."
         )
     concept_pos_weight = resolve_pos_weight(cbm_cfg, wrapped["train"].dataset)
 
     cbm_ckpt = os.path.join(cbm_dir, "cbm_best.pth")
     if not os.path.exists(cbm_ckpt):
         cbm_ckpt = os.path.join(cbm_dir, "final_model_weights.pth")
-    model = ConceptBottleneckModel(
-        architecture=arch,
-        n_concepts=n_concepts,
-        num_classes=params["num_classes"],
-        pretrained=False,
-        concept_names=concept_names,
-    )
-    load_model_weights(model, cbm_ckpt, device, required=True)
 
     lr_backbone = float(rule_cfg.get("lr_backbone", 1e-5))
     lr_head = float(rule_cfg.get("lr_head", 1e-4))
@@ -128,22 +152,52 @@ def _train_cbm_with_rules(
     # Early stopping chỉ được tính sau khi penalty đã bật đủ min_epochs epoch.
     min_epochs = off_epochs + int(rule_cfg.get("min_epochs_before_early_stop", 12))
 
-    penalty_module = VectorizedRulePenalty(
-        rule_set,
-        penalty_weight=float(rule_cfg["weight"]),
-        use_confidence=True,
-        smoothing=float(rule_cfg["smoothing"]),
-        num_classes=int(params["num_classes"]),
-        initial_temp=float(rule_cfg["initial_temp"]),
-        final_temp=float(rule_cfg["final_temp"]),
-        temp_warmup_epochs=int(rule_cfg.get("temp_warmup_epochs", 2)),
-        temp_anneal_epochs=int(rule_cfg.get("temp_anneal_epochs", 10)),
-    )
+    penalty_module: VectorizedRulePenalty | None = None
+    if use_penalty:
+        penalty_module = VectorizedRulePenalty(
+            rule_set,
+            penalty_weight=float(rule_cfg["weight"]),
+            use_confidence=True,
+            smoothing=float(rule_cfg["smoothing"]),
+            num_classes=int(params["num_classes"]),
+            initial_temp=float(rule_cfg["initial_temp"]),
+            final_temp=float(rule_cfg["final_temp"]),
+            temp_warmup_epochs=int(rule_cfg.get("temp_warmup_epochs", 2)),
+            temp_anneal_epochs=int(rule_cfg.get("temp_anneal_epochs", 10)),
+        )
+
+    if use_head:
+        rule_head = ConceptRuleHead(
+            rule_set,
+            num_classes=int(params["num_classes"]),
+            temperature=float(rule_cfg.get("head_temperature", 10.0)),
+        )
+        model: ConceptBottleneckModel = RuleAugmentedCBM(
+            rule_head=rule_head,
+            rule_lr=float(rule_cfg.get("rule_lr", 1e-3)),
+            architecture=arch,
+            n_concepts=n_concepts,
+            num_classes=params["num_classes"],
+            pretrained=False,
+            concept_names=concept_names,
+        )
+        _load_cbm_weights_into_rule_model(model, cbm_ckpt, device)
+    else:
+        model = ConceptBottleneckModel(
+            architecture=arch,
+            n_concepts=n_concepts,
+            num_classes=params["num_classes"],
+            pretrained=False,
+            concept_names=concept_names,
+        )
+        load_model_weights(model, cbm_ckpt, device, required=True)
+
     logger.info(
-        "Stage 5 (CBM): %d luật | λ_concept=%.2f λ_rule=%.3f | lr_backbone=%.1e lr_head=%.1e | "
-        "tắt penalty %d epoch đầu, T %.1f→%.1f | từ %s",
-        len(rule_set), concept_weight, float(rule_cfg["weight"]), lr_backbone, lr_head,
-        off_epochs, float(rule_cfg["initial_temp"]), float(rule_cfg["final_temp"]), cbm_ckpt,
+        "Stage 5 (CBM) mode=%s: %d luật | penalty=%s head=%s | λ_concept=%.2f λ_rule=%.3f | "
+        "lr_backbone=%.1e lr_head=%.1e | từ %s",
+        mode, len(rule_set), use_penalty, use_head, concept_weight,
+        float(rule_cfg["weight"]) if use_penalty else 0.0,
+        lr_backbone, lr_head, cbm_ckpt,
     )
 
     train_cfg: dict[str, Any] = {
@@ -169,7 +223,7 @@ def _train_cbm_with_rules(
         concept_pos_weight=concept_pos_weight,
         two_stage=False,
         penalty_module=penalty_module,
-        penalty_off_epochs=off_epochs,
+        penalty_off_epochs=off_epochs if use_penalty else 0,
         ckpt_filename="rule_regularized_best.pth",
     )
 
@@ -181,13 +235,14 @@ def _train_cbm_with_rules(
                 "architecture": arch,
                 "n_concepts": n_concepts,
                 "n_rules": len(rule_set),
+                "mode": mode,
                 "selected_rules_sha256": selected_rules_sha256,
                 "concept_weight": concept_weight,
                 "lr_backbone": lr_backbone,
                 "lr_head": lr_head,
                 "penalty_off_epochs": off_epochs,
                 "rule_weight_override": rule_weight_override,
-                "rule_penalty": dict(rule_cfg),
+                "rule_penalty": rule_cfg,
             },
             file, ensure_ascii=False, indent=2,
         )
@@ -204,12 +259,21 @@ def main(
     target_override: str | None = None,
     rule_weight_override: float | None = None,
     save_subdir: str = "05_rules_model",
+    rules_dir_override: str | None = None,
+    mode_override: str | None = None,
 ) -> None:
     params = load_params(params_path)
+    if mode_override is not None:
+        if mode_override not in RULE_MODES:
+            raise ValueError(f"mode_override '{mode_override}' không hợp lệ; chọn {RULE_MODES}.")
+        params["rule_penalty"] = {**params["rule_penalty"], "mode": mode_override}
     set_seed(params["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    filtered_dir = os.path.join(params["output_dir"], "04_filtered_rules")
+    # Mặc định: luật Stage 3/4 (RF + GFlowNet chọn). Đặt rule_penalty.rules_dir =
+    # "04c_concept_rules" (hoặc --rules-dir) để dùng luật GFlowNet xây từ image_concept.
+    rules_subdir = rules_dir_override or params.get("rule_penalty", {}).get("rules_dir", "04_filtered_rules")
+    filtered_dir = os.path.join(params["output_dir"], rules_subdir)
     with open(os.path.join(filtered_dir, "selected_rules.pkl"), "rb") as f:
         selected_rules = pickle.load(f)
     rule_set = RuleSet(rules=selected_rules)
@@ -312,6 +376,17 @@ if __name__ == "__main__":
         help="Ghi đè rule_penalty.weight (đối chứng CBM-continued dùng 0)",
     )
     parser.add_argument(
+        "--rules-dir",
+        default=None,
+        help="Thư mục (trong output_dir) chứa selected_rules.pkl; mặc định rule_penalty.rules_dir",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=list(RULE_MODES),
+        default=None,
+        help="Ghi đè rule_penalty.mode (penalty | head | both), chỉ có tác dụng với --target cbm",
+    )
+    parser.add_argument(
         "--save-subdir",
         default="05_rules_model",
         help="Thư mục con trong output_dir để lưu kết quả (tránh ghi đè bản chính)",
@@ -322,4 +397,6 @@ if __name__ == "__main__":
         target_override=args.target,
         rule_weight_override=args.rule_weight,
         save_subdir=args.save_subdir,
+        rules_dir_override=args.rules_dir,
+        mode_override=args.mode,
     )
