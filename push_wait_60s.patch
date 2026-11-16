@@ -1,0 +1,31 @@
+diff --git a/scripts/push_kaggle.py b/scripts/push_kaggle.py
+index 68ee5c9..42a0e7f 100644
+--- a/scripts/push_kaggle.py
++++ b/scripts/push_kaggle.py
+@@ -20,6 +20,7 @@ import shutil
+ import subprocess
+ import sys
+ import tempfile
++import time
+ from pathlib import Path
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parent))
+@@ -44,6 +45,8 @@ p.add_argument("--prev-kernel", action="store_true",
+                help="gắn kernel_sources của notebook cũ và đẩy bởi chủ sở hữu của nó")
+ p.add_argument("--prev-notebook-dir", default=DEFAULT_NB_DIR,
+                help="thư mục notebook CBM cũ, dùng để suy ra kernel nguồn (chỉ với --prev-kernel)")
++p.add_argument("--wait", type=float, default=60.0,
++               help="số giây chờ sau mỗi lần push notebook (mặc định 60; 0 để tắt)")
+ args = p.parse_args()
+ 
+ accounts = json.loads(Path(".kaggle/accounts.json").read_text(encoding="utf-8"))
+@@ -96,6 +99,9 @@ for acc, nb, kernel in jobs:
+         r = subprocess.run(["kaggle", "kernels", "push", "-p", str(work)], env=env)
+         if r.returncode != 0:
+             failed.append(f"{acc['username']}/{slug}")
++    if args.wait > 0 and (acc, nb, kernel) != jobs[-1]:
++        print(f"  chờ {args.wait:g} giây trước notebook tiếp theo...")
++        time.sleep(args.wait)
+ 
+ if failed:
+     print("\nLỖI:", *failed, sep="\n  ")

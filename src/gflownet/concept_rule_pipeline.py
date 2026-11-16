@@ -176,9 +176,12 @@ def select_rule_set(
     Đây là phiên bản tập luật của xung đột: đo theo MẪU (không theo cặp luật) để
     không bị pha loãng khi tập lớn lên.
     """
+    # Mọi tensor trung gian nằm cùng device với concept_matrix (có thể là GPU).
+    device = concept_matrix.device
+    labels = labels.to(device)
     n = concept_matrix.shape[0]
-    covered_correct = torch.zeros(n, dtype=torch.bool)
-    cover_by_class = torch.zeros(n, num_classes, dtype=torch.long)
+    covered_correct = torch.zeros(n, dtype=torch.bool, device=device)
+    cover_by_class = torch.zeros(n, num_classes, dtype=torch.long, device=device)
     chosen: List[ConceptRuleCandidate] = []
 
     for cand in candidates:
@@ -213,8 +216,10 @@ def evaluate_rule_set(
 ) -> Dict[str, float]:
     """Voting theo confidence (= precision trên tập train): luật nào phủ mẫu thì bỏ phiếu
     cho vế phải của nó. Mẫu không luật nào phủ -> không dự đoán (đếm riêng)."""
+    device = concept_matrix.device
+    labels = labels.to(device)
     n = concept_matrix.shape[0]
-    votes = torch.zeros(n, num_classes)
+    votes = torch.zeros(n, num_classes, device=device)
     for cand in candidates:
         mask = cover_mask(concept_matrix, cand.literals)
         votes[mask, cand.target] += cand.precision
